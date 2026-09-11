@@ -4095,7 +4095,8 @@ describe('official Telegram scheduled message transport', () => {
     socket.send(serializeHookMessage(makeProviderBindState(TELEGRAM_CONFIRMED)));
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(manager.telegramDeliveryStatus().supported).toBe(false); // msg-op-v1 is reaction-only on old servers
-    expect(await manager.sendTelegramDelivery({ opId: 'old-server', scope: { externalKey: key }, action: { kind: 'send', text: 'test' } })).toBeNull();
+    expect(await manager.sendTelegramDelivery({ opId: 'old-server', scope: { externalKey: key }, action: { kind: 'send', text: 'test' } })).toMatchObject({ deliveryState: 'not_sent' });
+    expect(server.frames.filter(f => f.type === 'msg.op')).toHaveLength(0);
     socket.send(serializeHookMessage(makeWelcome({ serverName: 'telegram-server', features: [...TELEGRAM_FEATURES, HOOK_FEATURE_MESSAGE_OPS, 'telegram-dm-send-v1', 'telegram-send-epoch:test-epoch'] })));
     socket.send(serializeHookMessage(makeProviderBindState(TELEGRAM_CONFIRMED)));
     await expect.poll(() => manager.telegramDeliveryStatus().supported).toBe(true);
@@ -4111,6 +4112,6 @@ describe('official Telegram scheduled message transport', () => {
     await manager.deactivateAccount();
     expect(await interrupted).toBeNull();
     expect(manager.telegramDeliveryStatus().connected).toBe(false);
-    expect(await manager.sendTelegramDelivery(payload)).toBeNull();
+    expect(await manager.sendTelegramDelivery(payload)).toMatchObject({ deliveryState: 'not_sent' });
   });
 });

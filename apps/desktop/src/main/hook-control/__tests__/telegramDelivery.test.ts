@@ -209,8 +209,11 @@ it('preserves the claim when result persistence fails after the network attempt'
   const h = harness();
   h.send.mockImplementation(async () => null);
   const realSync = fs.fsyncSync.bind(fs);
-  const spy = vi.spyOn(fs, 'fsyncSync').mockImplementationOnce(realSync)
-    .mockImplementationOnce(() => { throw new Error('fixture result fsync failure'); });
+  let fileSyncs = 0;
+  const spy = vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    if (fs.fstatSync(fd).isFile() && ++fileSyncs === 2) throw new Error('fixture result fsync failure');
+    realSync(fd);
+  });
   try { await expect(h.bridge.send(input)).rejects.toThrow('fixture result fsync failure'); }
   finally { spy.mockRestore(); }
   expect(await createTelegramDeliveryBridge(h).send(input)).toMatchObject({ state: 'started' });
@@ -227,4 +230,44 @@ it('keeps an unsent claim fail-closed when cleanup itself fails', async () => {
   finally { write.mockRestore(); unlink.mockRestore(); }
   await expect(createTelegramDeliveryBridge(h).send(input)).rejects.toThrow('DELIVERY_JOURNAL_UNREADABLE');
   expect(h.send).not.toHaveBeenCalled();
+});
+
+
+it.skipIf(process.platform === 'win32')('syncs the claim directory and new ancestors before any network attempt', async () => {
+  const h = harness();
+  const nested = path.join(h.directory, 'new-owner', 'receipts');
+  const opened = new Map<number, string>();
+  const synced: string[] = [];
+  const realOpen = fs.openSync.bind(fs), realSync = fs.fsyncSync.bind(fs);
+  const open = vi.spyOn(fs, 'openSync').mockImplementation((file, flags, mode) => {
+    const fd = realOpen(file, flags, mode); opened.set(fd, String(file)); return fd;
+  });
+  const sync = vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    if (fs.fstatSync(fd).isDirectory()) synced.push(opened.get(fd)!);
+    realSync(fd);
+  });
+  const send = vi.fn(async (payload: { opId: string }) => {
+    expect(synced).toContain(fs.realpathSync(nested));
+    expect(synced).toContain(fs.realpathSync(path.dirname(nested)));
+    expect(synced).toContain(fs.realpathSync(h.directory));
+    return sent(payload.opId);
+  });
+  try {
+    expect(await createTelegramDeliveryBridge({ ...h, directory: nested, send }).send(input)).toMatchObject({ state: 'sent' });
+  } finally { open.mockRestore(); sync.mockRestore(); }
+});
+
+it.skipIf(process.platform === 'win32')('does not send when the claim directory cannot be synced', async () => {
+  const h = harness();
+  const realSync = fs.fsyncSync.bind(fs);
+  const sync = vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    if (fs.fstatSync(fd).isDirectory()) throw new Error('fixture directory sync failed');
+    realSync(fd);
+  });
+  try {
+    await expect(h.bridge.send(input)).rejects.toThrow('fixture directory sync failed');
+    expect(h.send).not.toHaveBeenCalled();
+  } finally { sync.mockRestore(); }
+  expect(await h.bridge.send(input)).toMatchObject({ state: 'sent' });
+  expect(h.send).toHaveBeenCalledOnce();
 });

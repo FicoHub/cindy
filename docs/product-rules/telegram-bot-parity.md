@@ -232,3 +232,7 @@ Cindy 有两个 Telegram bot，用户看到的是同一个产品：
 回执实体还保留 `custom_emoji_id`、`user`（text_mention 的实际用户对象）、`unix_time` 与 `date_time_format`，两仓 parser 校验提供的字段形状；这些字段均可选，旧回执缺失时不补造。实际展示稿验证必须比较相关类型字段，不能只比较 offset/length；Host 的 formatVerified 始终为 false。
 
 首次独占创建 claim 后、网络调用前的写入/fsync 失败会尽力关闭并清理本次 claim，显式重试可重新认领；不清理此前存在的损坏日志、started/unknown 或网络调用后的回执写入失败。清理自身失败仍拒发，不自动补发。
+
+claim文件fsync后，POSIX路径在网络前同步其目录及全部祖先目录，覆盖递归新建或并发创建目录项；任一失败均阻止发送。Windows沿用仓内既有持久化路径的文件fsync（Node/libuv调用FlushFileBuffers），不调用不支持的目录fsync。该实现不承诺任意文件系统/硬件缓存/掉电的完全持久性，Windows原生与掉电测试仍需发布前验收。
+
+Host二次状态检查在尚未提交任何帧时发现能力/epoch/绑定变化会返回明确not_sent；在途重复、已尝试写帧、断线或超时仍unknown。同key均不自动重发。

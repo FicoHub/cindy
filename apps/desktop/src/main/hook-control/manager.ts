@@ -2993,14 +2993,15 @@ export function createHookControlManager(deps: HookControlManagerDeps): HookCont
     },
     telegramDeliveryStatus,
     sendTelegramDelivery(payload) {
+      if (pendingDeliveries.has(payload.opId)) return Promise.resolve(null);
       const status = telegramDeliveryStatus();
       if (!status.supported || !status.target ||
           status.target.externalKey !== payload.scope.externalKey || payload.action.kind !== 'send' ||
           payload.action.delivery?.epoch !== status.sendEpoch ||
           payload.action.delivery?.bindingId !== status.target.bindingId) {
-        return Promise.resolve(null);
+        return Promise.resolve({ opId: payload.opId, ok: false, deliveryState: 'not_sent',
+          error: 'Telegram target or capability changed before transport submission' });
       }
-      if (pendingDeliveries.has(payload.opId)) return Promise.resolve(null);
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
           pendingDeliveries.delete(payload.opId);

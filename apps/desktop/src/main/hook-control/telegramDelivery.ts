@@ -86,6 +86,23 @@ function stateFromResult(row: TelegramDeliveryReceipt, result: MessageOpResultPa
 
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex');
 
+/** Persist directory entries as well as file contents before external effects. */
+function syncClaimDirectories(directory: string): void {
+  // Node/libuv fsync uses FlushFileBuffers on Windows; directory fsync is not
+  // supported there. Match the existing authBoundaryQuarantine platform path.
+  if (process.platform === 'win32') return;
+  // Include ancestors: mkdir(recursive) may create the owner/receipt directory,
+  // or another process may have just created it without syncing its parent.
+  let current = fs.realpathSync(directory);
+  for (;;) {
+    const fd = fs.openSync(current, 'r');
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    const parent = path.dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
+}
+
 /** Host-owned storage, injected under the current owner's userData directory. */
 export function createTelegramDeliveryBridge(deps: {
   directory: string;
@@ -188,6 +205,7 @@ export function createTelegramDeliveryBridge(deps: {
       try {
         try { fs.writeFileSync(fd, JSON.stringify(row)); fs.fsyncSync(fd); }
         finally { fs.closeSync(fd); }
+        syncClaimDirectories(deps.directory);
       } catch (error) {
         // Only this invocation's exclusive claim can be removed, and only
         // before deps.send is reached. Existing/torn claims and failures after
