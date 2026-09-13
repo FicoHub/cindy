@@ -10,8 +10,6 @@ const mocks = vi.hoisted(() => {
   };
   class FakeBrowserWindow {
     static instances: FakeBrowserWindow[] = [];
-    // 默认非 null = 应用仍持有焦点(content-ready 时的焦点复查放行)。
-    static getFocusedWindow = vi.fn((): unknown => ({}));
     options: Record<string, unknown>;
     destroyed = false;
     private listeners = new Map<string, Array<() => void>>();
@@ -96,6 +94,12 @@ vi.mock('../../logger.js', () => ({
 
 import { captureRegionViaOverlay } from '../overlayCapture.js';
 
+/** 发起截图的宿主窗口: 默认仍聚焦(content-ready 时的焦点复查放行)。 */
+const TEST_HOST = {
+  isDestroyed: vi.fn(() => false),
+  isFocused: vi.fn(() => true),
+} as unknown as import('electron').BrowserWindow;
+
 const TEST_PALETTE = {
   scrim: 'rgba(0, 0, 0, 0.5)',
   selectionBorder: 'rgba(255, 255, 255, 0.8)',
@@ -140,7 +144,7 @@ beforeEach(() => {
 
 describe('captureRegionViaOverlay', () => {
   it('crops the frozen frame by scaleFactor and resolves PNG bytes on select', async () => {
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     const overlay = await flushLoad();
     // 冻结帧只在 ready 信号(组件已订阅)之后发送, 且只认覆盖层本体 sender。
     expect(overlay.webContents.send).not.toHaveBeenCalled();
@@ -169,7 +173,7 @@ describe('captureRegionViaOverlay', () => {
   });
 
   it.each(['crop', 'encode'])('rejects and cleans up when native %s throws', async (stage) => {
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     const outcome = pending.then(() => 'unexpected-success', (error: Error) => error.message);
     const overlay = await flushLoad();
     const fail = () => { throw new Error('native failure'); };
@@ -182,7 +186,7 @@ describe('captureRegionViaOverlay', () => {
   });
 
   it.each(['serialize', 'send'])('rejects and cleans up when ready %s throws', async (stage) => {
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     const outcome = pending.then(() => 'unexpected-success', (error: Error) => error.message);
     const overlay = await flushLoad();
     const fail = () => { throw new Error('ready failure'); };
@@ -195,12 +199,12 @@ describe('captureRegionViaOverlay', () => {
   });
 
   it('resolves cancelled on cancel result and on near-zero selections', async () => {
-    const first = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const first = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     await flushLoad();
     emitOverlayResult(501, { kind: 'cancel' });
     await expect(first).resolves.toEqual({ cancelled: true });
 
-    const second = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const second = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     await flushLoad();
     emitOverlayResult(501, { kind: 'select', rect: { x: 1, y: 1, width: 2, height: 2 } });
     await expect(second).resolves.toEqual({ cancelled: true });
@@ -208,7 +212,7 @@ describe('captureRegionViaOverlay', () => {
   });
 
   it('ignores results from foreign senders', async () => {
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     const overlay = await flushLoad();
     emitOverlayResult(999, { kind: 'select', rect: { x: 0, y: 0, width: 500, height: 500 } });
     expect(mocks.frame.crop).not.toHaveBeenCalled();
@@ -221,7 +225,7 @@ describe('captureRegionViaOverlay', () => {
   it('times out to cancelled when the user never finishes selecting', async () => {
     vi.useFakeTimers();
     try {
-      const pending = captureRegionViaOverlay(1_000, 'drag to select', TEST_PALETTE);
+      const pending = captureRegionViaOverlay(1_000, 'drag to select', TEST_PALETTE, TEST_HOST);
       await vi.advanceTimersByTimeAsync(0); // flush load
       await vi.advanceTimersByTimeAsync(1_000);
       await expect(pending).resolves.toEqual({ cancelled: true });
@@ -234,7 +238,7 @@ describe('captureRegionViaOverlay', () => {
   // 比例换算; 宽高比对不上说明帧不是这块屏, 拒绝(review P1)。
   it('maps selection by the actual frame-to-display ratio when thumbnail size differs', async () => {
     mocks.frame.getSize.mockReturnValueOnce({ width: 1920, height: 1080 });
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     await flushLoad();
     emitOverlayResult(501, { kind: 'select', rect: { x: 100, y: 40, width: 200, height: 100 } });
     await expect(pending).resolves.toMatchObject({ cancelled: false });
@@ -244,14 +248,14 @@ describe('captureRegionViaOverlay', () => {
 
   it('rejects frames whose aspect ratio cannot map to the display', async () => {
     mocks.frame.getSize.mockReturnValueOnce({ width: 2560, height: 1600 });
-    await expect(captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE)).rejects.toThrow(
+    await expect(captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST)).rejects.toThrow(
       'aspect ratio',
     );
   });
 
   it('throws when desktopCapturer yields no usable frame', async () => {
     mocks.getSources.mockResolvedValueOnce([]);
-    await expect(captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE)).rejects.toThrow(
+    await expect(captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST)).rejects.toThrow(
       'cannot match a capture source',
     );
   });
@@ -264,12 +268,12 @@ describe('captureRegionViaOverlay', () => {
       { display_id: '', thumbnail: mocks.frame },
       { display_id: '', thumbnail: mocks.frame },
     ]);
-    await expect(captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE)).rejects.toThrow(
+    await expect(captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST)).rejects.toThrow(
       'cannot match a capture source',
     );
 
     mocks.getSources.mockResolvedValueOnce([{ display_id: '', thumbnail: mocks.frame }]);
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     await flushLoad();
     emitOverlayResult(501, { kind: 'cancel' });
     await expect(pending).resolves.toEqual({ cancelled: true });
@@ -277,9 +281,9 @@ describe('captureRegionViaOverlay', () => {
 
   // 触发到帧就绪之间用户 Alt-Tab 切走 → 不抢回焦点、不拿全屏置顶冻结帧盖住
   // 用户已切到的应用, 按取消收口(review P2)。
-  it('cancels instead of stealing focus when the app lost focus before content-ready', async () => {
-    FakeBrowserWindow.getFocusedWindow.mockReturnValueOnce(null);
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+  it('cancels instead of stealing focus when the originating window lost focus before content-ready', async () => {
+    (TEST_HOST.isFocused as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     const overlay = await flushLoad();
     emitOverlayContentReady(501);
     await expect(pending).resolves.toEqual({ cancelled: true });
@@ -287,10 +291,44 @@ describe('captureRegionViaOverlay', () => {
     expect(overlay.destroyed).toBe(true);
   });
 
+  // 多窗口: 发起窗口 A 在帧编解码期间被另一扇 Cindy 窗口 B 抢走焦点 ——
+  // 应用级 getFocusedWindow() 仍非 null, 但 A 已不聚焦, 覆盖层不得露出并把
+  // 结果贴进 A 的 composer(review P1)。
+  it('cancels when another Cindy window took focus from the originating window', async () => {
+    const originating = {
+      isDestroyed: vi.fn(() => false),
+      isFocused: vi.fn(() => false),
+    } as unknown as import('electron').BrowserWindow;
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, originating);
+    const overlay = await flushLoad();
+    emitOverlayContentReady(501);
+    await expect(pending).resolves.toEqual({ cancelled: true });
+    expect(overlay.show).not.toHaveBeenCalled();
+    expect(overlay.focus).not.toHaveBeenCalled();
+    expect(overlay.destroyed).toBe(true);
+  });
+
+  it('cancels when the originating window is unknown or already destroyed', async () => {
+    const unknown = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, null);
+    await flushLoad();
+    emitOverlayContentReady(501);
+    await expect(unknown).resolves.toEqual({ cancelled: true });
+
+    const destroyedHost = {
+      isDestroyed: vi.fn(() => true),
+      isFocused: vi.fn(() => true),
+    } as unknown as import('electron').BrowserWindow;
+    const gone = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, destroyedHost);
+    await flushLoad();
+    emitOverlayContentReady(501);
+    await expect(gone).resolves.toEqual({ cancelled: true });
+    expect(FakeBrowserWindow.instances.at(-1)!.show).not.toHaveBeenCalled();
+  });
+
   // 一次性覆盖层 renderer 崩溃必须立即收口: 不能让 captureInFlight 挡后续
   // 截图到总超时, 也不能让全屏冻结画面一直遮桌面(review P2)。
   it('rejects immediately when the overlay renderer crashes', async () => {
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     const overlay = await flushLoad();
     const goneListener = (overlay.webContents.on.mock.calls as unknown[][]).find(
       (c) => c[0] === 'render-process-gone',
@@ -307,13 +345,13 @@ describe('captureRegionViaOverlay', () => {
   it('rejects a sole unmatched source when multiple physical displays exist', async () => {
     mocks.getSources.mockResolvedValueOnce([{ display_id: '', thumbnail: mocks.frame }]);
     mocks.getAllDisplays.mockReturnValueOnce([{ id: 7 }, { id: 8 }]);
-    await expect(captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE)).rejects.toThrow(
+    await expect(captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST)).rejects.toThrow(
       'cannot match a capture source',
     );
   });
 
   it('loads a self-contained data: URL with the dedicated minimal preload', async () => {
-    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     const overlay = await flushLoad();
     const url = String((overlay.loadURL.mock.calls as unknown[][])[0]?.[0]);
     expect(url.startsWith('data:text/html;charset=utf-8,')).toBe(true);
@@ -341,7 +379,7 @@ describe('captureRegionViaOverlay', () => {
       { kind: 'select', rect: { x: '0', y: 0, width: 100, height: 100 } },
       { kind: 'unknown' },
     ]) {
-      const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+      const pending = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
       await flushLoad();
       expect(() => emitOverlayResult(501, bad)).not.toThrow();
       await expect(pending).resolves.toEqual({ cancelled: true });
@@ -351,14 +389,14 @@ describe('captureRegionViaOverlay', () => {
 
   it('clamps out-of-bounds selections and cancels fully out-of-frame ones', async () => {
     // 起点越过帧右缘 → 裁剪宽度非正 → 取消
-    const outside = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const outside = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     await flushLoad();
     emitOverlayResult(501, { kind: 'select', rect: { x: 5000, y: 0, width: 100, height: 100 } });
     await expect(outside).resolves.toEqual({ cancelled: true });
     expect(mocks.frame.crop).not.toHaveBeenCalled();
 
     // 尾部越界 → 夹到帧内
-    const clamped = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE);
+    const clamped = captureRegionViaOverlay(5_000, 'drag to select', TEST_PALETTE, TEST_HOST);
     await flushLoad();
     emitOverlayResult(501, { kind: 'select', rect: { x: 1200, y: 700, width: 200, height: 100 } });
     await expect(clamped).resolves.toMatchObject({ cancelled: false });
@@ -373,7 +411,7 @@ it('bounds source acquisition and ignores its late result', async () => {
   mocks.getSources.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
   try {
     let outcome: unknown;
-    const pending = captureRegionViaOverlay(1000, 'capture', TEST_PALETTE).then((value) => { outcome = value; });
+    const pending = captureRegionViaOverlay(1000, 'capture', TEST_PALETTE, TEST_HOST).then((value) => { outcome = value; });
     await vi.advanceTimersByTimeAsync(1000);
     expect(outcome).toEqual({ cancelled: true });
     finish([{ display_id: '7', thumbnail: mocks.frame }]);
@@ -391,7 +429,7 @@ it('uses the remaining deadline for selection after delayed source acquisition',
   }));
   try {
     let outcome: unknown;
-    const pending = captureRegionViaOverlay(1000, 'capture', TEST_PALETTE).then((value) => { outcome = value; });
+    const pending = captureRegionViaOverlay(1000, 'capture', TEST_PALETTE, TEST_HOST).then((value) => { outcome = value; });
     await vi.advanceTimersByTimeAsync(600);
     expect(FakeBrowserWindow.instances).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(400);

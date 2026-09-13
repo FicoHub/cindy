@@ -68,6 +68,7 @@ export async function captureRegionViaOverlay(
   timeoutMs: number,
   hintText: string,
   palette: ScreenCaptureOverlayPalette,
+  hostWindow: BrowserWindow | null,
 ): Promise<OverlayCaptureOutcome> {
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const scaleFactor = display.scaleFactor || 1;
@@ -244,12 +245,15 @@ export async function captureRegionViaOverlay(
       const onContentReady = (event: Electron.IpcMainEvent) => {
         if (settled || overlay.isDestroyed()) return;
         if (event.sender.id !== overlay.webContents.id) return;
-        // 触发时应用必然持有焦点(应用级快捷键); 就绪时应用已无聚焦窗口 =
-        // 用户在帧传输/解码窗口期切去了别的应用 —— 不抢回焦点、不拿全屏
-        // 置顶冻结帧盖住人家, 按取消收口(review P2)。overlay 自身 show 前
-        // 不可能是 focused window, 不会误判。
-        if (BrowserWindow.getFocusedWindow() === null) {
-          logger.debug('app lost focus before overlay became ready, cancelling');
+        // 触发时发起窗口必然持有焦点(应用级快捷键); 就绪时必须仍是"那一扇"
+        // 窗口聚焦: 切去别的应用, 或切到本应用另一扇 Cindy 窗口(分离侧栏、
+        // 协同 Worker 等), 都不抢回焦点、不拿全屏置顶冻结帧盖住对方, 按取消
+        // 收口 —— 否则结果会贴进发起窗口的 composer 而用户正在看另一扇窗口
+        // (review P2 + P1 多窗口场景)。只看 getFocusedWindow() 非 null 不够,
+        // 另一扇 Cindy 窗口聚焦时它同样非 null。overlay 自身 show 前不可能
+        // 是 focused window, 不会误判。
+        if (hostWindow === null || hostWindow.isDestroyed() || !hostWindow.isFocused()) {
+          logger.debug('originating window lost focus before overlay became ready, cancelling');
           settle(() => resolve({ cancelled: true }));
           return;
         }

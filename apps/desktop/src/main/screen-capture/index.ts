@@ -1,4 +1,4 @@
-import { clipboard, ipcMain, nativeImage } from 'electron';
+import { BrowserWindow, clipboard, ipcMain, nativeImage } from 'electron';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
@@ -153,11 +153,12 @@ async function captureRegion(
   platform: string,
   overlayHint: string,
   overlayPalette: ScreenCaptureOverlayPalette,
+  hostWindow: BrowserWindow | null,
 ): Promise<ScreenCaptureRegionResult> {
   const outcome =
     platform === 'darwin'
       ? await captureRegionDarwin()
-      : await captureRegionViaOverlay(CAPTURE_TIMEOUT_MS, overlayHint, overlayPalette);
+      : await captureRegionViaOverlay(CAPTURE_TIMEOUT_MS, overlayHint, overlayPalette, hostWindow);
   if (outcome.cancelled || !outcome.data) {
     return { ok: true, cancelled: true };
   }
@@ -208,10 +209,14 @@ export function registerScreenCaptureIpc(platform: string = process.platform): v
       }
       captureInFlight = true;
       try {
+        // 发起截图的宿主窗口随流程传下去: 覆盖层只在"这一扇"窗口仍聚焦时露出,
+        // 用户中途切到另一扇 Cindy 窗口则取消(review P1 多窗口焦点)。
+        const hostWindow = BrowserWindow.fromWebContents(event.sender) ?? null;
         return await captureRegion(
           platform,
           sanitizeOverlayHint(payload),
           sanitizeOverlayPalette(payload),
+          hostWindow,
         );
       } catch (err) {
         // 非取消类失败(desktopCapturer 无可用帧、覆盖层加载失败等)统一转

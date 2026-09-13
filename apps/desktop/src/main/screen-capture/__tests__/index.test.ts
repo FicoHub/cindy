@@ -12,9 +12,11 @@ const mocks = vi.hoisted(() => ({
   clipboardWriteImage: vi.fn(),
   createFromBuffer: vi.fn((buffer: Buffer) => ({ buffer })),
   overlayCapture: vi.fn(),
+  fromWebContents: vi.fn((): unknown => null),
 }));
 
 vi.mock('electron', () => ({
+  BrowserWindow: { fromWebContents: mocks.fromWebContents },
   ipcMain: { handle: mocks.handle, on: mocks.ipcOn },
   clipboard: { writeImage: mocks.clipboardWriteImage },
   nativeImage: { createFromBuffer: mocks.createFromBuffer },
@@ -62,6 +64,26 @@ describe('registerScreenCaptureIpc', () => {
     const handler = registerAndGetHandler('win32');
     await expect(handler({})).resolves.toEqual({ ok: true, cancelled: false, data: bytes });
     expect(mocks.overlayCapture).toHaveBeenCalledTimes(1);
+    // 发起窗口(event.sender 所属 BrowserWindow)随流程传给覆盖层, 用于就绪时
+    // 复查"仍是这一扇窗口聚焦"; 解析不到时传 null(覆盖层按取消收口)。
+    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.any(String),
+      expect.any(Object),
+      null,
+    );
+    const hostWindow = { id: 'host' };
+    const sender = { id: 9 };
+    mocks.fromWebContents.mockReturnValueOnce(hostWindow);
+    mocks.overlayCapture.mockResolvedValueOnce({ cancelled: true });
+    await expect(handler({ sender })).resolves.toEqual({ ok: true, cancelled: true });
+    expect(mocks.fromWebContents).toHaveBeenLastCalledWith(sender);
+    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.any(String),
+      expect.any(Object),
+      hostWindow,
+    );
     expect(mocks.execFile).not.toHaveBeenCalled();
     // 剪贴板写入是平台无关的共享成功尾部
     expect(mocks.clipboardWriteImage).toHaveBeenCalledTimes(1);
@@ -79,12 +101,14 @@ describe('registerScreenCaptureIpc', () => {
         expect.any(Number),
         'Drag to select the region to capture, press Esc to cancel',
         expect.any(Object),
+        null,
       );
       await handler({}, { overlayHint: `${'x'.repeat(300)}${' '.repeat(4 * 1024 * 1024)}` });
       expect(mocks.overlayCapture).toHaveBeenLastCalledWith(
         expect.any(Number),
         'x'.repeat(200),
         expect.any(Object),
+        null,
       );
       const scanned = trimSpy.mock.contexts.map((ctx) => String(ctx).length);
       expect(scanned.length).toBeGreaterThan(0);
@@ -108,12 +132,17 @@ describe('registerScreenCaptureIpc', () => {
         pillFg: ' #fafafa ',
       },
     });
-    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(expect.any(Number), expect.any(String), {
-      scrim: 'rgba(0, 0, 0, 0.5)',
-      selectionBorder: '#fff',
-      pillBg: 'hsl(60, 2%, 12%)',
-      pillFg: '#fafafa',
-    });
+    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.any(String),
+      {
+        scrim: 'rgba(0, 0, 0, 0.5)',
+        selectionBorder: '#fff',
+        pillBg: 'hsl(60, 2%, 12%)',
+        pillFg: '#fafafa',
+      },
+      null,
+    );
 
     await handler({}, {
       overlayPalette: {
@@ -123,12 +152,17 @@ describe('registerScreenCaptureIpc', () => {
         pillFg: 42,
       },
     });
-    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(expect.any(Number), expect.any(String), {
-      scrim: 'rgba(0, 0, 0, 0.7)',
-      selectionBorder: 'rgba(255, 255, 255, 0.9)',
-      pillBg: '#1f1f1e',
-      pillFg: '#ffffff',
-    });
+    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.any(String),
+      {
+        scrim: 'rgba(0, 0, 0, 0.7)',
+        selectionBorder: 'rgba(255, 255, 255, 0.9)',
+        pillBg: '#1f1f1e',
+        pillFg: '#ffffff',
+      },
+      null,
+    );
 
     await handler({}, {
       overlayPalette: {
@@ -138,21 +172,31 @@ describe('registerScreenCaptureIpc', () => {
         pillFg: '#123456',
       },
     });
-    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(expect.any(Number), expect.any(String), {
-      scrim: 'rgba(0, 0, 0, 0.7)',
-      selectionBorder: 'rgba(255, 255, 255, 0.9)',
-      pillBg: '#1f1f1e',
-      pillFg: '#123456',
-    });
+    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.any(String),
+      {
+        scrim: 'rgba(0, 0, 0, 0.7)',
+        selectionBorder: 'rgba(255, 255, 255, 0.9)',
+        pillBg: '#1f1f1e',
+        pillFg: '#123456',
+      },
+      null,
+    );
 
     // 未传配色 → 全默认
     await handler({});
-    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(expect.any(Number), expect.any(String), {
-      scrim: 'rgba(0, 0, 0, 0.7)',
-      selectionBorder: 'rgba(255, 255, 255, 0.9)',
-      pillBg: '#1f1f1e',
-      pillFg: '#ffffff',
-    });
+    expect(mocks.overlayCapture).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.any(String),
+      {
+        scrim: 'rgba(0, 0, 0, 0.7)',
+        selectionBorder: 'rgba(255, 255, 255, 0.9)',
+        pillBg: '#1f1f1e',
+        pillFg: '#ffffff',
+      },
+      null,
+    );
   });
 
   it('propagates overlay cancel as cancelled', async () => {
