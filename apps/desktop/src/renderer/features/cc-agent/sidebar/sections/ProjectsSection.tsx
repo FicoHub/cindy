@@ -922,6 +922,9 @@ export function ProjectsSection({
           onScheduleAction={onScheduleAction}
           automationGroupCollapsed={isAutomationGroupCollapsed}
           onAutomationGroupCollapsedChange={setAutomationGroupCollapsed}
+          // 顶层自动化组的展开态子运行折叠也要认远程灯豁免(review P2):与项目内 /
+          // 对话组内的 SessionEntryList 同一份 lampFoldExemptIds。
+          foldExemptSessionIds={lampFoldExemptIds}
           sourceLabelMap={dialogueSourceLabelMap}
           sessionVariant={mainSessionVariant}
           // 混排下每条散排对话各是一个单条列表,若都补顶线,会与上一行的底线叠成
