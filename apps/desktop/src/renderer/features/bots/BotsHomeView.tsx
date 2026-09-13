@@ -1,3 +1,4 @@
+import { shouldShowOpenPathError } from '../../../shared/openPathResult';
 import { ConnectProviderCard } from '@/components/onboarding/ConnectProviderCard';
 import { useProviderOnboarding } from '@/hooks/useProviderOnboarding';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -27,6 +28,7 @@ import type { ConversationSearchJump } from '../../../shared/conversationSearchJ
 import { useRegisterContentHeader } from '../feature-context';
 import {
   canonicalBotSessionId,
+  hasLoadedBotProfiles,
   chooseBotAvatar,
   retryBotInvitation,
   setCanonicalBotSession,
@@ -37,7 +39,7 @@ import {
   type BotCapabilities,
   type BotProfile,
 } from './botStore';
-import { BotCreateMenu } from './BotCreateMenu';
+import { BotRosterView } from './BotRosterView';
 import { BotAvatar } from './BotAvatar';
 import { BotBasicProfileFields } from './BotBasicProfileFields';
 import {
@@ -339,9 +341,9 @@ export function BotSettings({
     ['advanced', FolderOpen, t('bots.homeFolder.title')],
   ] as const;
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8 sm:px-7">
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8">
       <div className="mx-auto w-full max-w-xl">
-        <div className="flex min-h-12 items-center justify-between gap-3">
+        <div className="flex min-h-12 flex-wrap items-center justify-between gap-3">
           {page !== 'home' ? (
             <div className="flex min-w-0 items-center gap-2">
               <button
@@ -578,7 +580,7 @@ export function BotSettings({
                     if (!bot.homeDir) return;
                     setFolderError(null);
                     void window.electronAPI.openPath(bot.homeDir).then((result) => {
-                      if (!result.success)
+                      if (shouldShowOpenPathError(result))
                         setFolderError(result.error ?? t('bots.homeFolder.openFailed'));
                     });
                   }}
@@ -717,7 +719,9 @@ export function BotsHomeView() {
       return;
     }
     if (!botId && bots[0]) {
-      const target = bots.find((bot) => bot.status !== 'archived') ?? bots[0];
+      const target = bots.filter((bot) => bot.templateId === 'cindy' && bot.status !== 'archived' && bot.status !== 'deleting')
+        .sort((a, b) => a.createdAt - b.createdAt)[0];
+      if (!target) return;
       const query = searchParams.toString();
       const nextQuery =
         target.status !== 'active'
@@ -754,7 +758,7 @@ export function BotsHomeView() {
 
   useEffect(() => {
     if (needsProviderConnection || needsModelSelection) return;
-    if (selectedBot?.invitation && selectedBot.invitation.stage !== 'ready') return;
+    if (selectedBot?.invitation && selectedBot.invitation.stage !== 'ready' && !selectedBot.canonicalSessionId) return;
     if (!selectedBot || shouldDeferCanonicalBotSessionNavigation({ settingsOpen, addRequested }))
       return;
     if (selectedBot.status !== 'active') {
@@ -874,24 +878,8 @@ export function BotsHomeView() {
     );
   }
 
-  if (!selectedBot) {
-    if (bots.length === 0)
-      return (
-        <div className="flex flex-1 items-center justify-center">
-          <BotCreateMenu label={t('bots.add')} />
-        </div>
-      );
-    return (
-      <main className="flex h-full items-center justify-center bg-[var(--surface)]" role="main">
-        <Spinner
-          size={20}
-          className="text-[var(--text-tertiary)]"
-          role="status"
-          aria-label={t('ccAgent.common.loading')}
-        />
-      </main>
-    );
-  }
+  if (!selectedBot && !hasLoadedBotProfiles()) return <main className="flex h-full items-center justify-center"><Spinner size={20} /></main>;
+  if (!selectedBot) return <BotRosterView inline />;
 
   if (needsModelSelection) {
     return (
@@ -923,10 +911,10 @@ export function BotsHomeView() {
     );
   }
 
-  if (selectedBot.invitation && selectedBot.invitation.stage !== 'ready')
+  if (selectedBot.invitation && selectedBot.invitation.stage !== 'ready' && !selectedBot.canonicalSessionId)
     return (
       <main className="flex h-full items-center justify-center px-6" role="main">
-        <BotInvitationWelcome bot={selectedBot} />
+        {selectedBot.invitation.stage === 'failed' ? <button type="button" className="h-10 rounded-full px-5 text-13 hover:bg-[var(--surface-hover)]" onClick={() => void retryBotInvitation(selectedBot.id)}>{t('commonUi.retry')}</button> : <Spinner size={20} />}
       </main>
     );
 
