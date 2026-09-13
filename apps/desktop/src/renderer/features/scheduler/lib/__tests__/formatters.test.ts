@@ -21,7 +21,7 @@ describe('scheduler formatters', () => {
     expect(formatNextRun(now + 2 * 24 * 60 * 60_000, now, zhTranslate)).toContain('（2天后）');
   });
 
-  // #4418: 详情摘要的 Agent 名称必须与保存的 agentKind 一致；此前只区分 codex，
+  // issue 4418: 详情摘要的 Agent 名称必须与保存的 agentKind 一致；此前只区分 codex，
   // pi 被错误回落成 Claude。
   it('humanizes every AgentKind by its own brand instead of falling back to Claude', () => {
     expect(humanizeAgentKind('claude-code')).toBe('Claude');
