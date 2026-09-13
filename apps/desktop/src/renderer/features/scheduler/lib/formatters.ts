@@ -245,13 +245,17 @@ export function basenameOf(p?: string | null): string | null {
  */
 export function humanizeAgentKind(k: AgentKind): string {
   switch (k) {
+    case 'claude-code':
+      return 'Claude';
     case 'codex':
       return 'Codex';
     case 'pi':
       return 'Pi';
-    case 'claude-code':
-    default:
-      return 'Claude';
+    default: {
+      // 穷尽性检查：AgentKind 新增引擎时这里编译报错，避免再次静默回落成 Claude。
+      const unreachable: never = k;
+      return unreachable;
+    }
   }
 }
 
