@@ -115,6 +115,7 @@ export function SessionEntryRows({
   showFirstDivider = true,
   automationGroupCollapsed,
   onAutomationGroupCollapsedChange,
+  foldExemptSessionIds,
 }: SessionEntryRowsProps) {
   return (
     <>
@@ -177,6 +178,7 @@ export function SessionEntryRows({
             projectOptions={projectOptions}
             onScheduleAction={onScheduleAction}
             collapsed={automationGroupCollapsed?.(entry.group.id)}
+            foldExemptSessionIds={foldExemptSessionIds}
             onCollapsedChange={
               onAutomationGroupCollapsedChange
                 ? (collapsed) => onAutomationGroupCollapsedChange(entry.group.id, collapsed)
@@ -212,7 +214,14 @@ export function SessionEntryList({
   );
 
   if (!collapsible) {
-    return <SessionEntryRows entries={entries} notifications={notifications} {...props} />;
+    return (
+      <SessionEntryRows
+        entries={entries}
+        notifications={notifications}
+        foldExemptSessionIds={foldExemptSessionIds}
+        {...props}
+      />
+    );
   }
 
   // 对话段与项目内会话共用这套折叠:默认前 N 条 + 永远保留 24h 内活动 /
@@ -237,7 +246,12 @@ export function SessionEntryList({
 
   return (
     <>
-      <SessionEntryRows entries={visibleEntries} notifications={notifications} {...props} />
+      <SessionEntryRows
+        entries={visibleEntries}
+        notifications={notifications}
+        foldExemptSessionIds={foldExemptSessionIds}
+        {...props}
+      />
       {isOverflowing && (
         <button
           type="button"
