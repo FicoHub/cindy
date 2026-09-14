@@ -31,6 +31,7 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
     pinSessionOrigin: h.pin,
     getSessionDeviceId: () => undefined,
     mergeDeviceSessions: h.merge,
+    captureSessionRead: () => () => true,
   },
 }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
@@ -56,7 +57,7 @@ beforeEach(() => {
     }
     expect(h.pin).toHaveBeenCalledWith('home', 'new-canonical');
     expect(args).toEqual(['new-canonical']);
-    return { id: 'new-canonical', source: 'bot' };
+    return { id: 'new-canonical', source: 'bot', status: 'active' };
   });
   window.electronAPI = { deviceLink: { invoke: h.invoke } } as unknown as Window['electronAPI'];
 });

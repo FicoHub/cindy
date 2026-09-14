@@ -1,0 +1,117 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { Session } from '@/lib/ccAgent.types';
+import { remoteProjectsStore, useRemoteProjectSessions } from '@/features/device-link/remoteProjectsStore';
+import { refreshRemoteDeviceSessions } from '@/features/device-link/refreshRemoteSessions';
+import { makerApiFor } from '@/lib/makerTransport';
+import { resolveComposerModelSelection } from '@/components/new-chat/composerModelSelection';
+
+const h = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock('react-router-dom', () => ({ useParams: () => ({ deviceId: 'snapshot-host', botId: 'writer' }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('../useRemoteBots', () => ({
+  markRemoteBotRead: vi.fn(),
+  useRemoteBots: () => [{ id: 'writer', deviceId: 'snapshot-host', deviceName: 'Host', name: 'Writer', sessionId: 'canonical', online: true }],
+}));
+// Keep the real entry, mirror, reconciliation, model projection and transport.
+// The expensive transcript/editor tree is represented by its model/send consumer.
+vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({
+  CCAgentSessionView: ({ sessionIdProp }: { sessionIdProp: string }) => {
+    const session = useRemoteProjectSessions().find((row) => row.id === sessionIdProp);
+    if (!session) return <div>metadata-loading</div>;
+    const selection = resolveComposerModelSelection({ current: {
+      agentKind: 'codex', model: session.model, providerId: session.providerId ?? null,
+      effort: session.effort, fastMode: session.fastMode,
+    }, effective: session.runtimeEffective, pending: session.runtimePending });
+    return <button onClick={() => void makerApiFor(session.id).send(session.id, 'next turn', {
+      ...selection.display, effort: selection.display.effort ?? undefined,
+      workingDir: '/remote/workspace',
+    })}>{selection.display.model}</button>;
+  },
+}));
+import { RemoteBotSessionView } from '../RemoteBotSessionView';
+
+const astra = { id: 'canonical', source: 'bot', status: 'active', agentKind: 'codex',
+  model: 'gpt-6-astra', providerId: 'openai', effort: 'medium', fastMode: false,
+  workingDir: '/remote/workspace', title: 'Writer', createdAt: '2026-09-14T00:00:00Z',
+  updatedAt: '2026-09-14T00:00:00Z' } as Session;
+const fable = { ...astra, model: 'claude-fable-5-1', providerId: 'anthropic', effort: 'high' };
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+function entry(detail: Promise<Session>) {
+  h.invoke.mockImplementation(async (_device, channel) => {
+    if (channel === 'maker:remote-resources:get') return {
+      ref: { collectionId: 'teammates', kind: 'bot', id: 'writer' },
+      display: { title: 'Writer' }, links: [{ rel: 'conversation', target: { kind: 'session', sessionId: 'canonical' } }],
+    };
+    if (channel === 'local-db:sessions:get') return detail;
+    if (channel === 'local-db:sessions:list') return [];
+    return undefined;
+  });
+  return render(<RemoteBotSessionView />);
+}
+beforeEach(() => {
+  remoteProjectsStore.clear();
+  h.invoke.mockReset();
+  window.electronAPI = { deviceLink: { invoke: h.invoke } } as unknown as Window['electronAPI'];
+});
+afterEach(() => { cleanup(); remoteProjectsStore.clear(); });
+
+it('keeps Astra through reply completion and delayed ordinary-list refresh, then routes the next send to Astra', async () => {
+  entry(Promise.resolve(astra));
+  await screen.findByRole('button', { name: 'gpt-6-astra' });
+  await act(async () => {
+    remoteProjectsStore.applyPatch('snapshot-host', astra.id, { lastTurnEndedAt: Date.now() });
+    for (let i = 0; i < 3; i++) await refreshRemoteDeviceSessions('snapshot-host', 'Host');
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'gpt-6-astra' }));
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'maker:send', [
+    astra.id, 'next turn', expect.objectContaining({ model: astra.model, providerId: 'openai', effort: 'medium' }),
+  ]));
+  expect(h.invoke.mock.calls.some((call) => call[1] === 'maker:set-model')).toBe(false);
+});
+
+it('does not roll back an explicit model switch with a late companion-entry GET', async () => {
+  const detail = deferred<Session>();
+  remoteProjectsStore.mergeDeviceSessions('snapshot-host', 'Host', [fable]);
+  entry(detail.promise);
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
+  await act(async () => {
+    remoteProjectsStore.applyPatch('snapshot-host', astra.id, { ...astra });
+    detail.resolve(fable);
+  });
+  await screen.findByRole('button', { name: 'gpt-6-astra' });
+  await act(async () => remoteProjectsStore.applyPatch('snapshot-host', astra.id, fable));
+  fireEvent.click(screen.getByRole('button', { name: fable.model }));
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'maker:send', [
+    astra.id, 'next turn', expect.objectContaining({ model: fable.model, providerId: 'anthropic', effort: 'high' }),
+  ]));
+});
+
+it.each(['disconnect', 'remove', 'clear', 'delete', 'archive'] as const)(
+  'does not revive a companion from a late GET after %s', async (event) => {
+    const detail = deferred<Session>();
+    remoteProjectsStore.mergeDeviceSessions('snapshot-host', 'Host', [astra]);
+    entry(detail.promise);
+    await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
+    await act(async () => {
+      if (event === 'disconnect') remoteProjectsStore.markDeviceDisconnected('snapshot-host');
+      if (event === 'remove') remoteProjectsStore.removeDevice('snapshot-host');
+      if (event === 'clear') remoteProjectsStore.clear();
+      if (event === 'delete' || event === 'archive') remoteProjectsStore.applyPatch('snapshot-host', astra.id, { status: event === 'delete' ? 'deleted' : 'archived' });
+      detail.resolve(astra);
+    });
+    await screen.findByText('bots.sessionLoadFailedDescription');
+    expect(screen.queryByRole('button', { name: astra.model })).toBeNull();
+  },
+);
+
+it('invalidates an initial detail read even if clear happens before the first shard exists', () => {
+  const current = remoteProjectsStore.captureSessionRead('unloaded-host', 'unloaded-session');
+  remoteProjectsStore.clear();
+  expect(current()).toBe(false);
+});

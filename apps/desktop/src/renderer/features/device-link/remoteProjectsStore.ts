@@ -855,6 +855,22 @@ const actions = {
     return status ? sessions.filter((session) => session.status === status) : sessions;
   },
 
+  /** A detail read must not roll back a newer push, deletion, or device lifecycle. */
+  captureSessionRead(deviceId: string, sessionId: string): () => boolean {
+    const before = shards.get(deviceId)?.sessions.find((session) => session.id === sessionId);
+    const epochs = (['active', 'archived'] as const).map((status) => {
+      const key = snapshotEpochKey(deviceId, status);
+      const epoch = snapshotEpoch.get(key) ?? 0;
+      snapshotEpoch.set(key, epoch);
+      return epoch;
+    });
+    return () =>
+      shards.get(deviceId)?.sessions.find((session) => session.id === sessionId) === before &&
+      (['active', 'archived'] as const).every((status, index) =>
+        snapshotEpoch.get(snapshotEpochKey(deviceId, status)) === epochs[index],
+      );
+  },
+
   /** 该设备的指定状态桶是否已成功拿到过权威列表（权威空数组也算）。 */
   hasLoadedSessionStatus(deviceId: string, status: RemoteSessionStatus): boolean {
     return shards.get(deviceId)?.loadedStatuses.has(status) ?? false;

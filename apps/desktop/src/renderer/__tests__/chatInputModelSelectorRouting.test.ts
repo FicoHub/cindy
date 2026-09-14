@@ -9,6 +9,19 @@ const chatInputSource = normalizeSourceText(
 );
 
 describe('ChatInput model source switching wiring', () => {
+  it('never turns a missing existing-task snapshot into a draft model or a dispatched send', () => {
+    expect(chatInputSource).toContain("model: initialModel ?? (sessionId ? '' : localVendorDefaults.model)");
+    expect(chatInputSource).toContain('Boolean(sessionId && !initialModel && !runtimeEffective?.model)');
+    const start = chatInputSource.indexOf('const dispatchSend = useCallback(');
+    const end = chatInputSource.indexOf('const sourceSessionId = sessionId;', start);
+    expect(chatInputSource.slice(start, end)).toContain('if (disabled || sessionModelLoading) return;');
+    expect(chatInputSource).toContain('disabled || sessionModelLoading ||');
+    expect(chatInputSource).toContain('!hideRuntimeControls && !sessionModelLoading');
+    // A metadata arrival must recreate dispatchSend, so a loading closure cannot
+    // remain stuck after the authoritative model returns.
+    expect(chatInputSource).toContain('      disabled,\n      sessionModelLoading,\n      sessionId,\n      onSend,');
+  });
+
   it('preserves an explicit connection for submission even when its catalog row is unavailable', () => {
     expect(chatInputSource).toContain('const sendProviderId = activeProviderId || null;');
     expect(chatInputSource).toContain('providerId: sendProviderId');
