@@ -98,12 +98,20 @@ const renameSubs = new Set<(deviceId: string, name: string) => void>();
  * 故 mark disconnected / remove / clear 都用自增(条目保留,仅随 distinct 设备数增长,可忽略)。
  */
 const snapshotEpoch = new Map<string, number>();
+// Detail reads do not share list epochs: sessions:list deliberately omits bots.
+// Keep monotonic lifecycle/patch revisions only for devices and sessions opened
+// through detail reads, including reads begun before the first shard exists.
+const detailDeviceEpoch = new Map<string, number>();
+const detailPatchEpoch = new Map<string, number>();
 
 function snapshotEpochKey(deviceId: string, status: RemoteSessionStatus): string {
   return `${deviceId}\u0000${status}`;
 }
 
 function invalidateDeviceSnapshotEpochs(deviceId: string): void {
+  if (detailDeviceEpoch.has(deviceId)) {
+    detailDeviceEpoch.set(deviceId, detailDeviceEpoch.get(deviceId)! + 1);
+  }
   for (const status of ['active', 'archived'] as const) {
     const key = snapshotEpochKey(deviceId, status);
     snapshotEpoch.set(key, (snapshotEpoch.get(key) ?? 0) + 1);
@@ -599,6 +607,11 @@ const actions = {
    *    为用户尚未查看的历史记录额外取数。
    */
   applyPatch(deviceId: string, sessionId: string, patch: Record<string, unknown>): void {
+    // Even an unknown row can be deleted/archived while its first GET is in flight.
+    const detailKey = `${deviceId}\u0000${sessionId}`;
+    if (detailPatchEpoch.has(detailKey)) {
+      detailPatchEpoch.set(detailKey, detailPatchEpoch.get(detailKey)! + 1);
+    }
     const deleted = patch.status === 'deleted';
     // 删除清缓存必须放在**所有早退之前**:这个会话可能不在当前(有界)分片里、甚至这台设备
     // 还没有分片,但它完全可能有一份上次打开时留下的消息缓存文件 —— 那时早退就等于把
@@ -702,6 +715,7 @@ const actions = {
   /** 标记全部已缓存远程设备暂不可达,但不清空侧边栏会话快照。 */
   markAllDisconnected(): void {
     for (const [k, v] of snapshotEpoch) snapshotEpoch.set(k, v + 1);
+    for (const [k, v] of detailDeviceEpoch) detailDeviceEpoch.set(k, v + 1);
     const bootstrapStateChanged =
       bootstrapLoadingDeviceIds.size > 0 ||
       archivedLoadingDeviceIds.size > 0 ||
@@ -760,6 +774,7 @@ const actions = {
     // 所有设备 epoch 无条件**自增**(不 clear-to-0,见 snapshotEpoch 注释的 ABA):清空时在途
     // 首拉立即失效;下一轮 bootstrap 拿到更高 epoch,不会与清空前的 epoch 撞值把陈旧 snapshot 盖回。
     for (const [k, v] of snapshotEpoch) snapshotEpoch.set(k, v + 1);
+    for (const [k, v] of detailDeviceEpoch) detailDeviceEpoch.set(k, v + 1);
     // 登出 / device-link stopped 是明确的生命周期边界:叠加层是本次会话期的临时
     // 显示态,跨过边界后不该复活(也避免长期留存用户输入的文本)。
     pendingTitlePreview.clear();
@@ -858,17 +873,15 @@ const actions = {
   /** A detail read must not roll back a newer push, deletion, or device lifecycle. */
   captureSessionRead(deviceId: string, sessionId: string): () => boolean {
     const before = shards.get(deviceId)?.sessions.find((session) => session.id === sessionId);
-    const epochs = (['active', 'archived'] as const).map((status) => {
-      const key = snapshotEpochKey(deviceId, status);
-      const epoch = snapshotEpoch.get(key) ?? 0;
-      snapshotEpoch.set(key, epoch);
-      return epoch;
-    });
+    const deviceEpoch = detailDeviceEpoch.get(deviceId) ?? 0;
+    detailDeviceEpoch.set(deviceId, deviceEpoch);
+    const detailKey = `${deviceId}\u0000${sessionId}`;
+    const patchEpoch = detailPatchEpoch.get(detailKey) ?? 0;
+    detailPatchEpoch.set(detailKey, patchEpoch);
     return () =>
       shards.get(deviceId)?.sessions.find((session) => session.id === sessionId) === before &&
-      (['active', 'archived'] as const).every((status, index) =>
-        snapshotEpoch.get(snapshotEpochKey(deviceId, status)) === epochs[index],
-      );
+      detailDeviceEpoch.get(deviceId) === deviceEpoch &&
+      detailPatchEpoch.get(detailKey) === patchEpoch;
   },
 
   /** 该设备的指定状态桶是否已成功拿到过权威列表（权威空数组也算）。 */

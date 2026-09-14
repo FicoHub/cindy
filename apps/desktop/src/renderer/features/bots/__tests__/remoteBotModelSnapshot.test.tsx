@@ -115,3 +115,69 @@ it('invalidates an initial detail read even if clear happens before the first sh
   remoteProjectsStore.clear();
   expect(current()).toBe(false);
 });
+
+
+it.each(['active', 'archived'] as const)('accepts the first companion detail across an unrelated %s list refresh', async (status) => {
+  const detail = deferred<Session>();
+  entry(detail.promise);
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
+  await act(async () => {
+    remoteProjectsStore.nextSnapshotEpoch('snapshot-host', status);
+    remoteProjectsStore.setDeviceSessions('snapshot-host', 'Host', [], status);
+    detail.resolve(astra);
+  });
+  await screen.findByRole('button', { name: astra.model });
+});
+
+it.each(['deleted', 'archived'] as const)('rejects a first detail after an unknown-session %s patch', async (status) => {
+  const detail = deferred<Session>();
+  entry(detail.promise);
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
+  await act(async () => {
+    remoteProjectsStore.applyPatch('snapshot-host', astra.id, { status });
+    detail.resolve(astra);
+  });
+  await screen.findByText('bots.sessionLoadFailedDescription');
+  expect(screen.queryByRole('button', { name: astra.model })).toBeNull();
+});
+
+it('rejects a stale first detail after a model-only push and retries with the new route', async () => {
+  const detail = deferred<Session>();
+  entry(detail.promise);
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
+  await act(async () => {
+    remoteProjectsStore.applyPatch('snapshot-host', astra.id, { model: astra.model, providerId: astra.providerId });
+    detail.resolve(fable);
+  });
+  await screen.findByText('bots.sessionLoadFailedDescription');
+  expect(remoteProjectsStore.getDeviceSessions('snapshot-host')).toEqual([]);
+  h.invoke.mockImplementation(async (_device, channel) => {
+    if (channel === 'maker:remote-resources:get') return {
+      ref: { collectionId: 'teammates', kind: 'bot', id: 'writer' },
+      display: { title: 'Writer' }, links: [{ rel: 'conversation', target: { kind: 'session', sessionId: 'canonical' } }],
+    };
+    if (channel === 'local-db:sessions:get') return astra;
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'bots.retry' }));
+  fireEvent.click(await screen.findByRole('button', { name: astra.model }));
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'maker:send', [
+    astra.id, 'next turn', expect.objectContaining({ model: astra.model, providerId: 'openai' }),
+  ]));
+});
+
+it('keeps a target detail valid across another session patch and another device disconnect', () => {
+  const current = remoteProjectsStore.captureSessionRead('snapshot-host', 'canonical');
+  remoteProjectsStore.applyPatch('snapshot-host', 'other-session', { model: fable.model });
+  remoteProjectsStore.markDeviceDisconnected('other-host');
+  expect(current()).toBe(true);
+});
+
+it.each(['disconnect', 'remove', 'all-disconnected'] as const)(
+  'invalidates a detail before its first shard exists on %s', (event) => {
+    const current = remoteProjectsStore.captureSessionRead('snapshot-host', 'canonical');
+    if (event === 'disconnect') remoteProjectsStore.markDeviceDisconnected('snapshot-host');
+    if (event === 'remove') remoteProjectsStore.removeDevice('snapshot-host');
+    if (event === 'all-disconnected') remoteProjectsStore.markAllDisconnected();
+    expect(current()).toBe(false);
+  },
+);

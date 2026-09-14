@@ -65,8 +65,8 @@ describe('消息流的头像挂载', () => {
 
 describe('伙伴输入框只保留对话动作', () => {
   it('伙伴保留标准权限 chip，仅隐藏模型选择器', () => {
-    expect(chatInput.match(/!hideRuntimeControls \? \(/g)?.length).toBe(1);
-    expect(chatInput.indexOf('<PermissionSelector')).toBeLessThan(chatInput.indexOf('!hideRuntimeControls ? ('));
+    expect(chatInput.match(/!hideRuntimeControls && !sessionModelLoading \? \(/g)?.length).toBe(1);
+    expect(chatInput.indexOf('<PermissionSelector')).toBeLessThan(chatInput.indexOf('!hideRuntimeControls && !sessionModelLoading ? ('));
     expect(chatInput).toContain('<PermissionSelector');
     expect(chatInput).toContain('<ModelSelector');
   });
