@@ -144,7 +144,9 @@ it.each(['deleted', 'archived'] as const)('rejects a first detail after an unkno
 it.each([
   { name: 'spend', patch: { totalMoney: { amount: 2, currency: 'USD', approximate: false, kind: 'actual-cost' }, totalCostUsd: 2 } },
   { name: 'tokens', patch: { totalTokenUsage: 1200 } },
-])('accepts the first companion detail across cumulative $name', async ({ patch }) => {
+  { name: 'turn completion', patch: { lastTurnEndedAt: 1789466400000 } },
+  { name: 'usage and turn completion', patch: { lastTurnEndedAt: 1789466400000, totalTokenUsage: 1200 } },
+])('accepts the first companion detail across activity-only $name', async ({ patch }) => {
   const detail = deferred<Session>();
   entry(detail.promise);
   await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
@@ -165,16 +167,17 @@ it('preserves newer cumulative usage in an existing mirror instead of publishing
   entry(detail.promise);
   await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
   await act(async () => {
-    remoteProjectsStore.applyPatch('snapshot-host', astra.id, { totalTokenUsage: 1200, totalCostUsd: 2 });
+    remoteProjectsStore.applyPatch('snapshot-host', astra.id, { totalTokenUsage: 1200, totalCostUsd: 2, lastTurnEndedAt: 1789466400000 });
     detail.resolve(astra);
   });
   await screen.findByRole('button', { name: astra.model });
-  expect(remoteProjectsStore.getDeviceSessions('snapshot-host')[0]).toMatchObject({ totalTokenUsage: 1200, totalCostUsd: 2 });
+  expect(remoteProjectsStore.getDeviceSessions('snapshot-host')[0]).toMatchObject({ totalTokenUsage: 1200, totalCostUsd: 2, lastTurnEndedAt: 1789466400000 });
 });
 
 it.each([
   { model: astra.model, providerId: astra.providerId },
   { model: astra.model, providerId: astra.providerId, totalTokenUsage: 1200 },
+  { model: astra.model, providerId: astra.providerId, lastTurnEndedAt: 1789466400000 },
 ])('rejects a stale first detail after a route push (including mixed usage) and retries with the new route: %j', async (patch) => {
   const detail = deferred<Session>();
   entry(detail.promise);
