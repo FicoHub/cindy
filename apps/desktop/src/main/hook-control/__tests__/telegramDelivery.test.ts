@@ -273,6 +273,55 @@ it.skipIf(process.platform === 'win32')('does not send when the claim directory 
 });
 
 
+it.skipIf(process.platform === 'win32').each(['sent', 'unknown', 'late'] as const)(
+  'syncs the published %s receipt after removing temporary names', async outcome => {
+    const h = harness();
+    if (outcome !== 'sent') h.send.mockImplementation(async () => null);
+    const realSync = fs.fsyncSync.bind(fs);
+    const publications: string[][] = [];
+    const sync = vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+      const stat = fs.fstatSync(fd);
+      const directory = fs.statSync(h.directory);
+      if (stat.isDirectory() && stat.dev === directory.dev && stat.ino === directory.ino) {
+        publications.push(fs.readdirSync(h.directory));
+      }
+      realSync(fd);
+    });
+    try {
+      const row = await h.bridge.send(input);
+      if (outcome === 'late') {
+        publications.length = 0;
+        h.bridge.onResult(sent(row.opId));
+      }
+      const suffix = outcome === 'unknown' ? '.result' : '.sent';
+      expect(publications.some(files => files.some(file => file.endsWith(suffix)) &&
+        files.every(file => !file.endsWith('.tmp')))).toBe(true);
+      expect(createTelegramDeliveryBridge(h).receipt(input.idempotencyKey)?.state)
+        .toBe(outcome === 'unknown' ? 'unknown' : 'sent');
+      expect(h.send).toHaveBeenCalledOnce();
+    } finally { sync.mockRestore(); }
+  },
+);
+
+it.skipIf(process.platform === 'win32')('retains the claim when the published receipt directory cannot be synced', async () => {
+  const h = harness();
+  const realSync = fs.fsyncSync.bind(fs);
+  const sync = vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    if (fs.fstatSync(fd).isDirectory() && h.send.mock.calls.length > 0) {
+      throw new Error('fixture receipt directory sync failed');
+    }
+    realSync(fd);
+  });
+  try {
+    await expect(h.bridge.send(input)).rejects.toThrow('fixture receipt directory sync failed');
+  } finally { sync.mockRestore(); }
+  const files = fs.readdirSync(h.directory);
+  expect(files.some(file => file.endsWith('.json'))).toBe(true);
+  expect(files.every(file => !file.endsWith('.tmp'))).toBe(true);
+  await createTelegramDeliveryBridge(h).send(input);
+  expect(h.send).toHaveBeenCalledOnce();
+});
+
 it.each(['plain', 'html'] as const)('rejects oversized %s before claiming and accepts a corrected same-key message', async (tier) => {
   const h = harness();
   for (const text of ['a'.repeat(4097), '📮'.repeat(2048) + 'a', 'a'.repeat(16000)]) {

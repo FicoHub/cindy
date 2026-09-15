@@ -86,8 +86,8 @@ function stateFromResult(row: TelegramDeliveryReceipt, result: MessageOpResultPa
 
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex');
 
-/** Persist directory entries as well as file contents before external effects. */
-function syncClaimDirectories(directory: string): void {
+/** Persist journal names as well as file contents, including newly created parents. */
+function syncJournalDirectories(directory: string): void {
   // Node/libuv fsync uses FlushFileBuffers on Windows; directory fsync is not
   // supported there. Match the existing authBoundaryQuarantine platform path.
   if (process.platform === 'win32') return;
@@ -145,6 +145,9 @@ export function createTelegramDeliveryBridge(deps: {
         fs.renameSync(tmp, destination);
       }
     } finally { try { fs.unlinkSync(tmp); } catch { /* rename consumed tmp */ } }
+    // File fsync alone does not persist link/rename/unlink metadata. Publish
+    // the receipt durably before returning it, just as we do for the claim.
+    syncJournalDirectories(deps.directory);
   }
   return {
     status: deps.status,
@@ -205,7 +208,7 @@ export function createTelegramDeliveryBridge(deps: {
       try {
         try { fs.writeFileSync(fd, JSON.stringify(row)); fs.fsyncSync(fd); }
         finally { fs.closeSync(fd); }
-        syncClaimDirectories(deps.directory);
+        syncJournalDirectories(deps.directory);
       } catch (error) {
         // Only this invocation's exclusive claim can be removed, and only
         // before deps.send is reached. Existing/torn claims and failures after
