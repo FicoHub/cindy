@@ -608,8 +608,15 @@ const actions = {
    */
   applyPatch(deviceId: string, sessionId: string, patch: Record<string, unknown>): void {
     // Even an unknown row can be deleted/archived while its first GET is in flight.
+    // Cumulative usage cannot change its route or lifecycle. Those pushes are
+    // dropped before a row exists, so they must not invalidate the only detail
+    // capable of loading it. Mixed patches still invalidate; existing rows also
+    // retain their newer usage via captureSessionRead's snapshot identity check.
+    const changesDetail = Object.keys(patch).some((key) =>
+      key !== 'totalMoney' && key !== 'totalCostUsd' && key !== 'totalTokenUsage',
+    );
     const detailKey = `${deviceId}\u0000${sessionId}`;
-    if (detailPatchEpoch.has(detailKey)) {
+    if (changesDetail && detailPatchEpoch.has(detailKey)) {
       detailPatchEpoch.set(detailKey, detailPatchEpoch.get(detailKey)! + 1);
     }
     const deleted = patch.status === 'deleted';
