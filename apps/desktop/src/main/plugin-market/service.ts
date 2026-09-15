@@ -601,6 +601,8 @@ function removalNoticeKey(owner: ActiveAppSession): string {
  */
 export class PluginMarketService {
   private readonly mutations = new Map<string, Promise<unknown>>();
+  /** Process-local retry budget; source incarnation and owner generation cannot share it. */
+  private readonly customGitRefreshRetries = new Map<string, { failures: number; retryAfter: number }>();
   private ledgerMutation: Promise<void> = Promise.resolve();
   private readonly pendingRemovalNotices = new Map<string, PluginRemovalUserNotice>();
   /**
@@ -1291,6 +1293,53 @@ export class PluginMarketService {
         return this.sourceManagerForOwner(owner).refreshSource(name);
       }),
     );
+  }
+
+  /** Background-only network refresh; ordinary snapshots keep reading the existing cache. */
+  async refreshCustomGitSourcesForBackground(
+    options: PluginMarketSnapshotOptions = {},
+  ): Promise<PluginMarketSnapshot | null> {
+    const owner = captureMarketOwner();
+    const store = this.sourceStore.bind(ownerScopedUserDataPath('plugin-market', 'sources.v1.json'));
+    const configs = store.list().filter(config => config.source.type === 'git');
+    const refreshIntervalMs = 30 * 60 * 1000;
+    let refreshed = false;
+    for (const config of configs) {
+      requireSameMarketOwner(owner);
+      const sourceKey = marketSourceKey(config.source);
+      const retryKey = JSON.stringify([owner.mode, owner.dataOwnerId, owner.generation,
+        config.name, config.addedAt, sourceKey]);
+      await this.withMutation(SOURCE_MUTATION_KEY, async () => {
+        requireSameMarketOwner(owner);
+        // A manual refresh/removal may have won while we waited for the source lock.
+        const current = store.get(config.name);
+        if (!current || current.addedAt !== config.addedAt ||
+            marketSourceKey(current.source) !== sourceKey) return;
+        const now = Date.now();
+        const syncedAt = Date.parse(current.lastSyncedAt ?? '');
+        if (Number.isFinite(syncedAt) && now - syncedAt < refreshIntervalMs) return;
+        const retry = this.customGitRefreshRetries.get(retryKey);
+        if (retry && now < retry.retryAfter) return;
+        try {
+          await this.sourceManagerForOwner(owner).refreshSource(config.name);
+          requireSameMarketOwner(owner);
+          this.customGitRefreshRetries.delete(retryKey);
+          refreshed = true;
+        } catch (error) {
+          requireSameMarketOwner(owner);
+          const failures = (retry?.failures ?? 0) + 1;
+          const retryAfter = Date.now() + Math.min(refreshIntervalMs * 2 ** Math.min(failures - 1, 4), 6 * 60 * 60 * 1000);
+          this.customGitRefreshRetries.set(retryKey, { failures, retryAfter });
+          // Do not log Git URLs, stderr or credentials. The old cache remains usable.
+          log.warn('custom marketplace background refresh failed', {
+            code: isIpcError(error) ? error.code : 'INTERNAL', failures, retryAfter,
+          });
+        }
+      });
+    }
+    requireSameMarketOwner(owner);
+    // Reconcile the newly discovered versions through the existing install policy.
+    return refreshed ? this.snapshot(options) : null;
   }
 
   async gitPreflight(): Promise<GitPreflightResult> {
