@@ -55,7 +55,7 @@ const attachments: ComponentProps<typeof ChatInput>['attachmentState'] = {
   removeFile: noOp, updateFile: noOp, discardFiles: noOp, clearFiles: noOp, restoreFiles: (files) => [...files],
 };
 beforeEach(() => { h.listening = false; h.stop.mockClear(); window.electronAPI = api; vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 const props = {
   sessionId: 'loading-test', initialWorkingDir: '/workspace', runtimeAgentKind: 'codex' as const,
@@ -112,6 +112,34 @@ it('hides a missing existing model, recovers from the effective runtime, and pre
   expect((screen.getByRole('button', { name: 'newChat.sendButton.send' }) as HTMLButtonElement).disabled).toBe(true);
   view.rerender(<ChatInput {...props} sessionId={undefined} hideRuntimeControls={false} onSend={onSend} />);
   expect(screen.getByTestId('model-selector').textContent).toBe('claude-fable-5-1');
+  await act(async () => {});
+  expect(onSend).not.toHaveBeenCalled();
+});
+
+// The slot survives missing metadata; only the model control is withheld.
+it.each([320, 480, 800])('preserves the model slot across hydration (width=%s)', async (width) => {
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(width);
+  const narrowToolbar = width < 600;
+  const onSend = vi.fn();
+  const inputProps = { ...props, hideRuntimeControls: false, narrowToolbar, onSend };
+  const view = render(<ChatInput {...inputProps} />);
+  const slot = view.container.querySelector('[data-session-model-slot]') as HTMLElement;
+  expect(slot).not.toBeNull();
+  const geometry = slot.className;
+  expect(slot.textContent).toBe('');
+  expect(slot.querySelector('button, [tabindex]')).toBeNull();
+  expect(screen.queryByTestId('model-selector')).toBeNull();
+  view.rerender(<ChatInput {...inputProps} initialModel="gpt-6-astra" />);
+  expect(view.container.querySelector('[data-session-model-slot]')).toBe(slot);
+  expect(slot.className).toBe(geometry);
+  expect(slot.contains(screen.getByTestId('model-selector'))).toBe(true);
+  view.rerender(<ChatInput {...inputProps} />);
+  expect(view.container.querySelector('[data-session-model-slot]')).toBe(slot);
+  expect(slot.className).toBe(geometry);
+  expect(slot.textContent).toBe('');
+  view.rerender(<ChatInput {...inputProps} hideRuntimeControls />);
+  expect(view.container.querySelector('[data-session-model-slot]')).toBeNull();
+  expect(screen.getByTestId('permission-selector')).toBeTruthy();
   await act(async () => {});
   expect(onSend).not.toHaveBeenCalled();
 });

@@ -8732,9 +8732,18 @@ export function ChatInput({
                   ))}
                 {/* 伙伴的模型链在设置中统一管理，并由宿主自动 fallback。对话输入框不再
                     暴露单次任务的模型切换，避免会话态覆盖伙伴长期配置。 */}
-                {!hideRuntimeControls && !sessionModelLoading ? (
-                <div className={useNarrowToolbar ? 'min-w-0 shrink' : undefined}>
-                  <ModelSelector
+                {!hideRuntimeControls ? (
+                <div
+                  data-session-model-slot={sessionId ? '' : undefined}
+                  // A cold session has no trustworthy label yet. Keep the same geometry before
+                  // and after hydration without mounting an interactive default-model control.
+                  className={sessionId
+                    ? cn('h-[30px] shrink', useUltraCompactToolbar
+                        ? 'w-[64px] min-w-[64px]'
+                        : 'w-[148px] min-w-[72px]')
+                    : useNarrowToolbar ? 'min-w-0 shrink' : undefined}
+                >
+                  {!sessionModelLoading && <ModelSelector
                     // 选中态一律是会话 / 草稿持有的 **wire model id**(sessions.model 或
                     // lastByVendor.model)。面板行的归一化 id 只活在面板内部 —— 从这里递进去
                     // 会让"当前选中的那一行"在合并行上错位,也会把归一化 id 顺着
@@ -8895,7 +8904,7 @@ export function ChatInput({
                     // settings/CreateWorker 不传该 prop → Radix 回退,不 morph。
                     useMorphPopover
                     restoreFocusTarget={composerSuggestionFocusTarget}
-                  />
+                  />}
                 </div>
                 ) : null}
                 <div
