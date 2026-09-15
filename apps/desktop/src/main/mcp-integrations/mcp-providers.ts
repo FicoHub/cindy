@@ -1,4 +1,5 @@
 import { getTelegramDeliveryBridge } from '../hook-control/telegramDelivery.js';
+import { getPluginMarketService } from '../plugin-market/service.js';
 import { activeOwnerScopeKey, getActiveAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
 import type { createBotCapabilityService } from '../maker-ipc/botCapabilityService.js';
 import { routineTools } from '../routines/service.js';
@@ -32,6 +33,7 @@ import { getIOSSimulatorMcpDeps } from './ios-simulator.js';
 import { getBrowserMcpDeps } from './browser.js';
 import { getComputerMcpDeps } from './computer.js';
 import { feishuIm, wechatIm } from '../im';
+import { sendFeishuSessionNotification } from '../im/feishu/notificationOrigin';
 import { getSlackToolBridge } from '../hook-control/slackToolBridge.js';
 import { createLogger } from '../logger.js';
 import { getScheduler } from '../scheduler-host/index.js';
@@ -192,8 +194,14 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       // branch-free. Feishu returns 400 with structured `response.data.code/msg`
       // for business errors (rate-limit, invalid text, …); those get folded
       // into `reason` for logging without leaking axios internals to the tool.
-      sendMessage: async (chatId, markdown) => {
+      sendMessage: async (chatId, markdown, notificationSessionId) => {
         try {
+          if (notificationSessionId && chatId === feishuIm.getOwnerOpenId()) {
+            const { messageId, sessionLinked } = await sendFeishuSessionNotification(
+              feishuIm, notificationSessionId, markdown,
+            );
+            return { ok: true, messageId, sessionLinked };
+          }
           const { messageId } = await feishuIm.sendMarkdownText(chatId, markdown);
           return { ok: true, messageId };
         } catch (err) {
@@ -521,7 +529,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
             };
           }
         },
-        getSessionTask: async ({ callerSessionId, taskId }) => {
+        getSessionTask: async ({ callerSessionId, taskId, queuedMessageId }) => {
           const svc = tryGetBotDelegationService();
           if (!svc) {
             return {
@@ -530,9 +538,9 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
               message: 'Session task service not initialized',
             };
           }
-          return svc.getSessionTask(callerSessionId, taskId);
+          return svc.getSessionTask(callerSessionId, taskId, queuedMessageId);
         },
-        stopSessionTask: async ({ callerSessionId, taskId }) => {
+        stopSessionTask: async ({ callerSessionId, taskId, mode }) => {
           const svc = tryGetBotDelegationService();
           if (!svc) {
             return {
@@ -541,7 +549,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
               message: 'Session task service not initialized',
             };
           }
-          return svc.stopSessionTask(callerSessionId, taskId);
+          return svc.stopSessionTask(callerSessionId, taskId, mode);
         },
       },
       botMessaging: {
@@ -592,7 +600,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         },
       },
       botProfiles: {
-        create: async ({ callerSessionId, name, description, identitySource, welcomeMessage }) => {
+        create: async ({ callerSessionId, name, description, identitySource }) => {
           const dbClient = tryGetDbClient();
           if (!dbClient) {
             return { ok: false, errorCode: 'HOST_NOT_READY', message: 'localDb not ready' };
@@ -617,7 +625,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
               name,
               description,
               identitySource,
-              welcomeMessage,
+              prepareInvitation: true,
             });
             return {
               ok: true,
@@ -774,6 +782,7 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
       name: 'cindy',
       instance: createCindyGhostsMcpServer(
         getCindyGhostsMcpDeps(ctx, {
+          pluginMarket: getPluginMarketService(),
           getAppVersion: deps.getAppVersion,
           getLiveSessionGrantState: deps.getLiveSessionGrantState,
           createMediaDownloadContext: deps.createMediaDownloadContext,

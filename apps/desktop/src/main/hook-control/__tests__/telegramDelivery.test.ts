@@ -271,3 +271,21 @@ it.skipIf(process.platform === 'win32')('does not send when the claim directory 
   expect(await h.bridge.send(input)).toMatchObject({ state: 'sent' });
   expect(h.send).toHaveBeenCalledOnce();
 });
+
+
+it('rejects oversized plain text before claiming and accepts a corrected same-key message', async () => {
+  const h = harness();
+  for (const text of ['a'.repeat(4097), '📮'.repeat(2048) + 'a', 'a'.repeat(16000)]) {
+    await expect(h.bridge.send({ ...input, tier: 'plain', text })).rejects.toThrow('INVALID_DELIVERY_INPUT');
+    expect(h.bridge.receipt(input.idempotencyKey)).toBeNull();
+  }
+  expect(fs.readdirSync(h.directory)).toEqual([]);
+  expect(h.send).not.toHaveBeenCalled();
+  await expect(h.bridge.send({ ...input, tier: 'plain', text: '📮'.repeat(2048) })).resolves.toMatchObject({ state: 'sent' });
+  expect(h.send).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the raw HTML source budget separate from plain text', async () => {
+  const h = harness();
+  await expect(h.bridge.send({ ...input, text: '&amp;'.repeat(3000) })).resolves.toMatchObject({ state: 'sent' });
+});

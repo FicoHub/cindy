@@ -165,6 +165,7 @@ export function createTelegramDeliveryBridge(deps: {
     async send(input) {
       if (!input.idempotencyKey || input.idempotencyKey.length > 200 ||
           !input.text || input.text.length > 16000 ||
+          (input.tier === 'plain' && input.text.length > 4096) ||
           !['html', 'plain'].includes(input.tier) ||
           !/^[a-f0-9]{64}$/.test(input.sourceSha256) ||
           !/^[a-f0-9]{64}$/.test(input.presentationSha256)) throw new Error('INVALID_DELIVERY_INPUT');
