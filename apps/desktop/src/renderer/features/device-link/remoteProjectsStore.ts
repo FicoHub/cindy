@@ -104,8 +104,19 @@ const snapshotEpoch = new Map<string, number>();
 const detailDeviceEpoch = new Map<string, number>();
 const detailPatchEpoch = new Map<string, number>();
 // Origin/connection restamps retain content identity. Authoritative snapshots
-// and patches still produce a new identity, even when their values are equal.
+// and route/content patches produce a new identity, even when values are equal.
 const sessionContentOrigins = new WeakMap<Session, Session>();
+const activityFields = ['totalMoney', 'totalCostUsd', 'totalTokenUsage', 'lastTurnEndedAt'] as const;
+type ActivityField = typeof activityFields[number];
+// Per-field markers distinguish pushes after a GET began, even equal-value pushes.
+const sessionActivityChanges = new WeakMap<Session, Partial<Record<ActivityField, object>>>();
+
+function preserveSessionContent(previous: Session, next: Session): Session {
+  sessionContentOrigins.set(next, sessionContentOrigin(previous)!);
+  const changes = sessionActivityChanges.get(previous);
+  if (changes) sessionActivityChanges.set(next, changes);
+  return next;
+}
 
 function sessionContentOrigin(session: Session | undefined): Session | undefined {
   return session && (sessionContentOrigins.get(session) ?? session);
@@ -415,8 +426,7 @@ function stamp(
     deviceLinkDeviceName: deviceName,
     deviceLinkConnectionStatus: connectionStatus,
   };
-  sessionContentOrigins.set(stamped, sessionContentOrigin(session)!);
-  return stamped;
+  return preserveSessionContent(session, stamped);
 }
 
 const actions = {
@@ -624,7 +634,7 @@ const actions = {
     // or lifecycle. These activity-only pushes are
     // dropped before a row exists, so they must not invalidate the only detail
     // capable of loading it. Mixed patches still invalidate; existing rows also
-    // retain their newer usage via captureSessionRead's snapshot identity check.
+    // retain newer activity through the detail read's per-field merge.
     const changesDetail = Object.keys(patch).some((key) =>
       key !== 'totalMoney' && key !== 'totalCostUsd' && key !== 'totalTokenUsage' &&
       key !== 'lastTurnEndedAt',
@@ -667,17 +677,20 @@ const actions = {
     const wasPinned = shard.sessions[idx]?.pinnedAt != null;
     const unpinned =
       Object.prototype.hasOwnProperty.call(patch, 'pinnedAt') && patch.pinnedAt == null;
-    shard.sessions = shard.sessions.map((s) =>
-      s.id === sessionId
-        ? {
-            ...s,
-            ...(patch as Partial<Session>),
-            deviceLinkDeviceId: shard.deviceId,
-            deviceLinkDeviceName: shard.deviceName,
-            deviceLinkConnectionStatus: shard.connectionStatus,
-          }
-        : s,
-    );
+    shard.sessions = shard.sessions.map((session) => {
+      if (session.id !== sessionId) return session;
+      const next = stamp({ ...session, ...(patch as Partial<Session>) },
+        shard.deviceId, shard.deviceName, shard.connectionStatus);
+      if (!changesDetail) {
+        preserveSessionContent(session, next);
+        const changes = { ...sessionActivityChanges.get(session) };
+        for (const field of activityFields) {
+          if (Object.prototype.hasOwnProperty.call(patch, field)) changes[field] = {};
+        }
+        sessionActivityChanges.set(next, changes);
+      }
+      return next;
+    });
     recompute();
     if (wasPinned && unpinned) requestRemoteReseed(deviceId, 'active');
   },
@@ -690,11 +703,9 @@ const actions = {
     const shard = shards.get(deviceId);
     if (shard && shard.deviceName !== name) {
       shard.deviceName = name;
-      shard.sessions = shard.sessions.map((s) => ({
-        ...s,
-        deviceLinkDeviceName: name,
-        deviceLinkConnectionStatus: shard.connectionStatus,
-      }));
+      shard.sessions = shard.sessions.map((session) =>
+        stamp(session, deviceId, name, shard.connectionStatus),
+      );
       recompute();
     }
     renameSubs.forEach((fn) => fn(deviceId, name));
@@ -892,21 +903,35 @@ const actions = {
   },
 
   /** A detail read must not roll back a newer push, deletion, or device lifecycle. */
-  captureSessionRead(deviceId: string, sessionId: string): () => boolean {
-    const before = sessionContentOrigin(
-      shards.get(deviceId)?.sessions.find((session) => session.id === sessionId),
-    );
+  captureSessionRead(deviceId: string, sessionId: string): (() => boolean) & { mergeActivity: (detail: Session) => Session } {
+    const beforeRow = shards.get(deviceId)?.sessions.find((session) => session.id === sessionId);
+    const before = sessionContentOrigin(beforeRow);
+    const beforeActivity = beforeRow ? sessionActivityChanges.get(beforeRow) : undefined;
     const deviceEpoch = detailDeviceEpoch.get(deviceId) ?? 0;
     detailDeviceEpoch.set(deviceId, deviceEpoch);
     const detailKey = `${deviceId}\u0000${sessionId}`;
     const patchEpoch = detailPatchEpoch.get(detailKey) ?? 0;
     detailPatchEpoch.set(detailKey, patchEpoch);
-    return () =>
+    const isCurrent = () =>
       sessionContentOrigin(
         shards.get(deviceId)?.sessions.find((session) => session.id === sessionId),
       ) === before &&
       detailDeviceEpoch.get(deviceId) === deviceEpoch &&
       detailPatchEpoch.get(detailKey) === patchEpoch;
+    return Object.assign(isCurrent, {
+      mergeActivity(detail: Session): Session {
+        const current = shards.get(deviceId)?.sessions.find((session) => session.id === sessionId);
+        if (!current || !isCurrent()) return detail;
+        const changes = sessionActivityChanges.get(current);
+        const overrides: Partial<Session> = {};
+        for (const field of activityFields) {
+          if (changes?.[field] && changes[field] !== beforeActivity?.[field]) {
+            Object.assign(overrides, { [field]: current[field] });
+          }
+        }
+        return { ...detail, ...overrides };
+      },
+    });
   },
 
   /** 该设备的指定状态桶是否已成功拿到过权威列表（权威空数组也算）。 */

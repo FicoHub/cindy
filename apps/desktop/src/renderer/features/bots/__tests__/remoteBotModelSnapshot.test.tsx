@@ -151,6 +151,50 @@ it.each([
   expect(screen.queryByRole('button', { name: fable.model })).toBeNull();
 });
 
+it.each(['replace', 'merge'].flatMap(mode => [
+  { mode, event: 'tokens', patch: { totalTokenUsage: 1200 } },
+  { mode, event: 'cost', patch: { totalCostUsd: 2 } },
+  { mode, event: 'money', patch: { totalMoney: { amount: 2, currency: 'USD', approximate: false, kind: 'actual-cost' } } },
+  { mode, event: 'completion', patch: { lastTurnEndedAt: 1789466400000 } },
+  { mode, event: 'rename', patch: {} },
+  { mode, event: 'combined', patch: { totalTokenUsage: 1200, lastTurnEndedAt: 1789466400000 } },
+]))('keeps Astra and newer activity across reconnect plus $event ($mode)', async ({ mode, event, patch }) => {
+  remoteProjectsStore.hydrateFromCache([{ deviceId: 'snapshot-host', deviceName: 'Host', sessions: [fable] }]);
+  const detail = deferred<Session>();
+  entry(detail.promise);
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
+  await act(async () => {
+    if (mode === 'merge') remoteProjectsStore.mergeDeviceSessions('snapshot-host', 'Host', []);
+    else remoteProjectsStore.setDeviceSessions('snapshot-host', 'Host', []);
+    remoteProjectsStore.applyPatch('snapshot-host', astra.id, patch);
+    if (event === 'rename' || event === 'combined') remoteProjectsStore.renameDevice('snapshot-host', 'Renamed host');
+    detail.resolve(astra);
+  });
+  fireEvent.click(await screen.findByRole('button', { name: astra.model }));
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'maker:send', [
+    astra.id, 'next turn', expect.objectContaining({ model: astra.model, providerId: 'openai' }),
+  ]));
+  expect(remoteProjectsStore.getDeviceSessions('snapshot-host')[0]).toMatchObject({ ...patch, model: astra.model });
+  if (event === 'rename' || event === 'combined') {
+    expect(remoteProjectsStore.getDeviceSessions('snapshot-host')[0]?.deviceLinkDeviceName).toBe('Renamed host');
+  }
+});
+
+it('merges only activity pushed after capture, including equal-value and cleared fields', async () => {
+  remoteProjectsStore.mergeDeviceSessions('snapshot-host', 'Host', [{ ...astra, totalTokenUsage: 10, totalCostUsd: 1 }]);
+  const detail = deferred<Session>();
+  entry(detail.promise);
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
+  await act(async () => {
+    remoteProjectsStore.applyPatch('snapshot-host', astra.id, { totalTokenUsage: 10, lastTurnEndedAt: null });
+    detail.resolve({ ...astra, totalTokenUsage: 5, totalCostUsd: 3, lastTurnEndedAt: 1789466400000 });
+  });
+  await screen.findByRole('button', { name: astra.model });
+  expect(remoteProjectsStore.getDeviceSessions('snapshot-host')[0]).toMatchObject({
+    totalTokenUsage: 10, totalCostUsd: 3, lastTurnEndedAt: null,
+  });
+});
+
 it.each(['deleted', 'archived'] as const)('rejects a first detail after an unknown-session %s patch', async (status) => {
   const detail = deferred<Session>();
   entry(detail.promise);

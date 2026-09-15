@@ -31,7 +31,8 @@ vi.mock('@/features/device-link/remoteProjectsStore', () => ({
     pinSessionOrigin: h.pin,
     getSessionDeviceId: () => undefined,
     mergeDeviceSessions: h.merge,
-    captureSessionRead: () => () => true,
+    getDeviceSessions: () => [],
+    captureSessionRead: () => Object.assign(() => true, { mergeActivity: <T,>(detail: T) => detail }),
   },
 }));
 vi.mock('@/features/cc-agent/CCAgentSessionView', () => ({

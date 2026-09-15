@@ -56,14 +56,15 @@ export function RemoteBotSessionView() {
       // A settings change or reconnect may finish while this GET is in flight.
       // Use the newer mirror when available; never publish the late response.
       const readIsCurrent = isSessionReadCurrent();
-      const session = readIsCurrent
-        ? value as Session | null
-        : remoteProjectsStore.getDeviceSessions(deviceId).find((row) => row.id === canonicalId);
+      const currentMirror = remoteProjectsStore.getDeviceSessions(deviceId).find((row) => row.id === canonicalId);
+      const session = readIsCurrent ? value as Session | null : currentMirror;
       if (!session || session.id !== canonicalId || session.source !== 'bot' ||
         session.status !== 'active' ||
         (!readIsCurrent && session.deviceLinkConnectionStatus !== 'connected'))
         throw new Error('Invalid remote companion session');
-      if (readIsCurrent) remoteProjectsStore.mergeDeviceSessions(deviceId, bot.deviceName, [session]);
+      if (readIsCurrent) remoteProjectsStore.mergeDeviceSessions(deviceId, currentMirror?.deviceLinkDeviceName ?? bot.deviceName, [
+        isSessionReadCurrent.mergeActivity(session),
+      ]);
       setReady(resolved);
       setValidatedSessionId(sessionId);
     })().catch(() => {
