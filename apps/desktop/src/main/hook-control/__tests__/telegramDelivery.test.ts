@@ -273,19 +273,28 @@ it.skipIf(process.platform === 'win32')('does not send when the claim directory 
 });
 
 
-it('rejects oversized plain text before claiming and accepts a corrected same-key message', async () => {
+it.each(['plain', 'html'] as const)('rejects oversized %s before claiming and accepts a corrected same-key message', async (tier) => {
   const h = harness();
   for (const text of ['a'.repeat(4097), '📮'.repeat(2048) + 'a', 'a'.repeat(16000)]) {
-    await expect(h.bridge.send({ ...input, tier: 'plain', text })).rejects.toThrow('INVALID_DELIVERY_INPUT');
+    await expect(h.bridge.send({ ...input, tier, text })).rejects.toThrow('INVALID_DELIVERY_INPUT');
     expect(h.bridge.receipt(input.idempotencyKey)).toBeNull();
   }
   expect(fs.readdirSync(h.directory)).toEqual([]);
   expect(h.send).not.toHaveBeenCalled();
-  await expect(h.bridge.send({ ...input, tier: 'plain', text: '📮'.repeat(2048) })).resolves.toMatchObject({ state: 'sent' });
+  await expect(h.bridge.send({ ...input, tier, text: '📮'.repeat(2048) })).resolves.toMatchObject({ state: 'sent' });
   expect(h.send).toHaveBeenCalledTimes(1);
 });
 
-it('keeps the raw HTML source budget separate from plain text', async () => {
+it('bounds HTML source conservatively before claiming without truncating markup', async () => {
   const h = harness();
-  await expect(h.bridge.send({ ...input, text: '&amp;'.repeat(3000) })).resolves.toMatchObject({ state: 'sent' });
+  for (const text of ['<b>' + 'a'.repeat(4097) + '</b>', '&amp;'.repeat(3000)]) {
+    await expect(h.bridge.send({ ...input, text })).rejects.toThrow('INVALID_DELIVERY_INPUT');
+    expect(h.bridge.receipt(input.idempotencyKey)).toBeNull();
+  }
+  expect(h.send).not.toHaveBeenCalled();
+  expect(fs.readdirSync(h.directory)).toEqual([]);
+  const text = '<b>' + '&amp;'.repeat(817) + 'abcd</b>';
+  expect(text.length).toBe(4096);
+  await expect(h.bridge.send({ ...input, text })).resolves.toMatchObject({ state: 'sent' });
+  expect(h.send).toHaveBeenCalledOnce();
 });

@@ -3,14 +3,14 @@ import { SchedulerToolRegistry } from '../cindy_schedulerToolRegistry.js';
 import { registerTelegramDeliveryTools } from '../scheduler/telegramDelivery.js';
 
 describe('scheduler official Telegram tools', () => {
-  it('rejects oversized plain text before calling the bridge and keeps the key reusable', async () => {
+  it.each(['plain', 'html'] as const)('rejects oversized %s before calling the bridge and keeps the key reusable', async (tier) => {
     const registry = new SchedulerToolRegistry();
     const send = vi.fn(async () => ({ state: 'sent' }));
     const bridge = { status: () => ({}), send, receipt: () => null };
     registerTelegramDeliveryTools(registry, { getScheduler: () => { throw new Error('unused'); }, telegramDelivery: { getBridge: () => bridge } });
     const args = {
       idempotencyKey: 'same-key', target: { bindingId: 'b', principalId: 'p', principalName: null, externalKey: 'existing-key', botId: 'bot', botName: null },
-      text: 'a'.repeat(4097), tier: 'plain', sourceSha256: 'a'.repeat(64), presentationSha256: 'b'.repeat(64),
+      text: 'a'.repeat(4097), tier, sourceSha256: 'a'.repeat(64), presentationSha256: 'b'.repeat(64),
     };
     for (const text of ['a'.repeat(4097), '📮'.repeat(2048) + 'a', 'a'.repeat(16000)]) {
       expect((await registry.call('schedule_telegram_send', { ...args, text })).isError).toBe(true);
@@ -18,8 +18,12 @@ describe('scheduler official Telegram tools', () => {
     expect(send).not.toHaveBeenCalled();
     expect((await registry.call('schedule_telegram_send', { ...args, text: '📮'.repeat(2048) })).isError).not.toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
-    // Raw HTML includes markup/entity overhead; preserve its existing source bound.
-    expect((await registry.call('schedule_telegram_send', { ...args, tier: 'html', text: '&amp;'.repeat(3000) })).isError).not.toBe(true);
+    // Conservative source bound also rejects oversized markup/entity sources.
+    expect((await registry.call('schedule_telegram_send', { ...args, tier: 'html', text: '&amp;'.repeat(3000) })).isError).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+    const html = '<b>' + '&amp;'.repeat(817) + 'abcd</b>';
+    expect(html.length).toBe(4096);
+    expect((await registry.call('schedule_telegram_send', { ...args, tier: 'html', text: html })).isError).not.toBe(true);
     expect(send).toHaveBeenCalledTimes(2);
   });
   it('exposes status, send and receipt and resolves the live bridge per call', async () => {
