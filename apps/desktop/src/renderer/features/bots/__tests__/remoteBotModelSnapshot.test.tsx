@@ -129,6 +129,28 @@ it.each(['active', 'archived'] as const)('accepts the first companion detail acr
   await screen.findByRole('button', { name: astra.model });
 });
 
+it.each([
+  { deviceName: 'Host', mode: 'replace' },
+  { deviceName: 'Renamed host', mode: 'replace' },
+  { deviceName: 'Host', mode: 'merge' },
+  { deviceName: 'Renamed host', mode: 'merge' },
+] as const)('accepts authoritative detail when reconnect only restamps a cached companion: $mode / $deviceName', async ({ deviceName, mode }) => {
+  remoteProjectsStore.hydrateFromCache([{ deviceId: 'snapshot-host', deviceName: 'Host', sessions: [fable] }]);
+  const detail = deferred<Session>();
+  entry(detail.promise);
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'local-db:sessions:get', ['canonical']));
+  await act(async () => {
+    if (mode === 'merge') remoteProjectsStore.mergeDeviceSessions('snapshot-host', deviceName, []);
+    else remoteProjectsStore.setDeviceSessions('snapshot-host', deviceName, []);
+    detail.resolve(astra);
+  });
+  fireEvent.click(await screen.findByRole('button', { name: astra.model }));
+  await waitFor(() => expect(h.invoke).toHaveBeenCalledWith('snapshot-host', 'maker:send', [
+    astra.id, 'next turn', expect.objectContaining({ model: astra.model, providerId: 'openai', effort: 'medium' }),
+  ]));
+  expect(screen.queryByRole('button', { name: fable.model })).toBeNull();
+});
+
 it.each(['deleted', 'archived'] as const)('rejects a first detail after an unknown-session %s patch', async (status) => {
   const detail = deferred<Session>();
   entry(detail.promise);

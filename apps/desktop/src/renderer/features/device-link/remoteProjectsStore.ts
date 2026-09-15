@@ -103,6 +103,13 @@ const snapshotEpoch = new Map<string, number>();
 // through detail reads, including reads begun before the first shard exists.
 const detailDeviceEpoch = new Map<string, number>();
 const detailPatchEpoch = new Map<string, number>();
+// Origin/connection restamps retain content identity. Authoritative snapshots
+// and patches still produce a new identity, even when their values are equal.
+const sessionContentOrigins = new WeakMap<Session, Session>();
+
+function sessionContentOrigin(session: Session | undefined): Session | undefined {
+  return session && (sessionContentOrigins.get(session) ?? session);
+}
 
 function snapshotEpochKey(deviceId: string, status: RemoteSessionStatus): string {
   return `${deviceId}\u0000${status}`;
@@ -402,12 +409,14 @@ function stamp(
   deviceName: string,
   connectionStatus: DeviceLinkConnectionStatus,
 ): Session {
-  return {
+  const stamped: Session = {
     ...session,
     deviceLinkDeviceId: deviceId,
     deviceLinkDeviceName: deviceName,
     deviceLinkConnectionStatus: connectionStatus,
   };
+  sessionContentOrigins.set(stamped, sessionContentOrigin(session)!);
+  return stamped;
 }
 
 const actions = {
@@ -591,8 +600,11 @@ const actions = {
       deviceName,
       [
         ...rawSessions,
+        // setDeviceSessions already preserves missing companions. Feeding them
+        // back as incoming rows would turn a connection restamp into a snapshot.
         ...existing.sessions.filter(
-          (session) => session.status === status && !incomingIds.has(session.id),
+          (session) =>
+            session.source !== 'bot' && session.status === status && !incomingIds.has(session.id),
         ),
       ],
       status,
@@ -881,14 +893,18 @@ const actions = {
 
   /** A detail read must not roll back a newer push, deletion, or device lifecycle. */
   captureSessionRead(deviceId: string, sessionId: string): () => boolean {
-    const before = shards.get(deviceId)?.sessions.find((session) => session.id === sessionId);
+    const before = sessionContentOrigin(
+      shards.get(deviceId)?.sessions.find((session) => session.id === sessionId),
+    );
     const deviceEpoch = detailDeviceEpoch.get(deviceId) ?? 0;
     detailDeviceEpoch.set(deviceId, deviceEpoch);
     const detailKey = `${deviceId}\u0000${sessionId}`;
     const patchEpoch = detailPatchEpoch.get(detailKey) ?? 0;
     detailPatchEpoch.set(detailKey, patchEpoch);
     return () =>
-      shards.get(deviceId)?.sessions.find((session) => session.id === sessionId) === before &&
+      sessionContentOrigin(
+        shards.get(deviceId)?.sessions.find((session) => session.id === sessionId),
+      ) === before &&
       detailDeviceEpoch.get(deviceId) === deviceEpoch &&
       detailPatchEpoch.get(detailKey) === patchEpoch;
   },
