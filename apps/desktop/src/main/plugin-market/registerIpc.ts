@@ -90,14 +90,18 @@ export async function syncDefaultMarketPlugins(): Promise<DefaultMarketPluginSyn
         snapshot.unavailableReason === 'authentication-required') return 'deferred';
     // Reconcile the official market/current cache first, so an unreachable Git
     // source cannot prevent that work. Page reads never trigger this network step.
-    const refreshed = await service().refreshCustomGitSourcesForBackground({
+    // Authentication waits for the existing cache reconciliation, never Git fetch.
+    void service().refreshCustomGitSourcesForBackground({
       onDefaultReconciliationOutcome: (outcome) => {
-        reconciliationOutcome = outcome;
+        if (outcome === 'failed') log.warn('custom marketplace background reconciliation incomplete');
       },
+    }).finally(signalRemovalNoticeAvailable).catch(error => {
+      log.warn('custom marketplace background refresh deferred', {
+        code: isIpcError(error) ? error.code : 'INTERNAL',
+      });
     });
-    signalRemovalNoticeAvailable();
     const outcome = defaultMarketPluginSyncOutcome(
-      refreshed ?? snapshot,
+      snapshot,
       reconciliationOutcome ?? 'completed',
     );
     if (outcome === 'failed') {

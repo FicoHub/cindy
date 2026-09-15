@@ -406,6 +406,53 @@ describe('PluginMarketService 自定义市场聚合', () => {
     } finally { refresh.mockRestore(); snapshot.mockRestore(); clock.mockRestore(); }
   });
 
+  it('resumes the normal interval after a successful manual retry clears a long backoff', async () => {
+    const h = harness([], []);
+    gitSource(h, 'team');
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const snapshot = vi.spyOn(h.service, 'snapshot').mockResolvedValue({ items: [], unavailableReason: null, customSourceNames: [], unavailableCustomSourceNames: [] });
+    const refresh = vi.spyOn(MarketSourceManager.prototype, 'refreshSource').mockRejectedValue(new Error('offline'));
+    try {
+      await h.service.refreshCustomGitSourcesForBackground();
+      now += 30 * 60 * 1000;
+      await h.service.refreshCustomGitSourcesForBackground(); // retry now waits 60 minutes
+      refresh.mockImplementation(async () => {
+        h.sourceStore.update('team', { lastSyncedAt: new Date(now).toISOString() });
+        return {} as never;
+      });
+      await h.service.refreshSource('team');
+      await h.service.refreshCustomGitSourcesForBackground();
+      expect(refresh).toHaveBeenCalledTimes(3);
+      now += 30 * 60 * 1000;
+      await h.service.refreshCustomGitSourcesForBackground();
+      expect(refresh).toHaveBeenCalledTimes(4);
+    } finally { refresh.mockRestore(); snapshot.mockRestore(); clock.mockRestore(); }
+  });
+
+  it('prunes retry entries across source replacement, owner generations and removal', async () => {
+    const h = harness([], []);
+    gitSource(h, 'team');
+    const retries = (h.service as unknown as { customGitRefreshRetries: Map<string, unknown> }).customGitRefreshRetries;
+    const refresh = vi.spyOn(MarketSourceManager.prototype, 'refreshSource').mockRejectedValue(new Error('offline'));
+    const remove = vi.spyOn(MarketSourceManager.prototype, 'removeSource').mockImplementation(async name => {
+      h.sourceStore.remove(name); return { ok: true };
+    });
+    try {
+      for (let generation = 1; generation <= 8; generation += 1) {
+        runtime.session = { ...runtime.session, generation };
+        gitSource(h, 'team', `2026-09-15T12:00:0${generation}.000Z`);
+        await h.service.refreshCustomGitSourcesForBackground();
+        expect(retries.size).toBe(1);
+      }
+      expect(refresh).toHaveBeenCalledTimes(8);
+      await h.service.removeSource('team');
+      expect(retries.size).toBe(0);
+      await h.service.refreshCustomGitSourcesForBackground();
+      expect(refresh).toHaveBeenCalledTimes(8);
+    } finally { refresh.mockRestore(); remove.mockRestore(); }
+  });
+
   it('does not reconcile or start another source after the owner changes during refresh', async () => {
     const h = harness([], []);
     gitSource(h, 'first'); gitSource(h, 'second');

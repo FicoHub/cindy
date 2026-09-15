@@ -1281,7 +1281,11 @@ export class PluginMarketService {
     return this.runForOwner((owner) =>
       this.withMutation(SOURCE_MUTATION_KEY, async () => {
         requireSameMarketOwner(owner);
-        return this.sourceManagerForOwner(owner).removeSource(name);
+        const store = this.sourceStore.bind(ownerScopedUserDataPath('plugin-market', 'sources.v1.json'));
+        const config = store.get(name);
+        const result = await this.sourceManagerForOwner(owner).removeSource(name);
+        if (config) this.customGitRefreshRetries.delete(this.customGitRefreshRetryKey(owner, config));
+        return result;
       }),
     );
   }
@@ -1290,9 +1294,19 @@ export class PluginMarketService {
     return this.runForOwner((owner) =>
       this.withMutation(SOURCE_MUTATION_KEY, async () => {
         requireSameMarketOwner(owner);
-        return this.sourceManagerForOwner(owner).refreshSource(name);
+        const store = this.sourceStore.bind(ownerScopedUserDataPath('plugin-market', 'sources.v1.json'));
+        const config = store.get(name);
+        const result = await this.sourceManagerForOwner(owner).refreshSource(name);
+        // A successful explicit retry starts a fresh normal refresh interval.
+        if (config) this.customGitRefreshRetries.delete(this.customGitRefreshRetryKey(owner, config));
+        return result;
       }),
     );
+  }
+
+  private customGitRefreshRetryKey(owner: ActiveAppSession, config: MarketSourceConfig): string {
+    return JSON.stringify([owner.mode, owner.dataOwnerId, owner.generation,
+      config.name, config.addedAt, marketSourceKey(config.source)]);
   }
 
   /** Background-only network refresh; ordinary snapshots keep reading the existing cache. */
@@ -1302,13 +1316,18 @@ export class PluginMarketService {
     const owner = captureMarketOwner();
     const store = this.sourceStore.bind(ownerScopedUserDataPath('plugin-market', 'sources.v1.json'));
     const configs = store.list().filter(config => config.source.type === 'git');
+    // Retain only this owner's current source incarnations. Repeated switches or
+    // replacements cannot accumulate unreachable entries in this process singleton.
+    const liveRetryKeys = new Set(configs.map(config => this.customGitRefreshRetryKey(owner, config)));
+    for (const key of this.customGitRefreshRetries.keys()) {
+      if (!liveRetryKeys.has(key)) this.customGitRefreshRetries.delete(key);
+    }
     const refreshIntervalMs = 30 * 60 * 1000;
     let refreshed = false;
     for (const config of configs) {
       requireSameMarketOwner(owner);
       const sourceKey = marketSourceKey(config.source);
-      const retryKey = JSON.stringify([owner.mode, owner.dataOwnerId, owner.generation,
-        config.name, config.addedAt, sourceKey]);
+      const retryKey = this.customGitRefreshRetryKey(owner, config);
       await this.withMutation(SOURCE_MUTATION_KEY, async () => {
         requireSameMarketOwner(owner);
         // A manual refresh/removal may have won while we waited for the source lock.
