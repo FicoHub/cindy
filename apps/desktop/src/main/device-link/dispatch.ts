@@ -1,3 +1,5 @@
+import { FILE_PEER_CHANNEL } from '@cindy/device-link';
+import { requestFilePeer, stopFilePeers } from './filePeer';
 /**
  * dispatch —— device-link 被控端隧道层。
  *
@@ -21,6 +23,7 @@
 
 import {
   computeAllowlistHash,
+  canCoalesceRemoteListing,
   INVOKE_TIMEOUT_OVERRIDES_MS,
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -84,6 +87,7 @@ import {
 } from './remoteBotSessionBoundary.js';
 import { getControllerPlatform } from './controllerPlatform';
 import { runDeviceLinkInvokeContext } from './invoke-context';
+import { runAsBackgroundDbRpc } from '../localDb/client/rpcAdmission.js';
 import { fetchLocalMediaToOss } from './mediaFetch';
 import { transcribeRemoteVoiceInput } from './voiceTranscribe';
 import { readTelegramRemoteStatus, setTelegramRemoteOnline } from './telegramRemoteControl';
@@ -433,7 +437,7 @@ async function persistRemoteSetting(channel: string, args: unknown[], result: un
  * per-(provider, agent) 的 `models[agent].supportsFastMode`(唯一真相),控制端直接从隧道带来的
  * `models` 现查(见 ModelSelector），不再读 routing；routing 只承载上述两项跨端展示/可用性字段。
  */
-type DisplayWireProtocol = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+type DisplayWireProtocol = 'openai-chat' | 'openai-responses' | 'anthropic-messages' | 'google-generative-ai';
 
 function projectRoutingForDisplay(
   routing: unknown,
@@ -449,6 +453,7 @@ function projectRoutingForDisplay(
     const wireProtocol: DisplayWireProtocol | undefined =
       route?.wireProtocol === 'openai-chat' ||
       route?.wireProtocol === 'openai-responses' ||
+      route?.wireProtocol === 'google-generative-ai' ||
       route?.wireProtocol === 'anthropic-messages'
         ? route.wireProtocol
         : route?.authStrategy && route.wireProtocol === undefined
@@ -496,6 +501,34 @@ function projectModelsForController(models: unknown): unknown {
  * 模型显示 override 快照同样属于非敏感展示状态，需随目录投影给控制端。
  * 其它通道原样返回。
  */
+/** 侧栏索引过胖时裁掉最旧 run，避免 4MB 传输上限导致算完发不出去再重打 DB。 */
+function capScheduleSidebarIndexForTunnel(result: unknown): unknown {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const record = result as { runs?: unknown };
+  if (!Array.isArray(record.runs) || record.runs.length === 0) return result;
+  const pack = (runs: unknown[]) => ({ ...record, runs });
+  const fits = (runs: unknown[]): boolean => {
+    const serialized = safeJsonStringify(pack(runs));
+    return serialized != null && encodedByteLength(serialized) <= REMOTE_SCHEDULE_INDEX_MAX_BYTES;
+  };
+  if (fits(record.runs)) return result;
+  // 存储层把未读旧 run 放前面、最新映射放最后。超限时保尾部，侧栏归属仍在。
+  let lo = 1;
+  let hi = record.runs.length;
+  let keep = 0;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (fits(record.runs.slice(record.runs.length - mid))) {
+      keep = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (keep === 0) return pack([]);
+  return pack(record.runs.slice(record.runs.length - keep));
+}
+
 function projectInvokeResultForTunnel(
   channel: string,
   result: unknown,
@@ -513,6 +546,9 @@ function projectInvokeResultForTunnel(
       const row = item as Record<string, unknown>;
       return { sessionId: row.sessionId, isTurnRunning: row.isTurnRunning };
     });
+  }
+  if (channel === 'maker:schedule:list-sidebar-index-runs') {
+    return capScheduleSidebarIndexForTunnel(result);
   }
   if (channel !== 'maker:provider:list') return result;
   const r = result as { providers?: unknown; modelVisibilityOverrides?: unknown };
@@ -605,6 +641,16 @@ type RemoteInvokeBusyChangedListener = (busy: boolean) => void;
 let onRemoteInvokeBusyChanged: RemoteInvokeBusyChangedListener | null = null;
 let inFlightRemoteInvokeCount = 0;
 const REMOTE_INVOKE_IN_FLIGHT_LIMIT = 64;
+/** Host DB admission is independent of whether a read can share an in-flight snapshot. */
+const BACKGROUND_REMOTE_INVOKE_CHANNELS: ReadonlySet<string> = new Set([
+  'local-db:sessions:list',
+  'maker:get-capabilities',
+  'maker:provider:list',
+  'maker:git-safety:get',
+  'maker:schedule:list-sidebar-index-runs',
+]);
+/** 隧道回包必须低于 4MB 传输上限与 per-controller 4MB 准入；2MB 给 envelope 留余量。 */
+const REMOTE_SCHEDULE_INDEX_MAX_BYTES = 2 * 1024 * 1024;
 /**
  * Keep one slow controller from consuming the entire target-device budget.
  * The global limit still protects the host, while this per-controller slice
@@ -681,6 +727,7 @@ interface InFlightRemoteInvoke {
 }
 const inFlightRemoteInvokeResults = new Map<string, InFlightRemoteInvoke>();
 let inFlightRemoteInvokeBytes = 0;
+const remoteListingFlights = new Map<string, InFlightRemoteInvoke>();
 interface QueuedRemoteInvokeResult {
   src: string;
   requestId: string;
@@ -1986,6 +2033,7 @@ export function dropAllControllers(
   client: DeviceLinkClient,
   reason: 'user' | 'toggle-off' | 'shutdown',
 ): void {
+  stopFilePeers();
   remoteDesktop.stop();
   void remoteCredentialHost.closeAll().catch(() => remoteCredentialHost.dispose());
   const controllerIds = new Set([
@@ -2046,6 +2094,7 @@ function deactivateControllerState(
   }
   let changed = false;
   changed = acceptedLinkControllers.delete(deviceId) || changed;
+  stopFilePeers(deviceId);
   remoteDesktop.stop(deviceId);
   void remoteCredentialHost.close(deviceId).catch(() => remoteCredentialHost.dispose());
   changed = controllerConnectionEpochByDevice.delete(deviceId) || changed;
@@ -2088,6 +2137,7 @@ export function deactivateController(
 
 /** Relay 连接离开 online：清本连接代所有 active controller，但保留恢复意图。 */
 export function deactivateAllControllers(reason: string): void {
+  stopFilePeers();
   remoteDesktop.stop();
   const controllerIds = new Set([
     ...subscriptions.getControllerIds(),
@@ -2127,6 +2177,7 @@ export function forgetControllerInvokeState(deviceId: string): void {
 
 /** 显式撤销时清理短时离线队列与 remembered topic，避免恢复后重放撤权期间数据。 */
 export function purgeRevokedController(deviceId: string): void {
+  stopFilePeers(deviceId);
   remoteDesktop.stop(deviceId);
   const changed = deactivateControllerState(deviceId);
   topicSubscriptionControllers.delete(deviceId);
@@ -2176,6 +2227,7 @@ async function handleFrame(client: DeviceLinkClient, env: Envelope): Promise<voi
         return;
       }
       clearRemoteInvokeStateFor(src);
+      stopFilePeers(src);
       remoteDesktop.stop(src);
       void remoteCredentialHost.close(src).catch(() => remoteCredentialHost.dispose());
       offlinePushQueue.clear(src);
@@ -2430,6 +2482,12 @@ async function handleInvoke(
   }
 
   const invokeBytes = encodedByteLength(fingerprint);
+  const listingKey = canCoalesceRemoteListing(payload)
+    ? remoteListingFlightKey(src, payload)
+    : null;
+  const existingListing = listingKey ? remoteListingFlights.get(listingKey) : undefined;
+  const joiningExisting = !!(existingListing && existingListing.linkEpoch === invokeLinkEpoch);
+
   const controllerAdmission = remoteInvokeAdmissionState(src);
   const controllerAtLimit = (
     controllerAdmission.messages >= REMOTE_INVOKE_IN_FLIGHT_PER_CONTROLLER_LIMIT
@@ -2462,6 +2520,39 @@ async function handleInvoke(
     return;
   }
 
+  if (joiningExisting && existingListing) {
+    const waiterEntry = {
+      promise: existingListing.promise,
+      bytes: invokeBytes,
+      fingerprint,
+      linkEpoch: invokeLinkEpoch,
+    };
+    inFlightRemoteInvokeResults.set(cacheKey, waiterEntry);
+    inFlightRemoteInvokeBytes += invokeBytes;
+    let joined: InvokeResultPayload;
+    try {
+      joined = normalizeInvokeResultForWire(await existingListing.promise);
+      if ((remoteInvokeLinkEpoch.get(src) ?? 0) !== invokeLinkEpoch) return;
+    } finally {
+      if (inFlightRemoteInvokeResults.get(cacheKey) === waiterEntry) {
+        inFlightRemoteInvokeResults.delete(cacheKey);
+        inFlightRemoteInvokeBytes -= invokeBytes;
+      }
+    }
+    if (!await sendAuthorizedInvokeResultSafe(
+      client,
+      src,
+      requestId,
+      joined,
+      payload?.channel,
+      payload?.args,
+      fingerprint,
+    )) {
+      throw new DeviceLinkError('BACKPRESSURE', 'coalesced invoke-result could not be queued');
+    }
+    return;
+  }
+
   const releaseBusyLease = shouldAcquireRemoteInvokeBusyLease(src, payload)
     ? acquireRemoteInvokeBusyLease()
     : () => undefined;
@@ -2471,6 +2562,9 @@ async function handleInvoke(
     .catch((err): InvokeResultPayload => {
       const message = err instanceof Error ? err.message : String(err);
       log.error(`remote invoke escaped execution boundary from ${shortId(src)}: ${message}`);
+      if (isDbWorkerOverloadedError(message)) {
+        return { ok: false, error: { code: 'BACKPRESSURE', message } };
+      }
       return {
         ok: false,
         error: {
@@ -2492,6 +2586,7 @@ async function handleInvoke(
   };
   inFlightRemoteInvokeResults.set(cacheKey, inFlightEntry);
   inFlightRemoteInvokeBytes += invokeBytes;
+  if (listingKey) remoteListingFlights.set(listingKey, inFlightEntry);
   let result: InvokeResultPayload;
   try {
     result = normalizeInvokeResultForWire(await resultPromise);
@@ -2506,6 +2601,9 @@ async function handleInvoke(
     if (inFlightRemoteInvokeResults.get(cacheKey) === inFlightEntry) {
       inFlightRemoteInvokeResults.delete(cacheKey);
       inFlightRemoteInvokeBytes -= invokeBytes;
+    }
+    if (listingKey && remoteListingFlights.get(listingKey) === inFlightEntry) {
+      remoteListingFlights.delete(listingKey);
     }
   }
   // Fresh execution already includes the DB checks in runInvoke, within its
@@ -2569,6 +2667,14 @@ function currentRemoteInvokeAdmissionFailure(src: string): InvokeResultPayload |
     return { ok: false, error: { code: 'ACCESS_REVOKED', message: 'access revoked by target device' } };
   }
   return null;
+}
+
+function remoteListingFlightKey(src: string, payload: InvokePayload): string {
+  return `${src}\u0000${payload.channel}\u0000${JSON.stringify(payload.args ?? [])}`;
+}
+
+function isDbWorkerOverloadedError(message: string): boolean {
+  return message.includes('db worker RPC queue overloaded');
 }
 
 function remoteInvokeAdmissionState(src: string): { messages: number; bytes: number } {
@@ -3424,6 +3530,10 @@ export async function runInvoke(
     };
   }
 
+  if (payload.channel === FILE_PEER_CHANNEL) {
+    try { return { ok: true, result: await requestFilePeer(src, payload.args?.[0]) }; }
+    catch { return { ok: false, error: { code: 'IPC_ERROR', message: 'FILE_PEER_UNAVAILABLE' } }; }
+  }
   if (payload.channel === REMOTE_DESKTOP_CHANNEL) {
     try { return { ok: true, result: await requestRemoteDesktop(src, payload.args?.[0]) }; }
     catch (error) { return { ok: false, error: { code: 'IPC_ERROR', message: error instanceof Error ? error.message : 'DESKTOP_UNAVAILABLE' } }; }
@@ -3610,10 +3720,16 @@ export async function runInvoke(
         historyView,
       },
       // provider:list 的首参只承载隧道能力协商，不进入本机 IPC handler。
-      () => dispatchLocalInvoke(
-        payload.channel,
-        payload.channel === 'maker:provider:list' ? [] : args,
-      ),
+      // 对账 listing 走后台读配额，不占满写入名额。
+      () => {
+        const invoke = () => dispatchLocalInvoke(
+          payload.channel,
+          payload.channel === 'maker:provider:list' ? [] : args,
+        );
+        return BACKGROUND_REMOTE_INVOKE_CHANNELS.has(payload.channel)
+          ? runAsBackgroundDbRpc(invoke)
+          : invoke();
+      },
     );
     if (hasRemoteBotSessionLookup()) await assertRemoteBotInvocationAllowed(args, payload.channel);
     if (!broadcastTap.isDataOwnerBroadcastScopeCurrent(invocationOwner)) throw new Error('[NOT_FOUND] Session does not exist');
@@ -3637,6 +3753,9 @@ export async function runInvoke(
     // 被控端 handler 的 throwIpcError `[CODE] message` 原样透传,
     // 控制端 renderer 继续用 extractIpcError 解码
     const message = err instanceof Error ? err.message : String(err);
+    if (isDbWorkerOverloadedError(message)) {
+      return { ok: false, error: { code: 'BACKPRESSURE', message } };
+    }
     return { ok: false, error: { code: 'IPC_ERROR', message } };
   }
 }
@@ -3716,6 +3835,7 @@ export const __testing = {
     completedRemoteInvokeResultBytes = 0;
     inFlightRemoteInvokeResults.clear();
     inFlightRemoteInvokeBytes = 0;
+    remoteListingFlights.clear();
     remoteInvokeResultOutbox.clear();
     remoteInvokeResultOutboxBytes = 0;
     clearRemoteInvokeResultOutboxTimer();
@@ -3748,6 +3868,9 @@ export const __testing = {
   optionalControllerCapabilities,
   sendInvokeResultSafe,
   projectInvokeResultForTunnel,
+  capScheduleSidebarIndexForTunnel,
+  remoteScheduleIndexMaxBytes: REMOTE_SCHEDULE_INDEX_MAX_BYTES,
+  canCoalesceRemoteListing,
   remoteInvokeInFlightLimit: REMOTE_INVOKE_IN_FLIGHT_LIMIT,
   remoteInvokeInFlightPerControllerLimit: REMOTE_INVOKE_IN_FLIGHT_PER_CONTROLLER_LIMIT,
   remoteInvokeOrphanTimeoutMs: REMOTE_INVOKE_ORPHAN_TIMEOUT_MS,
