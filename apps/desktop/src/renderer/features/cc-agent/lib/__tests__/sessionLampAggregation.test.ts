@@ -61,14 +61,14 @@ describe('aggregateSessionLamps', () => {
       notifications: ['a', 'b', 'c'],
       kinds: { b: 'awaiting', c: 'error' },
     });
-    expect(aggregateSessionLamps(['a'], c).dotTone).toBe('done');
-    expect(aggregateSessionLamps(['a', 'b'], c).dotTone).toBe('awaiting');
-    expect(aggregateSessionLamps(['a', 'b', 'c'], c).dotTone).toBe('error');
+    expect(aggregateSessionLamps([{ id: 'a' }], c).dotTone).toBe('done');
+    expect(aggregateSessionLamps([{ id: 'a' }, { id: 'b' }], c).dotTone).toBe('awaiting');
+    expect(aggregateSessionLamps([{ id: 'a' }, { id: 'b' }, { id: 'c' }], c).dotTone).toBe('error');
   });
 
   it('running 与未读点相互独立,可同时成立', () => {
     const c = ctx({ running: ['r'], notifications: ['a'] });
-    expect(aggregateSessionLamps(['r', 'a'], c)).toEqual({ running: true, dotTone: 'done' });
+    expect(aggregateSessionLamps([{ id: 'r' }, { id: 'a' }], c)).toEqual({ running: true, dotTone: 'done' });
   });
 
   it('device-link 远程镜像并入:running 与 needs-interaction 合并取最高档', () => {
@@ -82,7 +82,7 @@ describe('aggregateSessionLamps', () => {
       phase: 'needs-interaction',
       compactDetail: '',
     });
-    const agg = aggregateSessionLamps(['remote-run', 'remote-wait'], ctx({}));
+    const agg = aggregateSessionLamps([{ id: 'remote-run', deviceLinkDeviceId: 'device-1' }, { id: 'remote-wait', deviceLinkDeviceId: 'device-1' }], ctx({}));
     expect(agg).toEqual({ running: true, dotTone: 'awaiting' });
   });
 
@@ -93,21 +93,33 @@ describe('aggregateSessionLamps', () => {
       attention: true,
       compactDetail: '',
     });
-    expect(aggregateSessionLamps(['remote-done'], ctx({})).dotTone).toBe('done');
+    expect(aggregateSessionLamps([{ id: 'remote-done', deviceLinkDeviceId: 'device-1' }], ctx({})).dotTone).toBe('done');
     const c = ctx({ notifications: ['local-err'], kinds: { 'local-err': 'error' } });
-    expect(aggregateSessionLamps(['remote-done', 'local-err'], c).dotTone).toBe('error');
+    expect(aggregateSessionLamps([{ id: 'remote-done', deviceLinkDeviceId: 'device-1' }, { id: 'local-err' }], c).dotTone).toBe('error');
   });
 });
 
 describe('remoteLampOf', () => {
   it('无镜像条目 → null;error phase → error tone', () => {
-    expect(remoteLampOf('nope')).toBeNull();
+    expect(remoteLampOf('nope', undefined)).toBeNull();
     applyRemoteSessionActivity('device-1', {
       sessionId: 'remote-err',
       phase: 'error',
       attention: true,
       compactDetail: '',
     });
-    expect(remoteLampOf('remote-err')).toEqual({ running: false, tone: 'error' });
+    expect(remoteLampOf('remote-err', 'device-1')).toEqual({ running: false, tone: 'error' });
+  });
+});
+
+ describe('设备隔离', () => {
+  it('同名本地任务及另一设备不读取 device-1 镜像', () => {
+    applyRemoteSessionActivity('device-1', { sessionId: 'same', phase: 'running' });
+    expect(aggregateSessionLamps([{ id: 'same' }], ctx({})).running).toBe(false);
+    expect(aggregateSessionLamps([{ id: 'same', deviceLinkDeviceId: 'device-2' }], ctx({})).running).toBe(false);
+    expect(aggregateSessionLamps([{ id: 'same', deviceLinkDeviceId: 'device-1' }], ctx({})).running).toBe(true);
+  });
+  it('本地同名 running 不污染远程任务', () => {
+    expect(aggregateSessionLamps([{ id: 'same', deviceLinkDeviceId: 'device-2' }], ctx({ running: ['same'] })).running).toBe(false);
   });
 });

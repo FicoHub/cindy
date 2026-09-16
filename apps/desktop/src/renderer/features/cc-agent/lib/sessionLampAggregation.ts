@@ -19,14 +19,16 @@
  */
 
 import { getRemoteSessionActivity } from '@/features/device-link/remoteSessionActivityStore';
+import { getStartingSessionIds } from '@/lib/sessionStartingStore';
+import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
 import type { AttentionKind } from '@/lib/sessionAttentionStore';
 
 const TONE_RANK: Record<AttentionKind, number> = { error: 3, awaiting: 2, done: 1 };
 
 /** device-link 远程会话的灯语补充。phase → 灯语映射与 SessionItem.remoteRightStatus
  *  同一张表;镜像里 completed/error 条目仅在未读(attention)期间存在,存在即未读。 */
-export function remoteLampOf(id: string): { running: boolean; tone: AttentionKind | null } | null {
-  const remote = getRemoteSessionActivity(id);
+export function remoteLampOf(id: string, deviceId: string | null | undefined): { running: boolean; tone: AttentionKind | null } | null {
+  const remote = getRemoteSessionActivity(id, deviceId);
   if (!remote) return null;
   if (remote.phase === 'running') return { running: true, tone: null };
   return {
@@ -64,7 +66,7 @@ export interface SessionLampAggregate {
 
 /** 聚合一组会话 id 的灯语:任一 running → running;未读点取最高优先级 tone。 */
 export function aggregateSessionLamps(
-  ids: Iterable<string>,
+  rows: Iterable<{ id: string; deviceLinkDeviceId?: string | null }>,
   ctx: SessionLampContext,
 ): SessionLampAggregate {
   let running = false;
@@ -72,10 +74,13 @@ export function aggregateSessionLamps(
   const consider = (tone: AttentionKind | null) => {
     if (tone && (!best || TONE_RANK[tone] > TONE_RANK[best])) best = tone;
   };
-  for (const id of ids) {
-    if (ctx.runningSessionIds.has(id)) running = true;
+  for (const { id, deviceLinkDeviceId } of rows) {
+    if (!deviceLinkDeviceId && ctx.runningSessionIds.has(id)) running = true;
+    // A locally initiated remote send is optimistic activity only for its known owner.
+    if (deviceLinkDeviceId && getSessionDeviceId(id) === deviceLinkDeviceId &&
+        getStartingSessionIds().has(id)) running = true;
     consider(dotToneOf(id, ctx.notifications, ctx.attentionKinds, ctx.urgentSessionIds));
-    const remote = remoteLampOf(id);
+    const remote = remoteLampOf(id, deviceLinkDeviceId);
     if (remote) {
       if (remote.running) running = true;
       consider(remote.tone);

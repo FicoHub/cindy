@@ -1901,6 +1901,8 @@ interface ElectronAPI {
   };
 
   windowBehavior: {
+    getLoginItem: () => Promise<import('../shared/loginItem').LoginItemState>;
+    setLoginItem: (enabled: boolean) => Promise<import('../shared/loginItem').LoginItemState>;
     setSwallowActivationClick: (enabled: boolean) => Promise<{ ok: true }>;
     getWindowsCloseBehavior: () => Promise<'quit' | 'tray' | null>;
     setWindowsCloseBehavior: (behavior: 'quit' | 'tray') => Promise<'quit' | 'tray'>;
@@ -2994,7 +2996,11 @@ interface ElectronAPI {
   /** Open Cindy's managed Make tools directory (`<userData>/cindy-make/tools`). */
   openCindyMakeToolsDir: () => Promise<{ success: boolean }>;
   getCindyMakeSourceStatus: () => Promise<import('../shared/cindyMakeDoctor').MakeSourceStatus>;
+  getCindyMakeState: () => Promise<import('../shared/cindyMakeDoctor').CindyMakeGlobalState>;
   openCindyMakeSourceDir: () => Promise<{ success: boolean }>;
+  onCindyMakeState: (
+    listener: (state: import('../shared/cindyMakeDoctor').CindyMakeGlobalState) => void,
+  ) => () => void;
   /** Live global source status (Settings and the workflow share one operation). */
   onCindyMakeSourceStatus: (
     listener: (status: import('../shared/cindyMakeDoctor').MakeSourceStatus) => void,
@@ -4143,6 +4149,10 @@ interface ElectronAPI {
     addBinding: () => Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
     rebindTeam: (
       teamId: string,
+    ) => Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
+    setSlackCommunications: (
+      teamId: string,
+      enabled: boolean,
     ) => Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
     revokeTeam: (
       teamId: string,

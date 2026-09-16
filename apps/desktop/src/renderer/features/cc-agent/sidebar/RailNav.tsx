@@ -23,9 +23,10 @@ import type { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import type { Session } from '@/lib/ccAgent.types';
 import type { AttentionKind } from '@/lib/sessionAttentionStore';
-import { useRemoteSessionActivityRevision } from '@/features/device-link/remoteSessionActivityStore';
+import {
+  useRemoteSessionActivityRevision,
+} from '@/features/device-link/remoteSessionActivityStore';
 import { AttentionDot } from '@/components/sidebar/AttentionDot';
-import { aggregateSessionLamps, remoteLampOf } from '../lib/sessionLampAggregation';
 import { SortableList } from '@/components/sidebar/SortableList';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { useSidebarCardMode } from '@/hooks/useSidebarCardMode';
@@ -35,8 +36,10 @@ import { projectIdentityKeyForSession } from '../lib/projectGrouping';
 import { getSessionDisplayTitle } from '../lib/sessionDisplayTitle';
 import { SessionStatusIcon } from './SessionStatusIcon';
 import { formatSidebarTime } from '../lib/formatSidebarTime';
-import { railPanelStore, type RailPanelSection } from './railPanelStore';
+import { railPanelStore, type RailLampSession, type RailPanelSection } from './railPanelStore';
 import { resolveSessionCardBody } from './sessionCardPreview';
+import { aggregateRailActivity, dotToneOf, remoteLampOf } from './railActivity';
+export { remoteLampOf } from './railActivity';
 
 /** 预览卡宽度(px)——旧 RailFlyout 同宽。 */
 const PREVIEW_WIDTH = 208;
@@ -197,14 +200,10 @@ export function RailNav({
   // store,不是 React 状态,必须靠版本号入依赖才能跟上被控端 relay 推送)。
   const remoteActivityRevision = useRemoteSessionActivityRevision();
 
-  const aggregateIds = useCallback(
-    (ids: readonly string[]) =>
-      aggregateSessionLamps(ids, {
-        runningSessionIds,
-        notifications,
-        attentionKinds,
-        urgentSessionIds,
-      }),
+  const aggregateSessions = useCallback(
+    (rows: readonly RailLampSession[]) => aggregateRailActivity(
+      rows, runningSessionIds, notifications, attentionKinds, urgentSessionIds,
+    ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- remoteActivityRevision 代表 remoteLampOf 读到的整表内容
     [runningSessionIds, notifications, attentionKinds, urgentSessionIds, remoteActivityRevision],
   );
@@ -232,17 +231,17 @@ export function RailNav({
   // 挂载,lampScope 照常发布)。
   const projectsAgg = useMemo(
     () =>
-      aggregateIds(
-        panelState.lampScope?.projectSessionIds ?? projectLampSessions.map((s) => s.id),
+      aggregateSessions(
+        panelState.lampScope?.projectSessions ?? projectLampSessions,
       ),
-    [aggregateIds, panelState.lampScope, projectLampSessions],
+    [aggregateSessions, panelState.lampScope, projectLampSessions],
   );
   const dialoguesAgg = useMemo(
     () =>
-      aggregateIds(
-        panelState.lampScope?.dialogueSessionIds ?? dialogueLampSessions.map((s) => s.id),
+      aggregateSessions(
+        panelState.lampScope?.dialogueSessions ?? dialogueLampSessions,
       ),
-    [aggregateIds, panelState.lampScope, dialogueLampSessions],
+    [aggregateSessions, panelState.lampScope, dialogueLampSessions],
   );
 
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -286,8 +285,10 @@ export function RailNav({
         renderItem={(session) => {
         const isActive = session.id === activeSessionId;
         // 置顶瓷砖与聚合灯同口径:远程会话的 running/未读并入远程活动镜像。
-        const remoteLamp = remoteLampOf(session.id);
-        const isRunning = runningSessionIds.has(session.id) || remoteLamp?.running === true;
+        const remoteLamp = remoteLampOf(session.id, session.deviceLinkDeviceId);
+        const isRunning =
+          (session.deviceLinkDeviceId == null && runningSessionIds.has(session.id)) ||
+          remoteLamp?.running === true;
         const hasUnread = notifications.has(session.id) || remoteLamp?.tone != null;
         // 瓷砖短标签、aria-label、悬浮预览卡都用同一个显示标题:置顶一条刚建的会话时
         // 原始标题是内部哨兵,原样用会让 rail 上出现 "New Maker"(短标签甚至会截成 "New")。

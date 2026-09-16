@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getStartingSessionIds, markSessionStarting, resetSessionStartingStoreForTests, useStartingSessionIds } from '@/lib/sessionStartingStore';
+import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import type { Session } from '@/lib/ccAgent.types';
 import {
   applyRemoteSessionActivity,
@@ -77,7 +78,7 @@ beforeEach(() => {
     value: { platform: 'darwin' } as unknown as Window['electronAPI'],
   });
 });
-afterEach(() => { cleanup(); resetSessionStartingStoreForTests(); vi.useRealTimers(); clearRemoteSessionActivity(); localStorage.clear(); });
+afterEach(() => { remoteProjectsStore.__resetPinnedOriginsForTest(); cleanup(); resetSessionStartingStoreForTests(); vi.useRealTimers(); clearRemoteSessionActivity(); localStorage.clear(); });
 
 const phases = ['running', 'needs-interaction', 'error', 'completed'] as const;
 function activity(phase: typeof phases[number]) {
@@ -155,6 +156,7 @@ describe.each([false, true])('Bot starting lifecycle, device grouping %s', (grou
     it.each(['completed', 'error'] as const)(`${first} settles starting before %s without waiting for TTL`, (terminal) => {
       vi.useFakeTimers();
       const p = props(groupDevice);
+      remoteProjectsStore.pinSessionOrigin('remote', 'lit');
       markSessionStarting('lit');
       render(<StartingSidebar {...p} />);
       expectLamp(botHeader(), 'running');

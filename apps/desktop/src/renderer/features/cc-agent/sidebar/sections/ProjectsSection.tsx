@@ -437,7 +437,7 @@ export function ProjectsSection({
         notifications,
         attentionKinds,
         urgentSessionIds: urgentSet,
-        remotePhaseOf: (sessionId) => getRemoteSessionActivity(sessionId)?.phase,
+        remotePhaseOf: (sessionId, deviceId) => getRemoteSessionActivity(sessionId, deviceId)?.phase,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- remoteActivityRevision 代表 getRemoteSessionActivity 读到的整表内容
     [runningSessionIds, notifications, attentionKinds, urgentSet, remoteActivityRevision],
@@ -452,7 +452,7 @@ export function ProjectsSection({
       if (kind === 'awaiting' || kind === 'error') waiting.add(sessionId);
     }
     const considerRemote = (session: Session) => {
-      const activity = getRemoteSessionActivity(session.id);
+      const activity = getRemoteSessionActivity(session.id, session.deviceLinkDeviceId);
       if (!activity) return; // 本地会话 / 无活动条目:一次 Map 查找即返回
       if (activity.phase === 'running') {
         running.add(session.id);
@@ -506,7 +506,7 @@ export function ProjectsSection({
   const lampAgg = useCallback(
     (list: readonly Session[]): SessionLampAggregate =>
       aggregateSessionLamps(
-        list.map((s) => s.id),
+        list,
         {
           runningSessionIds,
           notifications,
@@ -525,7 +525,7 @@ export function ProjectsSection({
   useEffect(() => {
     const settled = new Set<string>();
     const considerRemote = (session: Session) => {
-      if (isRemoteSessionActivityActive(getRemoteSessionActivity(session.id))) {
+      if (isRemoteSessionActivityActive(getRemoteSessionActivity(session.id, session.deviceLinkDeviceId))) {
         settled.add(session.id);
       }
     };

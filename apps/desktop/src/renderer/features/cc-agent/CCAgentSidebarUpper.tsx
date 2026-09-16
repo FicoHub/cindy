@@ -1138,7 +1138,8 @@ function ExpandedView({
         notifications: sidebarNotifications,
         attentionKinds,
         urgentSessionIds: urgentSet,
-        remotePhaseOf: (sessionId) => getRemoteSessionActivity(sessionId)?.phase,
+        remotePhaseOf: (sessionId, deviceId) =>
+          getRemoteSessionActivity(sessionId, deviceId)?.phase,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- remoteActivityRevision 代表 getRemoteSessionActivity 读到的整表内容
     [
@@ -1157,7 +1158,7 @@ function ExpandedView({
   const pinnedProjectLamp = useCallback(
     (list: readonly Session[]) =>
       aggregateSessionLamps(
-        list.map((s) => s.id),
+        list,
         {
           runningSessionIds: displayRunningSessionIds,
           notifications: sidebarNotifications,
@@ -1688,7 +1689,7 @@ function ExpandedView({
     for (const entry of visiblePinnedEntries) {
       if (entry.kind !== 'project') continue;
       for (const s of entry.displaySessions ?? entry.project.sessions) {
-        if (remoteLampOf(s.id)) next.add(s.id);
+        if (remoteLampOf(s.id, s.deviceLinkDeviceId)) next.add(s.id);
       }
     }
     return next;
@@ -2143,7 +2144,10 @@ function ExpandedView({
   // true 但内容更新」的场景(前一次收尾包丢失 / 延迟时,新 completed/error/
   // needs-interaction 到来布尔值不变)。attention 回落不计——那通常是本回执生效后
   // relay 推回的收尾包,重发只是无谓 invoke。
-  const activeRemoteActivity = useRemoteSessionActivity(viewedSessionId ?? '');
+  const activeRemoteActivity = useRemoteSessionActivity(
+    viewedSessionId ?? '',
+    getSessionDeviceId(viewedSessionId ?? ''),
+  );
   const activeRemoteAttention = activeRemoteActivity?.attention === true;
   const activeRemoteActivitySig = activeRemoteActivity
     ? `${activeRemoteActivity.phase}|${activeRemoteActivity.attention === true ? 1 : 0}|${activeRemoteActivity.interactionKind ?? ''}|${activeRemoteActivity.compactDetail}`
@@ -4157,11 +4161,8 @@ function RailPanels({
   // RailNav 的段灯据此聚合(review P2「灯绕过筛选/截断」两条的根治)。
   useEffect(() => {
     railPanelStore.setLampScope({
-      projectSessionIds: [
-        ...projects.flatMap((p) => p.sessions.map((sess) => sess.id)),
-        ...unclassified.map((sess) => sess.id),
-      ],
-      dialogueSessionIds: dialogues.map((sess) => sess.id),
+      projectSessions: [...projects.flatMap((p) => p.sessions), ...unclassified],
+      dialogueSessions: dialogues,
     });
   }, [projects, unclassified, dialogues]);
 
@@ -4311,7 +4312,7 @@ function RailPanels({
   const projectAgg = useCallback(
     (list: readonly Session[]) =>
       aggregateSessionLamps(
-        list.map((s) => s.id),
+        list,
         { runningSessionIds, notifications, attentionKinds, urgentSessionIds: urgentSet },
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- remoteActivityRevision 代表 remoteLampOf 读到的整表内容
@@ -4326,7 +4327,7 @@ function RailPanels({
   const panelNotifications = useMemo(() => {
     const remoteIds: string[] = [];
     const collect = (list: readonly Session[]) => {
-      for (const s of list) if (remoteLampOf(s.id)) remoteIds.push(s.id);
+      for (const s of list) if (remoteLampOf(s.id, s.deviceLinkDeviceId)) remoteIds.push(s.id);
     };
     collect(dialogues);
     collect(unclassified);
