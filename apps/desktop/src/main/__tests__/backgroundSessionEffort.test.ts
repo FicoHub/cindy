@@ -32,7 +32,7 @@ const compiled = transpileModule(`${reconcile}\nasync function bootstrapSession(
   compilerOptions: { target: ScriptTarget.ES2022 },
 }).outputText;
 
-function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai', remoteHostId: string | null = null) {
+function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai', remoteHostId: string | null = null, supportsFastMode = true) {
   const row = { agentKind: 'codex', model: 'gpt-6-astra', providerId,
     sdkSessionId: 'native-child', effort, fastMode: true, remoteHostId };
   const read = vi.fn(async () => [row]);
@@ -65,7 +65,7 @@ function harness(effort: string | null, runtimeOverride: Record<string, unknown>
     assertModelRouteUsable: async () => null, shouldApplyExclusiveProviderRerouteLive: () => false,
     pinExclusiveSessionProvider: async () => null,
     getActiveCatalog: () => ({ providers: ['openai', 'xd', 'custom'].map(id => ({
-      id, routing: { codex: {} }, models: { codex: [{ id: runtimeOverride?.model ?? row.model,
+      id, routing: { codex: {} }, models: { codex: [{ id: runtimeOverride?.model ?? row.model, supportsFastMode,
         efforts: id === 'xd' ? ['low'] : efforts, defaultEffort: id === 'xd' ? 'low' : efforts[0] }] },
     })) }),
     findCatalogModel, resolveDesktopModelContextProviderId,
@@ -127,6 +127,22 @@ describe('background child first native creation options', () => {
       const opts = await harness('high', null, [], null, 'ssh-host').run();
       expect(opts).toMatchObject({ remoteHostId: 'ssh-host', providerId: null, effort: 'high' });
     } finally { auth.codexOAuth = true; }
+  });
+
+  it.each([null, 'high'])('drops unsupported Fast regardless of persisted effort=%s', async effort => {
+    const opts = await harness(effort, null, ['medium', 'high'], null, null, false).run();
+    expect(opts.fastMode).toBe(false);
+  });
+
+  it('normalizes Fast after a runtime model override', async () => {
+    const opts = await harness('medium', { agentKind: 'codex', model: 'no-fast',
+      providerId: 'custom', effort: null, fastMode: true }, ['medium'], 'openai', null, false).run();
+    expect(opts.fastMode).toBe(false);
+  });
+
+  it('preserves SSH Fast when the controller model has no Fast capability', async () => {
+    const opts = await harness(null, null, [], null, 'ssh-host', false).run();
+    expect(opts.fastMode).toBe(true);
   });
 
   it('refuses native startup if persisted configuration cannot be read', async () => {

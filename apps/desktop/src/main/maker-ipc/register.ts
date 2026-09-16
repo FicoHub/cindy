@@ -6627,7 +6627,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // final route (including runtime override/provider reroute) before capture.
     // SSH execution uses the remote daemon's route and model capabilities.
     // The controller catalog cannot validate that route, even for a saved provider.
-    if (!o.remoteHostId && o.effort !== undefined) {
+    if (!o.remoteHostId) {
       const catalog = getActiveCatalog();
       const effortProviderId = resolveDesktopModelContextProviderId(
         catalog, o.agentKind, o.providerId, o.model,
@@ -6635,7 +6635,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const provider = catalog.providers.find((candidate) => candidate.id === effortProviderId);
       const model = findCatalogModel(provider, o.model, o.agentKind);
       if (model) {
-        o.effort = resolveCompatibleSessionRuntimeEffort(model, o.effort) ?? undefined;
+        if (o.effort !== undefined) {
+          o.effort = resolveCompatibleSessionRuntimeEffort(model, o.effort) ?? undefined;
+        }
+        o.fastMode = o.fastMode === true && model.supportsFastMode === true;
       }
     }
     const session = await maker.createSession(o);
