@@ -1,6 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { ScriptTarget, transpileModule } from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
+import { findCatalogModel } from '@cindy/model-providers';
+const auth = vi.hoisted(() => ({ codexOAuth: true }));
+vi.mock('../maker-host/auth-adapters.js', () => ({ readClaudeApiKey: () => null,
+  desktopCodexAuthAdapter: { hasCodexOAuthLoginReadOnly: () => auth.codexOAuth } }));
+vi.mock('../maker-host/claude-credentials-store.js', () => ({ hasClaudeAiOAuth: () => false }));
+vi.mock('../maker-host/provider-route.js', () => ({ gatewayDefaultRouteDecision: () => null }));
+vi.mock('../maker-host/model-context-limit-store.js', () => ({ readModelContextLimit: () => null }));
+import { resolveDesktopModelContextProviderId } from '../maker-host/model-context-settings.js';
 import { resolveCompatibleSessionRuntimeEffort } from '../maker-ipc/sessionRuntimeControl.js';
 
 // Execute the real cold-dispatch option assembly and DB reconciliation without
@@ -24,8 +32,8 @@ const compiled = transpileModule(`${reconcile}\nasync function bootstrapSession(
   compilerOptions: { target: ScriptTarget.ES2022 },
 }).outputText;
 
-function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high']) {
-  const row = { agentKind: 'codex', model: 'gpt-6-astra', providerId: 'openai',
+function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai') {
+  const row = { agentKind: 'codex', model: 'gpt-6-astra', providerId,
     sdkSessionId: 'native-child', effort, fastMode: true };
   const read = vi.fn(async () => [row]);
   const remoteReady = vi.fn(async (_input: unknown) => undefined);
@@ -53,8 +61,11 @@ function harness(effort: string | null, runtimeOverride: Record<string, unknown>
     ensureManagedOllamaReadyForSession: async () => undefined, app: { getPath: () => 'test-data' },
     assertModelRouteUsable: async () => null, shouldApplyExclusiveProviderRerouteLive: () => false,
     pinExclusiveSessionProvider: async () => null,
-    getActiveCatalog: () => ({ providers: [{ id: runtimeOverride?.providerId ?? 'openai' }] }),
-    findCatalogModel: () => ({ efforts, defaultEffort: efforts[0] }),
+    getActiveCatalog: () => ({ providers: ['openai', 'xd', 'custom'].map(id => ({
+      id, routing: { codex: {} }, models: { codex: [{ id: runtimeOverride?.model ?? row.model,
+        efforts: id === 'xd' ? ['low'] : efforts, defaultEffort: id === 'xd' ? 'low' : efforts[0] }] },
+    })) }),
+    findCatalogModel, resolveDesktopModelContextProviderId,
     resolveCompatibleSessionRuntimeEffort, maker: { createSession },
     log: { warn: vi.fn() },
   };
@@ -96,6 +107,15 @@ describe('background child first native creation options', () => {
   it('normalizes the effective override too when its model has fixed effort', async () => {
     expect((await harness('medium', { agentKind: 'codex', model: 'fixed',
       providerId: 'custom', effort: 'high', fastMode: false }, []).run()).effort).toBeUndefined();
+  });
+
+  it.each([true, false])('normalizes the actual implicit route (subscription=%s)', async loggedIn => {
+    auth.codexOAuth = loggedIn;
+    try {
+      const opts = await harness('high', null, [], null).run();
+      expect(opts.effort).toBe(loggedIn ? undefined : 'low');
+      expect(opts.providerId).toBeNull(); // Lookup must not pin or rewrite the saved route.
+    } finally { auth.codexOAuth = true; }
   });
 
   it('refuses native startup if persisted configuration cannot be read', async () => {
