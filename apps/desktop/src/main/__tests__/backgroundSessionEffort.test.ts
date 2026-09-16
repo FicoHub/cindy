@@ -32,11 +32,14 @@ const compiled = transpileModule(`${reconcile}\nasync function bootstrapSession(
   compilerOptions: { target: ScriptTarget.ES2022 },
 }).outputText;
 
-function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai') {
+function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai', remoteHostId: string | null = null) {
   const row = { agentKind: 'codex', model: 'gpt-6-astra', providerId,
-    sdkSessionId: 'native-child', effort, fastMode: true };
+    sdkSessionId: 'native-child', effort, fastMode: true, remoteHostId };
   const read = vi.fn(async () => [row]);
-  const remoteReady = vi.fn(async (_input: unknown) => undefined);
+  // SSH connectivity is outside this bootstrap test; model its DB host hydration.
+  const remoteReady = vi.fn(async (input: { createOpts: Record<string, unknown> }) => {
+    if (remoteHostId) input.createOpts.remoteHostId = remoteHostId;
+  });
   const boundary = new Error('native creation boundary');
   const createSession = vi.fn(async (_opts: unknown) => { throw boundary; });
   const deps = {
@@ -115,6 +118,14 @@ describe('background child first native creation options', () => {
       const opts = await harness('high', null, [], null).run();
       expect(opts.effort).toBe(loggedIn ? undefined : 'low');
       expect(opts.providerId).toBeNull(); // Lookup must not pin or rewrite the saved route.
+    } finally { auth.codexOAuth = true; }
+  });
+
+  it.each([true, false])('preserves SSH effort independently of local subscription=%s', async loggedIn => {
+    auth.codexOAuth = loggedIn;
+    try {
+      const opts = await harness('high', null, [], null, 'ssh-host').run();
+      expect(opts).toMatchObject({ remoteHostId: 'ssh-host', providerId: null, effort: 'high' });
     } finally { auth.codexOAuth = true; }
   });
 

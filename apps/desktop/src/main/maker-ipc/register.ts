@@ -6625,7 +6625,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // Native adapters capture first-turn options here, before bridge hydration.
     // A persisted effort may belong to an earlier model; normalize against the
     // final route (including runtime override/provider reroute) before capture.
-    if (o.effort !== undefined) {
+    // SSH execution uses the remote daemon's route and model capabilities.
+    // The controller catalog cannot validate that route, even for a saved provider.
+    if (!o.remoteHostId && o.effort !== undefined) {
       const catalog = getActiveCatalog();
       const effortProviderId = resolveDesktopModelContextProviderId(
         catalog, o.agentKind, o.providerId, o.model,
