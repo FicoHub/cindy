@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { once } from 'node:events';
 import type { Duplex } from 'node:stream';
 
-import { WebSocketServer, type WebSocket as ServerSocket } from 'ws';
+import { WebSocket, WebSocketServer, type WebSocket as ServerSocket } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -4238,6 +4238,19 @@ describe('official Telegram scheduled message transport', () => {
     await expect.poll(() => manager.telegramDeliveryStatus().supported).toBe(true);
     expect(manager.telegramDeliveryStatus().target).toMatchObject({ externalKey: key, botName: 'cindy_example_bot' });
     const payload = { opId: 'telegram-delivery:test', scope: { externalKey: key }, action: { kind: 'send' as const, text: '<b>test</b>', tier: 'html' as const, delivery: { bindingId: TELEGRAM_CONFIRMED.bindingId!, epoch: 'test-epoch', expiresAt: Date.now() + 60000 } } };
+    // The manager's connected snapshot can outlive the socket's OPEN state.
+    const closedSocket = vi.spyOn(WebSocket.prototype, 'readyState', 'get').mockReturnValue(WebSocket.CLOSING);
+    const refused = manager.sendTelegramDelivery(payload);
+    closedSocket.mockRestore();
+    expect(await refused).toMatchObject({ opId: payload.opId, deliveryState: 'not_sent' });
+    expect(server.frames.filter(f => f.type === 'msg.op')).toHaveLength(0);
+
+    // send() can throw after attempting a write: that is not proof of non-delivery.
+    const failedWrite = vi.spyOn(WebSocket.prototype, 'send').mockImplementation(() => { throw new Error('uncertain write'); });
+    const uncertain = manager.sendTelegramDelivery({ ...payload, opId: 'telegram-delivery:write-error' });
+    failedWrite.mockRestore();
+    expect(await uncertain).toBeNull();
+    // A definite pre-write refusal must release the pending op for a same-key retry.
     const sent = manager.sendTelegramDelivery(payload);
     const frame = await server.waitFor('msg.op');
     expect(frame.type === 'msg.op' ? frame.payload : null).toEqual(payload);

@@ -3053,11 +3053,16 @@ export function createHookControlManager(deps: HookControlManagerDeps): HookCont
         }, toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS);
         pendingDeliveries.set(payload.opId, { resolve, timer });
         try {
-          if (telegramLane.transport?.send(makeMessageOp(payload))) return;
-        } catch { /* uncertain transport write: never claim non-delivery */ }
-        clearTimeout(timer);
-        pendingDeliveries.delete(payload.opId);
-        resolve(null);
+          if (telegramLane.transport?.send(makeMessageOp(payload), { throwOnWriteFailure: true })) return;
+          clearTimeout(timer);
+          pendingDeliveries.delete(payload.opId);
+          resolve({ opId: payload.opId, ok: false, deliveryState: 'not_sent',
+            error: 'Telegram transport closed before submission' });
+        } catch { // A write was attempted: preserve unknown delivery rather than permit a retry.
+          clearTimeout(timer);
+          pendingDeliveries.delete(payload.opId);
+          resolve(null);
+        }
       });
     },
     async setSlackCommunications(teamId, enabled) {
