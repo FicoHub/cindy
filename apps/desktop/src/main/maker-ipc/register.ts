@@ -6622,6 +6622,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         if (pin) o.providerId = pin;
       }
     }
+    // Native adapters capture first-turn options here, before bridge hydration.
+    // A persisted effort may belong to an earlier model; normalize against the
+    // final route (including runtime override/provider reroute) before capture.
+    if (o.effort !== undefined) {
+      const provider = getActiveCatalog().providers.find((candidate) => candidate.id === o.providerId);
+      const model = findCatalogModel(provider, o.model, o.agentKind);
+      if (model) {
+        o.effort = resolveCompatibleSessionRuntimeEffort(model, o.effort) ?? undefined;
+      }
+    }
     const session = await maker.createSession(o);
     await markProjectContextIfNeeded(session.id, didInjectProjectContext);
     wireSessionToIpc(session);
