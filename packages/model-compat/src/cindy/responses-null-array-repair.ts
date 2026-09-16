@@ -152,8 +152,14 @@ export class ResponsesNullArrayRepairTransform extends Transform {
     }
     const repaired = repairResponsesEventNullArrays(event);
     if (!repaired) return frame + delimiter;
-    const eventLine = lines.find((line) => line.startsWith("event:"));
-    return `${eventLine ? `${eventLine}\n` : ""}data: ${JSON.stringify(repaired)}${delimiter}`;
+    let firstData = true;
+    // Preserve id/retry/comments/extension lines and their original line endings.
+    // Empty later data lines add only trailing JSON whitespace to the SSE data.
+    return frame.replace(/^data:[^\r\n]*/gm, () => {
+      if (!firstData) return "data:";
+      firstData = false;
+      return `data: ${JSON.stringify(repaired)}`;
+    }) + delimiter;
   }
 
   private drainFrames(): void {

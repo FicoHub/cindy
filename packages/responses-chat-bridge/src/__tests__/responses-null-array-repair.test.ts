@@ -238,7 +238,7 @@ describe("ResponsesNullArrayRepairTransform", () => {
   it("keeps the event line and CRLF delimiter when rewriting a named frame", async () => {
     const input = `event: response.output_item.added\r\ndata: ${MESSAGE_ADDED_NULL}\r\n\r\n`;
     const output = await pump(new ResponsesNullArrayRepairTransform(), [input]);
-    expect(output.startsWith("event: response.output_item.added\ndata: ")).toBe(
+    expect(output.startsWith("event: response.output_item.added\r\ndata: ")).toBe(
       true,
     );
     expect(output.endsWith("\r\n\r\n")).toBe(true);
@@ -512,4 +512,16 @@ describe("missing initialization fields (#4509)", () => {
     const result = await pump(new ResponsesNullArrayRepairTransform(), [wire.slice(0, 37), wire.slice(37)]);
     expect(result).toBe(frame({ ...added, item: { ...added.item, content: [{ type: "output_text", text: "" }] } }) + rest);
   });
+});
+
+
+it.each(["\n", "\r\n"])("preserves SSE metadata and line endings when repairing multiline data (%j)", async newline => {
+  const prefix = [": keepalive", "id: evt-123", "retry: 1500", "event: response.output_item.added", "x-vendor: keep"].join(newline) + newline;
+  const item = { type: "message", content: [{ type: "output_text" }] };
+  const event = { type: "response.output_item.added", item };
+  const wire = prefix + 'data: {"type":"response.output_item.added",' + newline
+    + ": between data lines" + newline + `data: "item":${JSON.stringify(item)}}` + newline + newline;
+  const repaired = { ...event, item: { ...item, content: [{ type: "output_text", text: "" }] } };
+  expect(await pump(new ResponsesNullArrayRepairTransform(), [wire])).toBe(prefix
+    + `data: ${JSON.stringify(repaired)}` + newline + ": between data lines" + newline + "data:" + newline + newline);
 });

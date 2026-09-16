@@ -144,3 +144,7 @@ Run package conformance tests and all affected bridge/host tests, package typech
 repository's `pnpm test:unit:related` gate before delivery. Original Bun tests are transpiled to
 JavaScript with only their runner/import paths changed; their assertions are retained. Live-account
 checks are separate and must be reported separately from deterministic request/stream tests.
+
+When a frame requires repair, only its data payload is rewritten. SSE event IDs, retry hints,
+comments, extension fields and original line endings are retained; subsequent data lines
+remain empty (trailing JSON whitespace). Frames requiring no repair remain byte-identical.
