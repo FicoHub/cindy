@@ -642,6 +642,19 @@ describe('automation-generated sessions', () => {
       .toEqual(sessions);
   });
 
+  it.each(['unread', 'running'])('keeps newly %s local runs visible in frozen layouts without remote exemptions', (activity) => {
+    const sessions = ['clicked', 'idle', 'active'].map((id) => makeSession({ id, source: 'scheduler' }));
+    const group = { id: 'schedule:local-frozen', title: 'Local', sessions, attentionSessionIds: [] };
+    const view = getAutomationGroupChildView(group, {
+      notifications: new Set(activity === 'unread' ? ['clicked', 'active', 'other-group'] : []),
+      runningSessionIds: new Set(activity === 'running' ? ['clicked', 'active', 'other-group'] : []),
+      showAll: false, frozenVisibleSessionIds: ['clicked'],
+    });
+    expect(view.visibleSessions.map((session) => session.id)).toEqual(['clicked', 'active']);
+    expect(view.hiddenCount).toBe(1);
+    expect(view.isOverflowing).toBe(true);
+  });
+
   it('keeps overflow available when a frozen layout still hides idle runs', () => {
     const sessions = ['visible', 'hidden'].map((id) => makeSession({ id, source: 'scheduler' }));
     const group = { id: 'schedule:frozen-overflow', title: 'Frozen', sessions, attentionSessionIds: [] };
@@ -852,7 +865,7 @@ describe('automation-generated sessions', () => {
         activeSessionId: 'manual',
         frozenVisibleSessionIds: ['jira-1'],
       }).map((session) => session.id),
-    ).toEqual(['jira-1']);
+    ).toEqual(['jira-1', 'jira-2']);
     expect(
       getAutomationGroupPrimarySession(group, new Set(['jira-2']), {
         preferredSessionId: 'jira-2',
@@ -866,7 +879,7 @@ describe('automation-generated sessions', () => {
         activeSessionId: 'jira-1',
         frozenVisibleSessionIds: ['jira-1'],
       }).map((session) => session.id),
-    ).toEqual(['jira-1']);
+    ).toEqual(['jira-1', 'jira-2']);
   });
 
   it('freezes the group primary while the clicked automation session is active', () => {
