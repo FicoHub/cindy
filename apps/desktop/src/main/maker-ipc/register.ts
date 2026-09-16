@@ -9118,6 +9118,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           // 队列里,表现就是「对方做完了,发起方没被叫醒」。
           ...(dbRow.providerId ? { providerId: dbRow.providerId } : {}),
         });
+        // Bot child rows already contain their inherited effort/Fast. Reconcile
+        // before native creation; hydrating the bridge store afterwards cannot
+        // update Codex's captured first-turn options. Bootstrap still applies
+        // any effective runtime override after this persisted baseline.
+        await reconcileCreateOptsAgainstDb(targetSessionId, createOpts);
         await synthesizeOrcaVendorOptionsFromDb(targetSessionId, createOpts);
         if (createOpts.extraDirs === undefined) {
           try {
