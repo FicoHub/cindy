@@ -287,7 +287,15 @@ export function getAutomationGroupChildView(
     const frozenSessions = options.frozenVisibleSessionIds
       .map((sessionId) => byId.get(sessionId))
       .filter((session): session is Session => Boolean(session));
-    return withoutOverflow(frozenSessions);
+    // 冻结只固定已点选布局，不能藏住后来变为运行/未读的远程子运行。
+    const visibleIds = new Set(frozenSessions.map((session) => session.id));
+    const visibleSessions = [
+      ...frozenSessions,
+      ...allRuns.filter((session) => !visibleIds.has(session.id) &&
+        options.foldExemptSessionIds?.has(session.id)),
+    ];
+    const hiddenCount = allRuns.length - visibleSessions.length;
+    return { visibleSessions, isOverflowing: hiddenCount > 0, totalCount: allRuns.length, hiddenCount };
   }
 
   // 默认展开态:全部运行套用普通对话同款折叠,每条(含被组头代表的最新一条)各自成行。

@@ -622,6 +622,37 @@ describe('automation-generated sessions', () => {
     expect(view.hiddenCount).toBe(1);
   });
 
+  it('merges newly exempt remote runs into a frozen layout without moving its clicked rows', () => {
+    const sessions = Array.from({ length: 7 }, (_, index) =>
+      makeSession({ id: `run-${index}`, source: 'scheduler' }),
+    );
+    const group = { id: 'schedule:remote-frozen', title: 'Remote', sessions, attentionSessionIds: [] };
+    const options = { notifications: new Set<string>(), showAll: false,
+      frozenVisibleSessionIds: ['run-2', 'run-0'], activeSessionId: 'run-2' };
+    const before = getAutomationGroupChildView(group, options);
+    expect(before.visibleSessions.map((session) => session.id)).toEqual(['run-2', 'run-0']);
+    const view = getAutomationGroupChildView(group, {
+      ...options, foldExemptSessionIds: new Set(['run-0', 'run-6', 'other-group']),
+    });
+    expect(view.visibleSessions.map((session) => session.id)).toEqual(['run-2', 'run-0', 'run-6']);
+    expect(view.isOverflowing).toBe(true);
+    expect(view.hiddenCount).toBe(4);
+    expect(view.totalCount).toBe(7);
+    expect(getAutomationGroupChildView(group, { ...options, showAll: true }).visibleSessions)
+      .toEqual(sessions);
+  });
+
+  it('keeps overflow available when a frozen layout still hides idle runs', () => {
+    const sessions = ['visible', 'hidden'].map((id) => makeSession({ id, source: 'scheduler' }));
+    const group = { id: 'schedule:frozen-overflow', title: 'Frozen', sessions, attentionSessionIds: [] };
+    const view = getAutomationGroupChildView(group, {
+      notifications: new Set(), showAll: false, frozenVisibleSessionIds: ['visible', 'removed'],
+    });
+    expect(view.visibleSessions).toEqual([sessions[0]]);
+    expect(view.isOverflowing).toBe(true);
+    expect(view.hiddenCount).toBe(1);
+  });
+
   it('caps collapsed automation children at five and overflows the rest like the dialogue list', () => {
     const sessions = Array.from({ length: 7 }, (_, index) =>
       makeSession({ id: `run-${index}`, title: `RUN-${index}`, source: 'scheduler' }),
