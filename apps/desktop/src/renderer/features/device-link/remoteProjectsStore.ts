@@ -106,7 +106,10 @@ const detailPatchEpoch = new Map<string, number>();
 // Origin/connection restamps retain content identity. Authoritative snapshots
 // and route/content patches produce a new identity, even when values are equal.
 const sessionContentOrigins = new WeakMap<Session, Session>();
-const activityFields = ['totalMoney', 'totalCostUsd', 'totalTokenUsage', 'lastTurnEndedAt'] as const;
+// Activity and list presentation pushes do not establish a newer model route.
+const activityFields = ['totalMoney', 'totalCostUsd', 'totalTokenUsage', 'lastTurnEndedAt',
+  'preview', 'title', 'userSendAt', 'updatedAt'] as const;
+const activityFieldNames: ReadonlySet<string> = new Set(activityFields);
 type ActivityField = typeof activityFields[number];
 // Per-field markers distinguish pushes after a GET began, even equal-value pushes.
 const sessionActivityChanges = new WeakMap<Session, Partial<Record<ActivityField, object>>>();
@@ -630,14 +633,13 @@ const actions = {
    */
   applyPatch(deviceId: string, sessionId: string, patch: Record<string, unknown>): void {
     // Even an unknown row can be deleted/archived while its first GET is in flight.
-    // Cumulative usage and reply completion timestamps cannot change its route
+    // Usage, reply timestamps and list presentation cannot change its route
     // or lifecycle. These activity-only pushes are
     // dropped before a row exists, so they must not invalidate the only detail
     // capable of loading it. Mixed patches still invalidate; existing rows also
     // retain newer activity through the detail read's per-field merge.
     const changesDetail = Object.keys(patch).some((key) =>
-      key !== 'totalMoney' && key !== 'totalCostUsd' && key !== 'totalTokenUsage' &&
-      key !== 'lastTurnEndedAt',
+      !activityFieldNames.has(key),
     );
     const detailKey = `${deviceId}\u0000${sessionId}`;
     if (changesDetail && detailPatchEpoch.has(detailKey)) {

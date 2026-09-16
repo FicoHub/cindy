@@ -153,6 +153,10 @@ it.each([
 
 it.each(['replace', 'merge'].flatMap(mode => [
   { mode, event: 'tokens', patch: { totalTokenUsage: 1200 } },
+  { mode, event: 'preview', patch: { preview: 'new preview' } },
+  { mode, event: 'title', patch: { title: 'generated title' } },
+  { mode, event: 'sent-at', patch: { userSendAt: 1789466400000 } },
+  { mode, event: 'updated-at', patch: { updatedAt: '2026-09-16T04:00:00Z' } },
   { mode, event: 'cost', patch: { totalCostUsd: 2 } },
   { mode, event: 'money', patch: { totalMoney: { amount: 2, currency: 'USD', approximate: false, kind: 'actual-cost' } } },
   { mode, event: 'completion', patch: { lastTurnEndedAt: 1789466400000 } },
@@ -210,6 +214,9 @@ it.each(['deleted', 'archived'] as const)('rejects a first detail after an unkno
 it.each([
   { name: 'spend', patch: { totalMoney: { amount: 2, currency: 'USD', approximate: false, kind: 'actual-cost' }, totalCostUsd: 2 } },
   { name: 'tokens', patch: { totalTokenUsage: 1200 } },
+  { name: 'preview', patch: { preview: 'first preview' } },
+  { name: 'title', patch: { title: 'first title' } },
+  { name: 'send registration', patch: { userSendAt: 1789466400000, updatedAt: '2026-09-16T04:00:00Z' } },
   { name: 'turn completion', patch: { lastTurnEndedAt: 1789466400000 } },
   { name: 'usage and turn completion', patch: { lastTurnEndedAt: 1789466400000, totalTokenUsage: 1200 } },
 ])('accepts the first companion detail across activity-only $name', async ({ patch }) => {
