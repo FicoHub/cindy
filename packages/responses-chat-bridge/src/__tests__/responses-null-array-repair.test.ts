@@ -467,3 +467,49 @@ describe("chainResponseTransforms", () => {
     expect((await errored).message).toBe("stage failed");
   });
 });
+
+
+describe("missing initialization fields (#4509)", () => {
+  it.each([
+    [{ type: "reasoning", id: "rs_1" }, { type: "reasoning", id: "rs_1", summary: [] }],
+    [{ type: "message", id: "msg_2", role: "assistant" }, { type: "message", id: "msg_2", role: "assistant", content: [] }],
+    [{ type: "message", content: [{ type: "output_text", annotations: [] }] }, { type: "message", content: [{ type: "output_text", annotations: [], text: "" }] }],
+    [{ type: "function_call", name: "exec", call_id: "c1" }, { type: "function_call", name: "exec", call_id: "c1", arguments: "" }],
+    [{ type: "custom_tool_call", name: "exec", call_id: "c2" }, { type: "custom_tool_call", name: "exec", call_id: "c2", input: "" }],
+  ])("initializes added item %j without changing its identity/type", (item, expected) => {
+    const event = { type: "response.output_item.added", output_index: 0, item };
+    expect(repairResponsesEventNullArrays(event)).toEqual({ ...event, item: expected });
+    expect(event.item).toEqual(item);
+  });
+
+  it("does not invent final content/arguments or modify malformed values", () => {
+    for (const item of [
+      { type: "function_call", name: "exec", call_id: "c1" },
+      { type: "custom_tool_call", name: "exec", call_id: "c2" },
+      { type: "message", content: [{ type: "output_text" }] },
+      { type: "reasoning" },
+    ]) {
+      expect(repairResponsesEventNullArrays({ type: "response.output_item.done", item })).toBeNull();
+      expect(repairResponsesEventNullArrays({ type: "response.completed", response: { output: [item] } })).toBeNull();
+    }
+    for (const item of [
+      { type: "function_call", arguments: null },
+      { type: "function_call", arguments: 42 },
+      { type: "custom_tool_call", input: { unsafe: true } },
+      { type: "message", content: [{ type: "output_text", text: null }, { type: "image", data: "x" }] },
+      { type: "unknown_tool" },
+    ]) expect(repairResponsesEventNullArrays({ type: "response.output_item.added", item })).toBeNull();
+  });
+
+  it("preserves deltas and done frames byte for byte in the issue's split SSE sequence", async () => {
+    const added = { type: "response.output_item.added", output_index: 0,
+      item: { id: "msg_1", type: "message", status: "in_progress", role: "assistant", content: [{ type: "output_text" }] } };
+    const frame = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
+    const rest = frame({ type: "response.output_text.delta", item_id: "msg_1", output_index: 0, delta: "HELLO" })
+      + frame({ type: "response.output_text.delta", item_id: "msg_1", output_index: 0, delta: " WORLD" })
+      + frame({ type: "response.output_item.done", output_index: 0, item: { ...added.item, status: "completed" } });
+    const wire = frame(added) + rest;
+    const result = await pump(new ResponsesNullArrayRepairTransform(), [wire.slice(0, 37), wire.slice(37)]);
+    expect(result).toBe(frame({ ...added, item: { ...added.item, content: [{ type: "output_text", text: "" }] } }) + rest);
+  });
+});
