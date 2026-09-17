@@ -302,6 +302,9 @@ describe('PiRpcProcess startup failure diagnostics (#4625)', () => {
     stderr('Cannot find module "/Users/fake user/private-project/node_modules/placeholder"');
     stderr(String.raw`from 'C:\Users\fake user\private-project\pi.exe'`);
     stderr('from /Users/fake user/private-project/pi.exe');
+    stderr('/Users/alice/acme,secret/[private](one)/node_modules/bad.js: no such file');
+    stderr(String.raw`C:\Users\alice\acme,secret\[private](one)\bad.js: permission denied`);
+    stderr('/config.json: no such file');
     stderr('    at internalLoader (/private/build/internal.ts:123:4)');
     stderr('Authorization: Basic FAKEBASE64VALUE');
     stderr('password="fake spaced password"');
@@ -317,6 +320,12 @@ describe('PiRpcProcess startup failure diagnostics (#4625)', () => {
     expect(result.message).not.toContain('fake user');
     expect(result.message).not.toContain('private-project');
     expect(result.message).not.toContain('internalLoader');
+    expect(result.message).not.toContain('acme');
+    expect(result.message).not.toContain('secret/');
+    expect(result.message).not.toContain('[private]');
+    expect(result.message).toContain('<path:bad.js>: no such file');
+    expect(result.message).toContain('<path:bad.js>: permission denied');
+    expect(result.message).toContain('<path:config.json>: no such file');
   });
 
   it('keeps the generic fallback for a fresh process with no stderr', async () => {

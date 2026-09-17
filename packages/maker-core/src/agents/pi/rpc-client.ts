@@ -100,7 +100,7 @@ function sanitizeStartupDiagnostic(line: string): string {
   return line
     .replace(/(["'])((?:file:\/\/\/|[A-Za-z]:[\\/]|\/|\\\\)[^"'\r\n]*)\1/g,
       (_match, quote: string, value: string) => `${quote}${pathLabel(value)}${quote}`)
-    .replace(/(?<![\w:/\\])(?:file:\/\/\/|[A-Za-z]:[\\/]|\/|\\\\)[^\r\n"'<>()[\],;]+/g,
+    .replace(/(?<![\w:/\\])(?:file:\/\/\/|[A-Za-z]:[\\/]|\/|\\\\)[^\r\n"'<>]+?(?=:\s|["'<>\r\n]|$)/g,
       (value) => pathLabel(value));
 }
 
