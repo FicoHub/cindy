@@ -58,6 +58,17 @@ describe('writeDocsOutput beforeCommit boundary', () => {
     expect(child.posted).toEqual([expect.objectContaining({ type: 'write' })]);
   });
 
+  it('rechecks the mainline path grant after the asynchronous beforeCommit boundary', async () => {
+    let current = true;
+    await expect(writeDocsOutput({
+      root, path: path.join(root, 'out.txt'), data: new Uint8Array([1]), overwrite: false,
+      isCurrent: () => current,
+      beforeCommit: async () => { await Promise.resolve(); current = false; },
+    })).rejects.toThrow('授权已失效');
+    expect(child.posted).toEqual([]);
+    expect(child.killed).toBe(true);
+  });
+
   it('never hands the bytes to the writer when beforeCommit rejects', async () => {
     const beforeCommit = vi.fn(async () => {
       throw new Error('instance ended');

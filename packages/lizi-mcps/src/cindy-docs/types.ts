@@ -91,7 +91,13 @@ export type WriteDocsOutputFn = (input: {
    * permission, Plan state) at the last async boundary before the side effect.
    */
   beforeCommit?: () => Promise<void>;
+
+  /** Host already authorized a path outside the session workingDir. */
+  authorizedOutsideWorkdir?: boolean;
+  /** Recheck immediately before the final write; stale grants must not commit. */
+  isCurrent?: () => boolean;
 }) => Promise<WriteDocsOutputOutcome | void>;
+
 
 /** 单页结构快照。宽高单位是 PDF point(1/72 英寸)。 */
 export interface DocsPdfPageInspection {
