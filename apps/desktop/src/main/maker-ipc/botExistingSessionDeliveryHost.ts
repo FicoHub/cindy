@@ -3,12 +3,13 @@ import { and, eq } from 'drizzle-orm';
 import type { InteractionRequest, Session } from '@cindy/maker-core';
 import { activeOwnerScopeKey, getActiveAppSession, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { getDbClient } from '../localDb/client/current.js';
-import { botProfiles, botSessionLinks, messages, sessions } from '../localDb/schema.js';
+import { botExistingSessionReceipts, botProfiles, botSessionLinks, messages, sessions } from '../localDb/schema.js';
 import { t } from '../i18n.js';
 import { requestHostInteraction } from './interactionRouter.js';
 import {
   createBotExistingSessionDelivery,
   ExistingSessionDeliveryError,
+  existingSessionDeliveryMessageHash,
   type ExistingSessionDeliveryDeps,
 } from './botExistingSessionDelivery.js';
 
@@ -95,6 +96,33 @@ export function createDesktopBotExistingSessionDelivery(deps: HostDeps) {
       return {
         ownerScope: scope, assertCurrent, validate,
         dispose: () => { unsubscribe(); controller.abort(); },
+        reserve: async (clientId) => {
+          assertCurrent();
+          const inserted = await dbClient.drizzle.insert(botExistingSessionReceipts).values({
+            clientId, callerSessionId: input.callerSessionId, targetSessionId: input.targetSessionId,
+            messageSha256: existingSessionDeliveryMessageHash(input.message), state: 'pending',
+          }).onConflictDoNothing().returning({ clientId: botExistingSessionReceipts.clientId });
+          assertCurrent();
+          if (!inserted.length) throw new ExistingSessionDeliveryError('DELIVERY_UNVERIFIED', 'This delivery was already reserved. Retry only with the same key.');
+        },
+        recordAccepted: async (clientId) => {
+          assertCurrent();
+          const messageSha256 = existingSessionDeliveryMessageHash(input.message);
+          // Also backfill receipts recovered from older queue/transcript rows.
+          await dbClient.drizzle.insert(botExistingSessionReceipts).values({
+            clientId, callerSessionId: input.callerSessionId, targetSessionId: input.targetSessionId,
+            messageSha256, state: 'accepted',
+          }).onConflictDoNothing();
+          assertCurrent();
+          const updated = await dbClient.drizzle.update(botExistingSessionReceipts).set({ state: 'accepted' })
+            .where(and(eq(botExistingSessionReceipts.clientId, clientId),
+              eq(botExistingSessionReceipts.callerSessionId, input.callerSessionId),
+              eq(botExistingSessionReceipts.targetSessionId, input.targetSessionId),
+              eq(botExistingSessionReceipts.messageSha256, messageSha256)))
+            .returning({ clientId: botExistingSessionReceipts.clientId });
+          assertCurrent();
+          if (!updated.length) throw new ExistingSessionDeliveryError('DELIVERY_UNVERIFIED', 'The delivery receipt could not be confirmed. Keep the same delivery key.');
+        },
         confirm: async () => {
           assertCurrent();
           const request: InteractionRequest = {
@@ -128,9 +156,15 @@ export function createDesktopBotExistingSessionDelivery(deps: HostDeps) {
     },
     readAccepted: async (id, clientId, callerSessionId) => {
       await deps.restoreQueue(id);
+      const dbClient = getDbClient();
+      const [receipt] = await dbClient.drizzle.select().from(botExistingSessionReceipts)
+        .where(eq(botExistingSessionReceipts.clientId, clientId)).limit(1);
+      if (receipt && (receipt.targetSessionId !== id || receipt.callerSessionId !== callerSessionId))
+        throw new ExistingSessionDeliveryError('DELIVERY_UNVERIFIED', 'The delivery receipt owner does not match.');
+      if (receipt?.state === 'accepted') return { messageSha256: receipt.messageSha256 };
       const queued = deps.findQueued(id, clientId);
       if (queued) return queued;
-      const [persisted] = await getDbClient().drizzle.select({ content: messages.content, agentMeta: messages.agentMeta })
+      const [persisted] = await dbClient.drizzle.select({ content: messages.content, agentMeta: messages.agentMeta })
         .from(messages).where(and(eq(messages.sessionId, id), eq(messages.clientId, clientId))).limit(1);
       if (persisted) {
         // Hooks may rewrite content. The Host-authored session origin retains the
@@ -150,7 +184,7 @@ export function createDesktopBotExistingSessionDelivery(deps: HostDeps) {
       }
       // The queue may have just completed/been removed before its transcript is queryable.
       // Never re-admit an ID whose previous outcome cannot be proven.
-      if (deps.hasKnownInput(id, clientId)) throw new ExistingSessionDeliveryError('DELIVERY_UNVERIFIED', 'This delivery key is already known, but its message is not queryable. Do not use a new key to retry.');
+      if (receipt || deps.hasKnownInput(id, clientId)) throw new ExistingSessionDeliveryError('DELIVERY_UNVERIFIED', 'This delivery key is already known, but its message is not queryable. Do not use a new key to retry.');
       return null;
     },
   });

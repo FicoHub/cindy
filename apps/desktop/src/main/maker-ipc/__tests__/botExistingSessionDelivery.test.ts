@@ -12,14 +12,16 @@ function harness() {
   const confirm = vi.fn(async () => true);
   const commit = vi.fn((request: ExistingSessionDeliveryInput, clientId: string) => { accepted.set(clientId, { message: request.message }); });
   const dispose = vi.fn();
+  const reserve = vi.fn(async () => undefined);
+  const recordAccepted = vi.fn(async () => undefined);
   const deps: ExistingSessionDeliveryDeps = {
-    capture: vi.fn(async () => ({ ownerScope: 'owner:1', assertCurrent: check, validate: async () => check(), confirm, dispose })),
+    capture: vi.fn(async () => ({ ownerScope: 'owner:1', assertCurrent: check, validate: async () => check(), confirm, dispose, reserve, recordAccepted })),
     withTargetLock: async (_id, action) => action(),
     readAccepted: vi.fn(async (_id, clientId) => accepted.get(clientId) ?? null),
     prepare: vi.fn(async (request, clientId) => () => commit(request, clientId)),
     flush: vi.fn(async () => undefined),
   };
-  return { deps, service: createBotExistingSessionDelivery(deps), accepted, confirm, commit, dispose, invalidate: () => { valid = false; } };
+  return { deps, service: createBotExistingSessionDelivery(deps), accepted, confirm, commit, dispose, reserve, recordAccepted, invalidate: () => { valid = false; } };
 }
 
 describe('existing Session delivery admission', () => {
@@ -45,6 +47,20 @@ describe('existing Session delivery admission', () => {
     h.deps.prepare = vi.fn(async () => { h.invalidate(); return () => h.commit(input, 'bad'); });
     expect(await h.service.send(input)).toMatchObject({ ok: false, errorCode: 'CONTEXT_CHANGED' });
     expect(h.commit).not.toHaveBeenCalled();
+  });
+  it('does not admit input after authority changes while its reservation is being saved', async () => {
+    const h = harness();
+    h.reserve.mockImplementation(async () => { h.invalidate(); });
+    expect(await h.service.send(input)).toMatchObject({ ok: false, errorCode: 'DELIVERY_UNVERIFIED' });
+    expect(h.commit).not.toHaveBeenCalled();
+    expect(h.recordAccepted).not.toHaveBeenCalled();
+  });
+  it('does not claim a confirmed receipt when the final receipt write fails', async () => {
+    const h = harness(); h.recordAccepted.mockRejectedValueOnce(new Error('disk unavailable'));
+    expect(await h.service.send(input)).toMatchObject({ ok: false, errorCode: 'DELIVERY_UNVERIFIED' });
+    expect(h.commit).toHaveBeenCalledOnce();
+    expect(await h.service.send(input)).toMatchObject({ ok: true, reused: true });
+    expect(h.commit).toHaveBeenCalledOnce();
   });
   it('coalesces concurrent retries without holding the target lock during approval', async () => {
     const h = harness(); let finish!: (value: boolean) => void;

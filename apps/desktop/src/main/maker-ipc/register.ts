@@ -329,6 +329,7 @@ import {
   clearSessionContextInDb,
   createSessionRemoteHostIdReader,
   getSessionRowSnapshot,
+  getSessionFsSnapshot,
   getSessionRowSnapshotStrict,
   persistSessionFields,
   recycleSessionWorktreeForStatusChange,
@@ -560,6 +561,7 @@ import { ClaudeOutputLagTimingGuard, type ModelUsageCumulative } from '../usage/
 import { type RegionalMoney } from '../../shared/regionalMoney.js';
 import { currentLedgerCurrency } from '../usage/ledgerCurrency.js';
 import {
+  listPiRuntimePaletteCommands,
   mergePiPackageCommands,
   shouldListPiPackageCommands,
   type PiPackageMutationRequest,
@@ -829,7 +831,7 @@ import {
 import { refreshOpenAiMediaModels } from '../maker-host/model-discovery/openai-media.js';
 import { refreshXaiMediaModels } from '../maker-host/model-discovery/xai-media.js';
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
-import { fetchProviderModels } from '../maker-host/provider-model-fetch.js';
+import { fetchProviderModels, fetchSavedOAuthProviderModels } from '../maker-host/provider-model-fetch.js';
 import {
   beginProviderRouteMutation,
   setPendingCredentialSwitchReader,
@@ -839,7 +841,7 @@ import {
   refreshAnthropicModelsFromHttp,
 } from '../maker-host/model-discovery/anthropic.js';
 import { refreshXaiModelsFromHttp } from '../maker-host/model-discovery/xai.js';
-import { refreshBuiltinProviderModels } from '../maker-host/provider-model-refresh.js';
+import { refreshBuiltinProviderModels, refreshModelsWithCatalog } from '../maker-host/provider-model-refresh.js';
 import {
   configureProviderModelAutoRefresh,
   refreshProviderModelsManually,
@@ -5484,11 +5486,29 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return { ok: await refreshSubscriptionAccountModels(spec.savedProviderId), models: [] };
       }
       if (isCodexAccountProvider(spec.savedProviderId)) {
-        const owner = getActiveAppSession();
         if (spec.agent !== 'codex') throw new Error('Codex account model discovery requires Codex');
-        const applied = await maker.refreshAgentLocalModels('codex', { credentialMode: 'oauth-bearer', providerId: spec.savedProviderId! });
-        if (getActiveAppSession().generation !== owner.generation) throw new Error('Account changed during model discovery');
+        const applied = await refreshModelsWithCatalog({
+          refreshCatalog: refreshActiveCatalogFromSource,
+          refreshModels: () => maker.refreshAgentLocalModels('codex', {
+            credentialMode: 'oauth-bearer', providerId: spec.savedProviderId!,
+          }),
+          getScopeKey: () => getActiveAppSession().generation,
+        });
         return { ok: applied, models: [] };
+      }
+      if (spec.authMethod === 'oauth') {
+        const owner = getActiveAppSession();
+        const provider = getActiveCatalog().providers.find((p) => p.id === spec.savedProviderId);
+        if (!provider) return { ok: false, code: 'AUTH_INVALID' };
+        return fetchSavedOAuthProviderModels(
+          provider,
+          spec.agent,
+          storedCustomProviderId(provider.id),
+          () => getActiveAppSession().generation === owner.generation &&
+            getActiveCatalog().providers.find((p) => p.id === provider.id) === provider,
+          undefined,
+          spec.headers,
+        );
       }
       return fetchProviderModels(spec);
     },
@@ -5915,17 +5935,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 : manifest?.status === 'unknown'
                   ? 'unknown'
                   : 'pending';
-          const managedNames = new Set(manifest?.managedPackageCommandNames ?? []);
           if (manifest?.status === 'loaded') {
-            packageCommands = manifest.commands.flatMap((command) =>
-              managedNames.has(command.name) && !command.name.startsWith('skill:')
-                ? [
-                    {
-                      name: command.name,
-                      description: command.description ?? `Pi extension command: ${command.name}`,
-                    },
-                  ]
-                : [],
+            packageCommands = listPiRuntimePaletteCommands(
+              manifest.commands,
+              manifest.authorizedSlashCommandNames ?? manifest.managedPackageCommandNames,
             );
           } else if (!manifest) {
             // An empty local Pi task may have a persisted session row before its
@@ -12128,6 +12141,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   };
   const { sendToAgentAccepted: sendToAgentAcceptedUnlocked } = createMakerSendTransaction({
     readAutoReviewHistory,
+    readScheduledPermissions: getSessionFsSnapshot,
     getSession: (sessionId) => maker.getSession(sessionId),
     closeSession: (sessionId) => maker.closeSession(sessionId),
     getSessionMeta: (sessionId) => maker.getSessionMeta(sessionId),
@@ -12877,6 +12891,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           ? sanitizedSendOpts
           : attachTrustedDesktopSendContext(message, sanitizedSendOpts),
       );
+    },
+  );
+
+  // #4513: session 双时间戳「疑似中断」是纯 DB 启发式,对任何在飞 turn 都成立;
+  // renderer 的运行态抑制依赖 status(isRunning) 事件,而消息流与状态流是两条通道,
+  // 事件可能缺失/迟到(协同 worker 视图实测复现)。这里把 main 侧权威运行态暴露
+  // 给 renderer 做一次真值回填:tracker 由 status/done/终止型 error 事件维护,
+  // 再叠加 live runtime 的 isTurnRunning 兜底。进程内存态重启后自然清空,
+  // 不会把「真中断」误报成在飞。
+  ipcMain.handle(
+    MAKER_INVOKE.SESSION_TURN_ACTIVE,
+    (event, sessionId: unknown): { inTurn: boolean } => {
+      assertTrustedAppRendererEvent(event);
+      if (typeof sessionId !== 'string' || sessionId.length === 0) {
+        throwIpcError('INVALID_PARAMS', 'sessionId required');
+      }
+      const live = getMakerIfReady()?.getSession(sessionId);
+      return {
+        inTurn:
+          sessionTurnActivityTracker.isSessionInTurn(sessionId) ||
+          live?.isTurnRunning() === true,
+      };
     },
   );
 

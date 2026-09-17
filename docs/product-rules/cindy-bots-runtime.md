@@ -202,6 +202,10 @@ harness + provider + model + effort + fastMode
   相同目标、正文及幂等键复用已有排队/落库回执，旧正文被清理也不自动重放；相同键配不同
   正文明确拒绝。`queued` 只证明队列接收，不能声称已消费或已完成。持久化结果不明时保留
   同一键核验，禁止通过新键或新任务绕过。该入口不开放通用 history/control/handoff 类。
+  去重回执保存在当前账号数据库中，只含投递标识、正文摘要与 pending/accepted 状态；
+  不保存正文，不随消息瘦身删除，调用者或目标任务物理删除时级联清除。入队前先登记
+  pending，队列持久化后才确认 accepted；重启后无法核实的 pending 不冒充成功、不重放。
+  Desktop 与 Mobile 的授权卡均完整展示正文及目标权限，长内容通过既有滚动区域查看。
 - `check_session_task`：按 `task_id` 读取一条后台任务的实时状态，只在用户追问或自动回传疑似
   丢失时使用，不作为轮询机制。
 - `message_session_task`：按 `task_id` 给同一任务追加或修正要求；`mode=queue`（默认）在忙碌时

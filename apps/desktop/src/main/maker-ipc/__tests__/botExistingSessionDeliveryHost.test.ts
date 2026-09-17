@@ -4,7 +4,7 @@ import type { InteractionDecision, InteractionRequest, Session } from '@cindy/ma
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDesktopBotExistingSessionDelivery } from '../botExistingSessionDeliveryHost';
 import { installDesktopInteractionHandler } from '../interactionRouter';
-import { existingSessionDeliveryClientId } from '../botExistingSessionDelivery';
+import { existingSessionDeliveryClientId, existingSessionDeliveryMessageHash } from '../botExistingSessionDelivery';
 
 const state = vi.hoisted(() => ({ scope: 'owner:1', owner: 'owner', pending: false, client: {} as { drizzle?: unknown } }));
 vi.mock('../../appSessionState', () => ({
@@ -26,6 +26,9 @@ beforeEach(() => {
     CREATE TABLE bot_profiles (id TEXT PRIMARY KEY, status TEXT);
     CREATE TABLE bot_session_links (session_id TEXT, bot_id TEXT, role TEXT);
     CREATE TABLE messages (session_id TEXT, client_id TEXT, content TEXT, agent_meta TEXT);
+    CREATE TABLE bot_existing_session_receipts (client_id TEXT PRIMARY KEY, caller_session_id TEXT NOT NULL
+      REFERENCES sessions(id) ON DELETE CASCADE, target_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      message_sha256 TEXT NOT NULL, state TEXT NOT NULL);
     INSERT INTO sessions VALUES ('bot-main','Teammate','bot','active',NULL,'gpt','codex','openai','ask','/bot',NULL,'medium',0,0);
     INSERT INTO sessions VALUES ('fable-original','Original Fable','chat','active',NULL,'fable','claude-code','anthropic','ask','/project',NULL,'high',0,0);
     INSERT INTO bot_profiles VALUES ('teammate','active');
@@ -153,5 +156,57 @@ describe('existing Session delivery Host authorization', () => {
     db.prepare('INSERT INTO messages (session_id,client_id,content) VALUES (?,?,?)').run(input.targetSessionId, existingSessionDeliveryClientId(input), 'different');
     const h = harness(); expect(await h.service.send(input)).toMatchObject({ ok: false, errorCode: 'IDEMPOTENCY_CONFLICT' });
     expect(h.enqueue).not.toHaveBeenCalled();
+  });
+  it('does not redeliver after transcript slimming and a fresh Host instance', async () => {
+    const first = harness();
+    expect(await first.service.send(input)).toMatchObject({ ok: true, reused: false });
+    db.prepare('INSERT INTO messages VALUES (?,?,?,NULL)').run(input.targetSessionId, existingSessionDeliveryClientId(input), input.message);
+    db.prepare('DELETE FROM messages').run();
+    first.queue.clear();
+    const restarted = harness();
+    expect(await restarted.service.send(input)).toMatchObject({ ok: true, reused: true });
+    expect(await restarted.service.send({ ...input, message: 'Changed instruction' }))
+      .toMatchObject({ ok: false, errorCode: 'IDEMPOTENCY_CONFLICT' });
+    expect(restarted.approve).not.toHaveBeenCalled();
+    expect(restarted.enqueue).not.toHaveBeenCalled();
+    const receipt = db.prepare('SELECT * FROM bot_existing_session_receipts').get();
+    expect(receipt).toMatchObject({ state: 'accepted', message_sha256: existingSessionDeliveryMessageHash(input.message) });
+    expect(JSON.stringify(receipt)).not.toContain(input.message);
+  });
+  it('retains an uncertain reservation across restart without claiming delivery or replaying', async () => {
+    db.prepare('INSERT INTO bot_existing_session_receipts VALUES (?,?,?,?,?)').run(
+      existingSessionDeliveryClientId(input), input.callerSessionId, input.targetSessionId,
+      existingSessionDeliveryMessageHash(input.message), 'pending');
+    const h = harness();
+    expect(await h.service.send(input)).toMatchObject({ ok: false, errorCode: 'DELIVERY_UNVERIFIED' });
+    expect(h.approve).not.toHaveBeenCalled(); expect(h.enqueue).not.toHaveBeenCalled();
+  });
+  it('recovers an uncertain reservation only when the existing queue proves admission', async () => {
+    const h = harness();
+    h.deps.flush.mockRejectedValueOnce(new Error('disk unavailable'));
+    expect(await h.service.send(input)).toMatchObject({ ok: false, errorCode: 'DELIVERY_UNVERIFIED' });
+    expect(db.prepare('SELECT state FROM bot_existing_session_receipts').get()).toEqual({ state: 'pending' });
+    expect(await h.service.send(input)).toMatchObject({ ok: true, reused: true });
+    expect(db.prepare('SELECT state FROM bot_existing_session_receipts').get()).toEqual({ state: 'accepted' });
+    expect(h.enqueue).toHaveBeenCalledOnce();
+  });
+  it('backfills legacy transcript receipts before those rows can be slimmed', async () => {
+    db.prepare('INSERT INTO messages VALUES (?,?,?,NULL)').run(input.targetSessionId, existingSessionDeliveryClientId(input), input.message);
+    expect(await harness().service.send(input)).toMatchObject({ ok: true, reused: true });
+    db.prepare('DELETE FROM messages').run();
+    const h = harness();
+    expect(await h.service.send(input)).toMatchObject({ ok: true, reused: true });
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+  it('does not confirm a receipt after the owner changes during queue persistence', async () => {
+    const h = harness(); h.deps.flush.mockImplementationOnce(async () => { state.scope = 'owner:2'; });
+    expect(await h.service.send(input)).toMatchObject({ ok: false, errorCode: 'DELIVERY_UNVERIFIED' });
+    expect(db.prepare('SELECT state FROM bot_existing_session_receipts').get()).toEqual({ state: 'pending' });
+    expect(h.enqueue).toHaveBeenCalledOnce();
+  });
+  it.each(['bot-main', 'fable-original'])('deletes receipts with their owning Session (%s)', async id => {
+    expect(await harness().service.send(input)).toMatchObject({ ok: true });
+    db.prepare('DELETE FROM sessions WHERE id=?').run(id);
+    expect(db.prepare('SELECT count(*) AS n FROM bot_existing_session_receipts').get()).toEqual({ n: 0 });
   });
 });

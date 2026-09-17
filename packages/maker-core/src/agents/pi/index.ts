@@ -91,6 +91,7 @@ import {
 import {
   CINDY_BRIDGE_EXTENSION_FILENAME,
   CINDY_BRIDGE_EXTENSION_SOURCE } from './cindy-bridge-source.js';
+import { nativeProviderAdapterAliases } from './native-provider-adapter-source.js';
 import {
   CINDY_SUBAGENT_ENV,
   CINDY_SUBAGENT_EXTENSION_FILENAME,
@@ -194,6 +195,13 @@ import {
   unavailablePiProjectResourceAssembly,
 } from './project-resource-assembly.js';
 import { applyPiBotSkillPolicy } from './bot-skill-policy.js';
+import {
+  assertPiSpawnArgvFitsPlatform,
+  collectPiProjectResourceCliPaths,
+  emptyPiProjectResourceCliPaths,
+  filterPiProjectCliSkills,
+  piProjectResourceCliArgs,
+} from './project-resource-cli.js';
 import {
   createPiTranslateContext,
   disposePiTranslateContext,
@@ -863,11 +871,18 @@ function reconcilePiStartupEffort(requested: Effort | undefined, model: ModelDes
  * 有效)—— 防止误触扩展命令让 Cindy 侧状态镜像脱同步(如 /plan),也堵住未来扩展/包
  * 新增命令带来的攻击面。内部控制路径(setPlanMode 的 /plan)不走本函数。
  */
+function isAuthorizedPiSlashCommandName(
+  name: string,
+  manifest: PiRuntimeCapabilityManifest | undefined,
+): boolean {
+  if (name.startsWith('skill:')) return true;
+  if (manifest?.status !== 'loaded') return false;
+  return manifest.authorizedSlashCommandNames?.includes(name) === true;
+}
+
 function isExecutablePiSlashCommand(text: string, manifest: PiRuntimeCapabilityManifest | undefined): boolean {
   const match = text.trimStart().match(/^\/([^\s]+)(?:\s|$)/);
-  if (!match?.[1]) return false;
-  if (match[1].startsWith('skill:')) return true;
-  return manifest?.status === 'loaded' && manifest.managedPackageCommandNames?.includes(match[1]) === true;
+  return Boolean(match?.[1] && isAuthorizedPiSlashCommandName(match[1], manifest));
 }
 
 function managedExtensionSlashCommandName(
@@ -876,7 +891,7 @@ function managedExtensionSlashCommandName(
 ): string | undefined {
   const match = text.trimStart().match(/^\/([^\s]+)(?:\s|$)/);
   if (!match?.[1] || manifest?.status !== 'loaded') return undefined;
-  if (manifest.managedPackageCommandNames?.includes(match[1]) !== true) return undefined;
+  if (!isAuthorizedPiSlashCommandName(match[1], manifest)) return undefined;
   if (!manifest.commands.some((command) => command.name === match[1] && command.source === 'extension')) {
     return undefined;
   }
@@ -3561,6 +3576,7 @@ export class PiAgent extends BaseAgent {
       ? [] : [...(this.deps.getDisabledSkillPaths?.() ?? [])];
     let disabledSkillLaunch = snapshotDisabledSkillLaunch(disabledSkillPaths);
     const disabledSkillSnapshot = disabledSkillLaunch.identities;
+    const loadProjectResourcesInPlace = !reviewMode && !opts.botRuntimeProfile && !opts.remoteHostId;
     let projectResourceAssembly = unavailablePiProjectResourceAssembly(
       reviewMode ? 'review-mode-project-resources-disabled' : 'approval-resolver-unavailable',
     );
@@ -3573,7 +3589,11 @@ export class PiAgent extends BaseAgent {
         });
         projectResourceAssembly = await assembleApprovedPiProjectResources(trustInput, opts.workingDir);
         projectResourceAssembly = filterPiDisabledProjectSkills(projectResourceAssembly, currentDisabledSkillLaunchPaths(disabledSkillLaunch));
-        projectResourceAssembly = await stageApprovedPiProjectResources(projectResourceAssembly, configHome);
+        // In-place CLI loading uses original repo paths. Staging copies are unused
+        // there and would recopy every Skill asset on each startSession.
+        if (!loadProjectResourcesInPlace) {
+          projectResourceAssembly = await stageApprovedPiProjectResources(projectResourceAssembly, configHome);
+        }
       } catch {
         projectResourceAssembly = unavailablePiProjectResourceAssembly('approval-resolver-failed');
         this.deps.logger.warn('pi project approval resolver failed closed', {
@@ -3668,13 +3688,27 @@ export class PiAgent extends BaseAgent {
       typeof entry === 'string' ? entry : entry.source
     ));
 
+    // Local root tasks load project skills/prompts/extensions in place via
+    // explicit CLI flags. Keep --no-approve so `.pi/settings.json` is unread.
+    const collectedProjectResources = loadProjectResourcesInPlace
+      ? collectPiProjectResourceCliPaths(opts.workingDir)
+      : emptyPiProjectResourceCliPaths();
+    const projectResourceCli = loadProjectResourcesInPlace
+      ? {
+          ...collectedProjectResources,
+          skills: filterPiProjectCliSkills(
+            collectedProjectResources.skills,
+            currentDisabledSkillLaunchPaths(disabledSkillLaunch),
+          ),
+        }
+      : collectedProjectResources;
+
     const args = [
       '--mode',
       'rpc',
-      // --no-approve remains the hard project-resource gate. Only a local
-      // runtime with Main-supplied user package roots omits --no-extensions, so
-      // Pi can discover those runtime-settings packages without trusting the
-      // task's .pi/extensions or .pi/settings.json.
+      // --no-approve remains the hard project-settings gate. Explicit --skill /
+      // --prompt-template / --extension pass original in-repo paths without
+      // trusting `.pi/settings.json` or auto-installing project packages.
       '--no-approve',
       ...(nativePackagePaths.length === 0 ? ['--no-extensions'] : []),
       '--session-dir',
@@ -3693,8 +3727,23 @@ export class PiAgent extends BaseAgent {
       bridgeExtensionPath,
       ...(localSubagentSupported ? ['--extension', subagentExtensionPath] : []),
       ...(!reviewMode && planModeExtAvailable ? ['--extension', planModeExtPath] : []),
-      ...botSkillSelection.explicitSkillPaths.flatMap((skillPath) => ['--skill', skillPath]),
+      ...(loadProjectResourcesInPlace
+        ? piProjectResourceCliArgs(projectResourceCli)
+        : botSkillSelection.explicitSkillPaths.flatMap((skillPath) => ['--skill', skillPath])),
     ];
+    try {
+      assertPiSpawnArgvFitsPlatform(args);
+    } catch (error) {
+      try {
+        disposeSessionCtx?.();
+      } catch {
+        /* best-effort: cleanup failure must not mask argv budget failure */
+      }
+      disposeSessionCtx = undefined;
+      cleanupConfigHome();
+      cleanupRuntimeFiles();
+      throw error;
+    }
 
     const queue: AsyncQueue<AgentEvent> = createAsyncQueue<AgentEvent>();
     const ctx: PiTranslateContext = createPiTranslateContext(this.deps.logger);
@@ -5007,6 +5056,7 @@ export class PiAgent extends BaseAgent {
         ...(proxyEnv ?? {}),
         // BYOM 原生 provider 的 api keys(键名对应 spec.apiKeyEnvVar,models.json 用 $ENV 引用)。
         ...nativeEnv,
+        CINDY_PI_NATIVE_PROVIDER_ADAPTERS: JSON.stringify(nativeProviderAdapterAliases(nativeProviders)),
         // 外部 MCP header 真值只经 env 交给 bridge extension；host 生成独立名字，
         // 且这些键已进入 piSecretEnvNames，LLM 可调用的 bash 子进程拿不到。
         ...mcpEnv,
@@ -5424,13 +5474,24 @@ export class PiAgent extends BaseAgent {
         generation,
         stage,
       );
+      const managedPackageRoots = [...nativePackageRoots, ...managedPackageResources.packageRoots];
       const managedPackageCommandNames = identifyManagedPiPackageCommandNames(
         capturedManifest.commands,
-        [...nativePackageRoots, ...managedPackageResources.packageRoots],
+        managedPackageRoots,
+      );
+      const authorizedSlashCommandNames = identifyManagedPiPackageCommandNames(
+        capturedManifest.commands,
+        [
+          ...managedPackageRoots,
+          ...projectResourceCli.skills,
+          ...projectResourceCli.promptTemplates,
+          ...projectResourceCli.extensions,
+        ],
       );
       const manifest = {
         ...capturedManifest,
         managedPackageCommandNames,
+        authorizedSlashCommandNames,
         managedPackageSkills: snapshotManagedPiPackageSkills(
           managedPackageResources.skills,
           capturedManifest.commands,

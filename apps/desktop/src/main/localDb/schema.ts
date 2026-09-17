@@ -893,6 +893,21 @@ export const accountUsageSnapshots = sqliteTable('account_usage_snapshots', {
   updatedAt: integer('updated_at').notNull(),
 });
 
+/** Provider notification receipts. Retain the source id after session deletion to reject stale replies. */
+export const imNotificationOrigins = sqliteTable(
+  'im_notification_origins',
+  {
+    channel: text('channel').notNull(),
+    botContextId: text('bot_context_id').notNull(),
+    userId: text('user_id').notNull(),
+    messageId: text('message_id').notNull(),
+    chatId: text('chat_id').notNull(),
+    sessionId: text('session_id').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.channel, t.botContextId, t.userId, t.messageId] }) }),
+);
+
 /**
  * IM 身份 → desktop session 的接管绑定表 (feishu /ctr 流程产物)。
  *
@@ -1830,6 +1845,17 @@ export const agentInputQueueSnapshots = sqliteTable('agent_input_queue_snapshots
   /** AgentInputQueuedMessage[] 的 JSON 字符串。 */
   payload: text('payload').notNull(),
   updatedAt: integer('updated_at').notNull(),
+});
+
+/** Delivery identities survive transcript slimming, without retaining message bodies. */
+export const botExistingSessionReceipts = sqliteTable('bot_existing_session_receipts', {
+  clientId: text('client_id').primaryKey(),
+  callerSessionId: text('caller_session_id').notNull()
+    .references((): AnySQLiteColumn => sessions.id, { onDelete: 'cascade' }),
+  targetSessionId: text('target_session_id').notNull()
+    .references((): AnySQLiteColumn => sessions.id, { onDelete: 'cascade' }),
+  messageSha256: text('message_sha256').notNull(),
+  state: text('state', { enum: ['pending', 'accepted'] }).notNull(),
 });
 
 /**

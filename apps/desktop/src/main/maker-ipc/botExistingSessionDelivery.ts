@@ -20,13 +20,15 @@ export interface ExistingSessionDeliveryContext {
   assertCurrent(): void;
   validate(): Promise<void>;
   confirm(): Promise<boolean>;
+  reserve(clientId: string): Promise<void>;
+  recordAccepted(clientId: string): Promise<void>;
   dispose(): void;
 }
 export interface ExistingSessionDeliveryDeps {
   capture(input: ExistingSessionDeliveryInput): Promise<ExistingSessionDeliveryContext>;
   withTargetLock<T>(targetSessionId: string, action: () => Promise<T>): Promise<T>;
   /** Reads the restored queue and persisted transcript, including cleared/rewound receipts. */
-  readAccepted(targetSessionId: string, clientId: string, callerSessionId: string): Promise<{ message: string } | null>;
+  readAccepted(targetSessionId: string, clientId: string, callerSessionId: string): Promise<{ message: string } | { messageSha256: string } | null>;
   /** Prepare has no dispatch side effects. commit only appends to the existing target queue. */
   prepare(input: ExistingSessionDeliveryInput, clientId: string): Promise<() => void>;
   flush(targetSessionId: string): Promise<void>;
@@ -35,6 +37,10 @@ export interface ExistingSessionDeliveryDeps {
 export function existingSessionDeliveryClientId(input: ExistingSessionDeliveryInput): string {
   const identity = JSON.stringify([input.callerSessionId, input.targetSessionId, input.idempotencyKey]);
   return `bot-existing-session:${createHash('sha256').update(identity).digest('hex')}`;
+}
+
+export function existingSessionDeliveryMessageHash(message: string): string {
+  return createHash('sha256').update(message).digest('hex');
 }
 
 /** The general send API accepts unknown options; this flag only tightens its target checks. */
@@ -81,9 +87,11 @@ export function createBotExistingSessionDelivery(deps: ExistingSessionDeliveryDe
           await lease.validate();
           lease.assertCurrent();
           if (!receipt) return null;
-          if (receipt.message !== input.message) return conflict();
+          if ('message' in receipt ? receipt.message !== input.message
+            : receipt.messageSha256 !== existingSessionDeliveryMessageHash(input.message)) return conflict();
           admitted = true;
           await deps.flush(input.targetSessionId);
+          await lease.recordAccepted(clientId);
           lease.assertCurrent();
           return { ok: true, targetSessionId: input.targetSessionId, wakeKind: 'queued', reused: true };
         };
@@ -98,11 +106,16 @@ export function createBotExistingSessionDelivery(deps: ExistingSessionDeliveryDe
             if (raced) return raced;
             const commit = await deps.prepare(input, clientId);
             await lease.validate();
+            // Persist uncertainty before admission. A crash in this window must
+            // never allow a retry to execute the same delivery a second time.
+            admitted = true;
+            await lease.reserve(clientId);
+            await lease.validate();
             lease.assertCurrent();
             // No await separates the final lease check from queue admission.
-            admitted = true;
             commit();
             await deps.flush(input.targetSessionId);
+            await lease.recordAccepted(clientId);
             lease.assertCurrent();
             return { ok: true, targetSessionId: input.targetSessionId, wakeKind: 'queued', reused: false };
           });

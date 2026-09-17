@@ -1901,6 +1901,8 @@ interface ElectronAPI {
   };
 
   windowBehavior: {
+    getLoginItem: () => Promise<import('../shared/loginItem').LoginItemState>;
+    setLoginItem: (enabled: boolean) => Promise<import('../shared/loginItem').LoginItemState>;
     setSwallowActivationClick: (enabled: boolean) => Promise<{ ok: true }>;
     getWindowsCloseBehavior: () => Promise<'quit' | 'tray' | null>;
     setWindowsCloseBehavior: (behavior: 'quit' | 'tray') => Promise<'quit' | 'tray'>;
@@ -2531,6 +2533,8 @@ interface ElectronAPI {
   onAppUpdateProgress: (callback: (payload: AppUpdateProgressPayload) => void) => () => void;
   fileBrowser: {
     listDir: (params: {
+      /** Return all ordinary entries without presentation filtering. */
+      includeIgnored?: boolean;
       /** 非空 = SSH remote 会话,操作经远端 file-service 执行(main 侧路由)。 */
       remoteHostId?: string | null;
       workdir: string;
@@ -2683,6 +2687,14 @@ interface ElectronAPI {
       }) => void,
     ) => () => void;
     /** 聊天流文件取回:远端绝对路径 → 本地缓存副本(进度经 onTransferProgress,relPath 键 = absPath)。 */
+    previewHtml: (params: {
+      origin:
+        | { kind: 'local' }
+        | { kind: 'device'; deviceId: string }
+        | { kind: 'ssh'; remoteHostId: string };
+      workdir: string;
+      absPath: string;
+    }) => Promise<{ ok: true; url: string }>;
     chatFetch: (params: {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
       workdir: string;
@@ -2934,7 +2946,7 @@ interface ElectronAPI {
    * Open a local file path with the OS default application. Used by the
    * TextLightbox toolbar Open-in-System button and the Oversize main button.
    */
-  openPath: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+  openPath: (filePath: string) => Promise<import('../shared/openPathResult').OpenPathResult>;
 
   /**
    * 文件 chip 右键「打开方式」:枚举可打开该文件的应用(Windows 注册表;
@@ -2994,7 +3006,11 @@ interface ElectronAPI {
   /** Open Cindy's managed Make tools directory (`<userData>/cindy-make/tools`). */
   openCindyMakeToolsDir: () => Promise<{ success: boolean }>;
   getCindyMakeSourceStatus: () => Promise<import('../shared/cindyMakeDoctor').MakeSourceStatus>;
+  getCindyMakeState: () => Promise<import('../shared/cindyMakeDoctor').CindyMakeGlobalState>;
   openCindyMakeSourceDir: () => Promise<{ success: boolean }>;
+  onCindyMakeState: (
+    listener: (state: import('../shared/cindyMakeDoctor').CindyMakeGlobalState) => void,
+  ) => () => void;
   /** Live global source status (Settings and the workflow share one operation). */
   onCindyMakeSourceStatus: (
     listener: (status: import('../shared/cindyMakeDoctor').MakeSourceStatus) => void,
@@ -3015,6 +3031,11 @@ interface ElectronAPI {
     url?: string;
     filePath?: string;
   }) => Promise<{ success: boolean; error?: string }>;
+
+  /** Copy an in-memory PNG export to the local native clipboard. */
+  copyPngToClipboard: (
+    params: import('../shared/pngClipboard').CopyPngToClipboardParams,
+  ) => Promise<void>;
 
   /**
    * Copy an image or video (resolved from `xdt-image://` / `xdt-video://`
@@ -4144,6 +4165,10 @@ interface ElectronAPI {
     rebindTeam: (
       teamId: string,
     ) => Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
+    setSlackCommunications: (
+      teamId: string,
+      enabled: boolean,
+    ) => Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
     revokeTeam: (
       teamId: string,
     ) => Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
@@ -5203,6 +5228,8 @@ interface ElectronAPI {
               modelId: string;
               authMethod: 'apiKey' | 'oauth' | 'none';
               wireProtocol?: import('@cindy/model-providers').ProviderWireProtocol;
+              api?: import('@cindy/model-providers').PiModelApi;
+              catalogPresetId?: string;
               requestPath?: string;
               apiKey?: string | null;
               headers?: Record<string, string>;
@@ -5740,6 +5767,9 @@ interface ElectronAPI {
         resumeSessionId?: string;
       },
     ) => Promise<import('@cindy/maker-core').ContextUsageData>;
+
+    /** main 侧权威运行态回填(#4513):该会话是否真的在 turn 中(tracker + live isTurnRunning)。 */
+    getSessionTurnActive: (sessionId: string) => Promise<{ inTurn: boolean }>;
 
     abortSession: (sessionId: string) => Promise<void>;
     closeSession: (sessionId: string, opts?: { preserveWorkspace?: boolean }) => Promise<void>;
