@@ -12,6 +12,8 @@
 
 ## 2026-09
 
+- **09-17（撤销 CINDY placeholder 降对比度）**：用户明确要求撤销提交 `7bf645447cf9ae8feeffb781220d44aab79cde45`。CINDY Light / Dark 的 `text-placeholder` 恢复为 `#6B6B67` / `#C1C1C1`，DTCG 数值源、内置主题与独立冻结预期同步恢复；取代 09-16 降低占位文字显著程度的决定。09-16 原记录作为历史保留，Cindy Make 与后续 Switch 改动不受影响。现行规则见 `DESIGN.md §4 / §15`；本条不代表 Light/Dark 实机视觉验收。
+
 - **09-16（Switch 亮滑块与轻微形变）**：用户确认 HTML 并要求应用到当前 Cindy Switch。CINDY Dark 的开/关滑块统一为 `#FCFCFC`，开启轨道沿用蓝色 `#417CDD`；新增 `switch-thumb-on`，默认跟随旧 `background`，保留其他主题与用户覆盖。参考 Fluid Functionalism 后，用户认为压缩过大，将按压由 20×12 收敛到 18×14、悬停由 18×16 收敛到 17×16，静止仍为 16×16；沿用 Cindy 150ms 缓动和 80ms 轨道变色，无过冲、无阴影。共享 Desktop 组件支持拖动，保留 Radix 的 ref、checked/defaultChecked、键盘与表单回调；禁用与减少动态效果适配。规范见 `DESIGN.md §14.4 / §15.17`。本次为独立有意可见变化，DS-10 #4427 已合并，DS-11 #4455 的远端内容不在本次修改范围。
 
 - **09-15（CINDY 开关开启态改蓝）**：用户查看浅深模式 HTML 对比后明确要求「把开关打开状态改成蓝色 #417CDD 应用到 Cindy UI」。Desktop CINDY Light / Dark 的 `switch-track-on` 同为 `#417CDD`，取代 2026-08-05 的 Light `#4A4D51` / Dark `#EEEEEE`。关闭轨道、滑块、禁用透明度、尺寸与焦点处理沿用既有合同；普通主操作保持中性，其他主题与 Mobile 不扩展。蓝色与光标、焦点、自动批准同色但不互相绑定。现行规范见 `DESIGN.md §2 / §10 / §15.17`；DTCG 主题源生成生产值，`cindyDecisionData.ts` 与内置主题快照独立锁定新预期。此裁决独立于仍待合并的 DS-10 / DS-11，不将旧截图或其验收结论当作本次改色的实机证据。
@@ -766,3 +768,14 @@ BORDER_BG → border-default，TEXT_PRIMARY/SECONDARY/TERTIARY → 对应 text �
 DS-11 补充分类：实际文字或动作换行的 Toast 外框按 §5 内容容器取 12px；短通知仍为 pill。依据同日用户明确要求以 Cindy 实际 UI 效果为先，消除长通知被撑成大椭圆的效果；颜色与默认停留时长不改。最终亮暗截图供用户逐项验收，不把实现裁决写成最终验收通过。
 
 DS-11 帮助文字补验：新增 `form-field-hint`，默认保持 `text-secondary-mid` 运行期 alias，Cindy 原色不变。One Dark Pro 的帮助角色为 #8b909a，Solarized Light 为 #686868，仅修说明文字，不调整原 secondary/tertiary 或用户主题文件。独立冻结预期只添加此 ID 和两项覆盖，不自动刷全部快照。
+
+## 2026-09-17 — Slider 三变体统一
+
+用户要求在一个 PR 中落地 Design Lab v6，并统一调用入口。普通数值 Slider 原先轨道与滑块在
+暗色中不易分辨，改成独立中性色 token、无描边浅阴影滑块；hover 放大、按压成为真正药丸形、
+左右箭头光标。推理强度是明确例外：保留原彩色圆块的面板描边与外晕，只增加同族交互。
+媒体进度条保留细轨道，增加透明点击区、拖动与键盘定位。原生播放器不改。
+
+入口：外观的界面字号/代码字号，压缩阈值 Claude/Pi，Work Louder 键盘亮度；模型配置推理强度；
+音频卡、音效卡、插件音频插槽。键盘亮度原使用 Switch token，导致预览曾误用蓝色；现在与
+Switch 解耦。插件插槽挂载同一个媒体组件，不再维护单独拖动实现。规范见 DESIGN §15.18。
