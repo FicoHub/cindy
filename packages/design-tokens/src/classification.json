@@ -4,8 +4,8 @@
   "snapshotCount": 544,
   "categories": {
     "literal": 266,
-    "hsl-triplet": 6,
     "alias": 242,
+    "hsl-triplet": 6,
     "runtime-derived-or-protected": 30
   },
   "entries": [
