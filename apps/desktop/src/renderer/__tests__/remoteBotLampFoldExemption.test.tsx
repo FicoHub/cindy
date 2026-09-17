@@ -8,25 +8,25 @@ import { transpileModule, ScriptTarget } from 'typescript';
 import type { Session } from '@/lib/ccAgent.types';
 import type { BotGroupNode } from '../features/cc-agent/lib/projectGrouping';
 import {
-  advanceViewedPriorityHold,
   getMainListEntrySessions,
   type MainListEntry,
   type MainListPriorityContext,
 } from '../features/cc-agent/lib/mainListModel';
+import { sidebarPriorityContext } from '../features/cc-agent/lib/sidebarPriorityContext';
 import { getSessionListCollapseView } from '../features/cc-agent/lib/sessionListCollapse';
 
 // Execute the production memo and its dependency list, then the real collapse model.
 // This catches both missing Bot scans and stale memo results when only Bots change.
 const source = readFileSync(resolve(__dirname, '../features/cc-agent/sidebar/sections/ProjectsSection.tsx'), 'utf8');
-const declaration = source.match(/const priorityContext = useMemo\([\s\S]+?\n  \]\);/);
+const declaration = source.match(/const naturalPriorityContext = useMemo\([\s\S]+?\n  \]\);/);
 if (!declaration) throw new Error('ProjectsSection priority memo not found');
 const compiled = transpileModule(declaration[0], { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
 const runMemo = new Function('useMemo', 'input', `
   const { runningSessionIds, notifications, urgentSet, attentionKinds, projects, dialogues,
     unclassified, bots, remoteActivityRevision, viewedIdForSort, viewedPriorityHold,
-    getRemoteSessionActivity, advanceViewedPriorityHold } = input;
+    getRemoteSessionActivity, sidebarPriorityContext } = input;
   ${compiled}
-  return priorityContext;
+  return naturalPriorityContext;
 `) as (memo: typeof useMemo, input: ReturnType<typeof inputs>) => MainListPriorityContext;
 
 afterEach(cleanup);
@@ -44,7 +44,7 @@ function inputs(bots: BotGroupNode[], activity: Map<string, { phase: string }>) 
     attentionKinds: new Map(), projects: [], dialogues: [], unclassified: [], bots,
     remoteActivityRevision: 1, viewedIdForSort: undefined,
     viewedPriorityHold: { heldPriorityRanks: new Map(), recentlyViewedAtMs: new Map() },
-    getRemoteSessionActivity: (id: string) => activity.get(id), advanceViewedPriorityHold,
+    getRemoteSessionActivity: (id: string) => activity.get(id), sidebarPriorityContext,
   };
 }
 
