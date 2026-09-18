@@ -562,6 +562,7 @@ export function createTurnRunner(
   deps: ImTurnRunnerDeps = {},
 ): ImTurnRunner {
   const { im, output, ui, channel } = adapter;
+  const pendingOwner = Symbol('im-runner-pending');
   const richIm = output.kind === 'rich-card' ? output.im : null;
 
   function sendTextClaimingOpener(
@@ -1913,12 +1914,12 @@ export function createTurnRunner(
               : { kind, behavior: 'deny', reason: err.message },
           );
         },
-        req.kind === 'permission'
-          ? {
-              toolName: req.toolName,
-              permissionCard: { title: spec.title ?? '', body: spec.body },
-            }
-          : askMultiExtras(req),
+        {
+          owner: pendingOwner,
+          ...(req.kind === 'permission'
+            ? { toolName: req.toolName, permissionCard: { title: spec.title ?? '', body: spec.body } }
+            : askMultiExtras(req)),
+        },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -2600,9 +2601,13 @@ export function createTurnRunner(
     // 返回值是 router 的契约: true = 渠道侧已收口这次交互, router 不再自行 cancel。
     // 丢掉它会让同一个 requestId 被取消两次(第二次落到 SDK 的默认拒绝路径)。
     if (!cancelled) return false;
+    expireInteractionCard(requestId, cancelled.messageId);
+    return true;
+  }
+
+  function expireInteractionCard(requestId: string, messageId: string): void {
     const notice = adapter.interactionExpiredNotice;
-    if (!notice || !richIm) return true;
-    const messageId = cancelled.messageId;
+    if (!notice || !richIm) return;
     const im = richIm;
     void enqueueAskCardPatch(requestId, async () => {
       try {
@@ -2612,7 +2617,6 @@ export function createTurnRunner(
         log.warn(`dropped interaction card cleanup failed (non-fatal): ${msg}`);
       }
     });
-    return true;
   }
 
   function settleTurnTerminal(turn: TurnState): void {
@@ -3385,12 +3389,12 @@ export function createTurnRunner(
           // Stash toolName for permission requests so cardActionHandler can
           // build permissionUpdates when the user picks 'allow:always'.
           // permissionCard 留着收口时恢复原始正文(工具名 + 参数预览)。
-          req.kind === 'permission'
-            ? {
-                toolName: req.toolName,
-                permissionCard: { title: spec.title ?? '', body: spec.body },
-              }
-            : askMultiExtras(req),
+          {
+            owner: pendingOwner,
+            ...(req.kind === 'permission'
+              ? { toolName: req.toolName, permissionCard: { title: spec.title ?? '', body: spec.body } }
+              : askMultiExtras(req)),
+          },
         );
         return decision;
       } catch (err) {
@@ -3539,7 +3543,9 @@ export function createTurnRunner(
     // Denial reasons are classified by exact/prefix match. Keep this a stable
     // system code so Auto-review fallback confirmations are not presented as
     // a user click when logout / disconnect disposes the IM runner.
-    rejectAllPending('session_disposed');
+    for (const card of rejectAllPending('session_disposed', pendingOwner)) {
+      expireInteractionCard(card.requestId, card.messageId);
+    }
     return Promise.all(aborts).then(() => undefined);
   }
 

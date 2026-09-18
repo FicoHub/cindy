@@ -69,7 +69,7 @@ const mocks = vi.hoisted(() => ({
   takePendingInteractionsForSession: vi.fn(),
   // 取消不到时返回 null(取消到了返回 { messageId }, 调用方据此收口卡片)。
   cancelPending: vi.fn(() => null),
-  rejectAllPending: vi.fn(),
+  rejectAllPending: vi.fn<(reason: string, owner?: symbol) => Array<{ requestId: string; messageId: string }>>(() => []),
   registerPending: vi.fn(),
   registerPendingExternal: vi.fn(),
   buildPermissionCard: vi.fn(),
@@ -3366,6 +3366,43 @@ describe('turnRunner send outcome policy (feishu adapter characterization)', () 
     await flushMicrotasks();
     expect(h.send).toHaveBeenCalledTimes(1);
     expect(mocks.persistUserMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('expires disposed cards independently without waiting for an unavailable channel', async () => {
+    const stalled = deferred<void>();
+    const update = vi.fn()
+      .mockRejectedValueOnce(new Error('channel closing'))
+      .mockImplementationOnce(() => stalled.promise);
+    const card = { body: 'expired', buttons: [] };
+    const localRunner = createTurnRunner({
+      ...fakeAdapter,
+      interactionExpiredNotice: 'expired',
+      output: { kind: 'rich-card', im: { ...mocks.feishuIm, updateInteractiveCard: update } as unknown as ChannelIM },
+    }, fakeRepo, { ...fakeCards, buildResolvedCard: vi.fn(() => card) } as unknown as ImCardBuilders);
+    mocks.rejectAllPending.mockReturnValueOnce([
+      { requestId: 'dispose-first', messageId: 'first' },
+      { requestId: 'dispose-second', messageId: 'second' },
+    ]);
+    await localRunner.disposeAllSessions();
+    await flushMicrotasks();
+    expect(mocks.rejectAllPending).toHaveBeenLastCalledWith('session_disposed', expect.any(Symbol));
+    expect(update).toHaveBeenNthCalledWith(1, 'first', card);
+    expect(update).toHaveBeenNthCalledWith(2, 'second', card);
+    expect(mocks.logger.warn).toHaveBeenCalledWith(expect.stringContaining('channel closing'));
+    stalled.resolve(undefined);
+    await flushMicrotasks();
+  });
+
+  it('retains optional expiry capability and distinct runner identities', async () => {
+    const first = createTurnRunner(fakeAdapter, fakeRepo, fakeCards);
+    const second = createTurnRunner(fakeAdapter, fakeRepo, fakeCards);
+    mocks.rejectAllPending.mockReturnValueOnce([{ requestId: 'no-expiry', messageId: 'legacy' }]);
+    await first.disposeAllSessions();
+    await second.disposeAllSessions();
+    await flushMicrotasks();
+    const calls = mocks.rejectAllPending.mock.calls;
+    expect(calls.at(-2)?.[1]).not.toBe(calls.at(-1)?.[1]);
+    expect(mocks.feishuIm.updateInteractiveCard).not.toHaveBeenCalled();
   });
 
   it('disposeAllSessions aborts and awaits an IM-owned in-flight turn', async () => {
