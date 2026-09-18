@@ -33,7 +33,7 @@ import {
   MonitorSmartphone,
   SquarePen,
 } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
+import { useStableTranslation as useTranslation } from '@/hooks/useStableTranslation';
 
 import { cn } from '@/lib/utils';
 import { Tip } from '@/components/ui/tooltip';
@@ -50,6 +50,7 @@ import {
   useRemoteHostProjectOrders,
 } from '../../hooks/useRemoteHostProjectOrders';
 import { SortableList } from '@/components/sidebar/SortableList';
+import { useMainListEntries } from '../../hooks/useMainListEntries';
 import { useReducedMotion } from '@/hooks/useReducedMotion';
 import { useSidebarMainViewMode } from '@/hooks/useSidebarCardMode';
 import { ProjectNode } from './ProjectNode';
@@ -68,7 +69,6 @@ import {
   DIALOGUE_GROUP_ALL_KEY,
 } from '../../hooks/helpers/sidebarFilterCore';
 import {
-  buildMainListEntries,
   getMainListEntrySessions,
   holdViewedPriorityRank,
   splitEntriesByDevice,
@@ -252,11 +252,13 @@ export interface ProjectsSectionProps {
   isCreateDialogueDisabled?: boolean;
 }
 
+const EMPTY_BOTS: BotGroupNode[] = [];
+
 export function ProjectsSection({
   unclassified,
   projects,
   dialogues,
-  bots = [],
+  bots = EMPTY_BOTS,
   onOpenBot,
   allKnownProjects,
   dialogueCount = 0,
@@ -310,22 +312,36 @@ export function ProjectsSection({
   const mainSessionVariant: 'text' | 'list' = mainViewMode === 'list' ? 'list' : 'text';
   // SortableList 只在自定义项目顺序且按项目分组时挂载。
   // 折叠溢出且未点「显示全部」时禁用，避免只重排可见前缀。
-  const projectOrderScope = projectOrderWriteScopeForSelection(selectedMachineForOrder);
+  const projectOrderScope = useMemo(
+    () => projectOrderWriteScopeForSelection(selectedMachineForOrder),
+    [selectedMachineForOrder],
+  );
   const hostSnapshotForDisplay =
     projectOrderScope.kind === 'host' && projectOrderScope.deviceId === null
       ? localHostProjectOrder.snapshot
       : projectOrderScope.kind === 'host' && projectOrderScope.deviceId
         ? remoteHostProjectOrders.orders.get(projectOrderScope.deviceId)
         : undefined;
-  const displayedProjectOrder = resolveDisplayedProjectOrder(
-    projectOrderScope,
-    hostSnapshotForDisplay,
-    filter,
-    projectOrderScope.kind === 'host' && projectOrderScope.deviceId === null
-      ? localHostProjectOrder.snapshot.manualProjectOrder
-      : projectOrderScope.kind === 'host' && projectOrderScope.deviceId
-        ? (controllerManualOrderForDevice(projectOrderScope.deviceId, hostSnapshotForDisplay) ?? [])
-        : [],
+  const displayedProjectOrder = useMemo(
+    () =>
+      resolveDisplayedProjectOrder(
+        projectOrderScope,
+        hostSnapshotForDisplay,
+        { projectOrder: filter.projectOrder, manualProjectOrder: filter.manualProjectOrder },
+        projectOrderScope.kind === 'host' && projectOrderScope.deviceId === null
+          ? localHostProjectOrder.snapshot.manualProjectOrder
+          : projectOrderScope.kind === 'host' && projectOrderScope.deviceId
+            ? (controllerManualOrderForDevice(projectOrderScope.deviceId, hostSnapshotForDisplay) ??
+              [])
+            : [],
+      ),
+    [
+      projectOrderScope,
+      hostSnapshotForDisplay,
+      filter.projectOrder,
+      filter.manualProjectOrder,
+      localHostProjectOrder.snapshot.manualProjectOrder,
+    ],
   );
   const customProjectOrder =
     filter.groupBy === 'project' && displayedProjectOrder.projectOrder === 'custom';
@@ -516,6 +532,7 @@ export function ProjectsSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- remoteActivityRevision 代表 remoteLampOf 读到的整表内容
     [runningSessionIds, notifications, attentionKinds, urgentSet, remoteActivityRevision],
   );
+  const sortingPriorityContext = filter.sortBy === 'priority' ? priorityContext : undefined;
 
   // starting 只让位给真实 in-flight:本地 isRunning(见 useStartingSessionIds),
   // 远程 running / needs-interaction。终态 attention 不再吸收 —— 旧终态会误伤
@@ -559,38 +576,20 @@ export function ProjectsSection({
   // 混排模型(D 期):项目行 / 散排对话 / 对话组统一为顶层条目并按同一口径排序。
   // 这有意推翻旧「Dialogue 固定段在 Projects 之后」的裁决(mainListModel.ts 文件头)。
   // 设备分组开启时,未分类草稿并进混排再按设备切段;单段路径仍走顶部独立段。
-  const mixedEntries = useMemo(
-    () =>
-      buildMainListEntries({
-        projects,
-        dialogues,
-        bots,
-        unclassified: deviceGroupingActive && !unclassifiedHidden ? unclassified : [],
-        groupBy: filter.groupBy,
-        groupDialogue: filter.groupDialogue,
-        sortBy: filter.sortBy,
-        projectOrder: displayedProjectOrder.projectOrder,
-        manualProjectOrder: displayedProjectOrder.manualProjectOrder,
-        priorityContext,
-        notifications,
-        scheduleSessionIndex,
-      }),
-    [
-      projects,
-      dialogues,
-      bots,
-      unclassified,
-      unclassifiedHidden,
-      deviceGroupingActive,
-      filter.groupBy,
-      filter.groupDialogue,
-      filter.sortBy,
-      displayedProjectOrder,
-      priorityContext,
-      notifications,
-      scheduleSessionIndex,
-    ],
-  );
+  const mixedEntries = useMainListEntries({
+    projects,
+    dialogues,
+    bots,
+    unclassified: deviceGroupingActive && !unclassifiedHidden ? unclassified : undefined,
+    groupBy: filter.groupBy,
+    groupDialogue: filter.groupDialogue,
+    sortBy: filter.sortBy,
+    projectOrder: displayedProjectOrder.projectOrder,
+    manualProjectOrder: displayedProjectOrder.manualProjectOrder,
+    priorityContext,
+    notifications,
+    scheduleSessionIndex,
+  });
 
   // 顶层条目折叠:最多显示 N 条,超出收起 + 「显示全部 N 项」。与会话同一套
   // 规则(getSessionListCollapseView):始终保留"有需关注会话"的条目、以及包含当前会话的
@@ -672,7 +671,7 @@ export function ProjectsSection({
       sortBy: filter.sortBy,
       projectOrder: filter.projectOrder,
       manualProjectOrder: filter.manualProjectOrder,
-      priorityContext,
+      priorityContext: sortingPriorityContext,
     });
   }, [
     deviceGroupingActive,
@@ -682,7 +681,7 @@ export function ProjectsSection({
     filter.sortBy,
     filter.projectOrder,
     filter.manualProjectOrder,
-    priorityContext,
+    sortingPriorityContext,
   ]);
   // 设备段折叠(E 期):本机段 key 'local'。
   const [collapsedDevices, setCollapsedDevices] = useState<ReadonlySet<string>>(new Set());
@@ -831,13 +830,8 @@ export function ProjectsSection({
     return [...projects.flatMap((project) => project.sessions), ...dialogues];
   }, [filter.groupBy, projects, dialogues]);
   const dialogueSourceLabelMap = useMemo(
-    () =>
-      buildSessionSourceLabelMap(
-        flattenedSessionsForSourceLabels,
-        allKnownProjects,
-        t('ccAgent.sidebar.dialogues'),
-      ),
-    [flattenedSessionsForSourceLabels, allKnownProjects, t],
+    () => buildSessionSourceLabelMap(flattenedSessionsForSourceLabels, allKnownProjects),
+    [flattenedSessionsForSourceLabels, allKnownProjects],
   );
 
   // F-PJ-10：即使 projects 因 filter 收窄到空，也要保留段头供用户切回 Filter。
