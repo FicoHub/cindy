@@ -563,6 +563,7 @@ export function createTurnRunner(
 ): ImTurnRunner {
   const { im, output, ui, channel } = adapter;
   const pendingOwner = Symbol('im-runner-pending');
+  const cardExpirations = new Set<{ done: Promise<void>; cancel(): void }>();
   const richIm = output.kind === 'rich-card' ? output.im : null;
 
   function sendTextClaimingOpener(
@@ -2609,7 +2610,11 @@ export function createTurnRunner(
     const notice = adapter.interactionExpiredNotice;
     if (!notice || !richIm) return;
     const im = richIm;
-    void enqueueAskCardPatch(requestId, async () => {
+    let cancelled = false;
+    const done = enqueueAskCardPatch(requestId, async () => {
+      // A queued patch must not first reach a transport after logout timed out
+      // and a later account has reconnected the shared adapter.
+      if (cancelled) return;
       try {
         await im.updateInteractiveCard(messageId, cards.buildResolvedCard(notice));
       } catch (err: unknown) {
@@ -2617,6 +2622,32 @@ export function createTurnRunner(
         log.warn(`dropped interaction card cleanup failed (non-fatal): ${msg}`);
       }
     });
+    const expiration = { done, cancel: () => { cancelled = true; } };
+    cardExpirations.add(expiration);
+    void done.then(() => cardExpirations.delete(expiration));
+  }
+
+  async function drainCardExpirations(): Promise<void> {
+    const pending = [...cardExpirations];
+    if (pending.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(pending.map(({ done }) => done)),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            log.warn('interaction card cleanup timed out (non-fatal)');
+            resolve();
+          }, 1000);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      for (const expiration of pending) {
+        expiration.cancel();
+        cardExpirations.delete(expiration);
+      }
+    }
   }
 
   function settleTurnTerminal(turn: TurnState): void {
@@ -3546,7 +3577,7 @@ export function createTurnRunner(
     for (const card of rejectAllPending('session_disposed', pendingOwner)) {
       expireInteractionCard(card.requestId, card.messageId);
     }
-    return Promise.all(aborts).then(() => undefined);
+    return Promise.all([...aborts, drainCardExpirations()]).then(() => undefined);
   }
 
   function getMakerSessionById(sessionId: string): MakerSession | null {
