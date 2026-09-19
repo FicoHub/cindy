@@ -24,6 +24,7 @@ import { snapshotDisabledSkillLaunch, currentDisabledSkillLaunchPaths, extendDis
  * 写「尚未支持」。跨设备控制仍走 device-link, 在目标设备本地启动 Pi。
  */
 
+import { LIBRARY_READ_ROOT, libraryNativeReadContext } from '../shared/library-native-read.js';
 import os from 'node:os';
 import path from 'node:path';
 import { constants as fsConstants, promises as fs } from 'node:fs';
@@ -65,6 +66,7 @@ import {
   AgentStartupStoppedError,
   BaseAgent,
   MAIN_OWNED_SEND_CONTEXT,
+  PINNED_SKILL_INVOCATION,
   PiManagedPackageMutationCancelledError,
   PiManagedPackageMutationFailedError,
   projectPiPackageCommandDiagnostic,
@@ -91,6 +93,9 @@ import {
 } from '../base-agent.js';
 import {
   CINDY_BRIDGE_EXTENSION_FILENAME,
+  CINDY_PI_TEXT_ONLY_INPUT_PREFIX,
+  CINDY_PI_TEXT_ONLY_READY_PREFIX,
+  CINDY_PI_TEXT_ONLY_CLOSED_PREFIX,
   CINDY_BRIDGE_EXTENSION_SOURCE } from './cindy-bridge-source.js';
 import { nativeProviderAdapterAliases } from './native-provider-adapter-source.js';
 import {
@@ -132,6 +137,9 @@ import {
   createAutoReviewUnavailableNotice,
   extractAutoReviewUserIntent,
   appendAutoReviewUserIntent,
+  normalizeAutoReviewUserIntent,
+  createAutoReviewActionContext,
+  type AutoReviewUserIntent,
   composeAutoReviewIntentWithClarification,
   isSystemPermissionDenialReason,
   formatPermissionDenial,
@@ -187,6 +195,7 @@ import type { PiRemoteFileOps } from '../base-agent.js';
 import {
   capturePiRuntimeCapabilityManifest,
   identifyManagedPiPackageCommandNames,
+  preparePinnedPiSkillInvocation,
   snapshotManagedPiPackageSkills,
 } from './runtime-capabilities.js';
 import {
@@ -1595,7 +1604,7 @@ function piExtraDirsPrompt(readOnlyDirs: readonly string[], writableDirs: readon
     const labels = [...new Set(readOnlyDirs.map(extraDirBasename))];
     sections.push(
       '<cindy-extra-reference-directories>',
-      'This task can read the plugin library and extra references as read-only. Do not modify them:',
+      'This task can read extra references as read-only. If a plugin library root is authorized as a host-owned extraDir, resolve the latest library:assets/<2>/<hash>/blob.<ext> relative key against that root; do not cache roots across directory changes. Do not modify them.',
       ...labels.map((label) => `- ${label}`),
       '</cindy-extra-reference-directories>',
     );
@@ -3166,6 +3175,7 @@ export class PiAgent extends BaseAgent {
       mode === 'bypassPermissions' ? 'bypassPermissions' : mode === 'auto' ? 'auto' : 'ask';
     let permissionMode =
       reviewMode ? 'ask' : normalizePermissionMode(opts.permissionMode);
+    let mutableLibraryRoot: string | null | undefined = opts.remoteHostId || reviewMode ? undefined : (opts[LIBRARY_READ_ROOT] ?? undefined);
     let mutableExtraDirs = [...(opts.extraDirs ?? [])];
     let mutableWritableDirs = [...(opts.writableDirs ?? [])];
     let reviewReadGrants: Awaited<ReturnType<typeof buildReviewReadGrants>> = [];
@@ -3191,6 +3201,7 @@ export class PiAgent extends BaseAgent {
     type PermissionSnapshot = {
       mode: 'ask' | 'auto' | 'bypassPermissions';
       readOnlyRoots: string[];
+      libraryRoot?: string | null;
       writableRoots: string[];
       reviewReadPaths?: string[];
       reviewOnly?: true;
@@ -3199,12 +3210,14 @@ export class PiAgent extends BaseAgent {
     let requestedPermissionSnapshot: PermissionSnapshot = {
       mode: permissionMode,
       readOnlyRoots: [...mutableExtraDirs],
+      ...(mutableLibraryRoot !== undefined ? { libraryRoot: mutableLibraryRoot } : {}),
       writableRoots: [...mutableWritableDirs],
       ...reviewPathSnapshot,
     };
     let persistedPermissionSnapshot: PermissionSnapshot = {
       mode: permissionMode,
       readOnlyRoots: [...mutableExtraDirs],
+      ...(mutableLibraryRoot !== undefined ? { libraryRoot: mutableLibraryRoot } : {}),
       writableRoots: [...mutableWritableDirs],
       ...reviewPathSnapshot,
     };
@@ -3213,6 +3226,13 @@ export class PiAgent extends BaseAgent {
       runtimeDir,
       `perm-${sid ?? `anon-${process.pid}-${Date.now()}`}-${runtimeInstanceId}${remote ? `-${permissionSnapshotHash}` : ''}.json`,
     );
+    let activeToolsDisabled = false;
+    let textOnlyPolicyReady = false;
+    const textOnlyInput = (text: string): string => {
+      if (!activeToolsDisabled) return text;
+      if (!textOnlyPolicyReady) throw new Error('Pi text-only input policy is unavailable.');
+      return `${CINDY_PI_TEXT_ONLY_INPUT_PREFIX}${runtimeInstanceId}\n${text}`;
+    };
     // 子代理运行期快照(model + provider)。与权限档同机制:文件而非 env —— env 在 spawn
     // 时定型,会话中途 setModel 后子代理会继续用启动时的旧模型(greptile P1),而 BYOM /
     // 本地 provider 不一起传还会让同名模型落到错误 endpoint(codex P2,pi-harness §3 要求
@@ -3256,6 +3276,7 @@ export class PiAgent extends BaseAgent {
       requestedPermissionSnapshot = {
         mode: next.mode,
         readOnlyRoots: [...next.readOnlyRoots],
+        ...(next.libraryRoot !== undefined ? { libraryRoot: next.libraryRoot } : {}),
         writableRoots: [...next.writableRoots],
         ...reviewPathSnapshot,
       };
@@ -3305,6 +3326,7 @@ export class PiAgent extends BaseAgent {
               // 放宽失败时 permissionMode 仍是旧的已提交 mode，同样达到回滚效果。
               mode: permissionMode,
               readOnlyRoots: [...persistedPermissionSnapshot.readOnlyRoots],
+              libraryRoot: persistedPermissionSnapshot.libraryRoot,
               writableRoots: [...persistedPermissionSnapshot.writableRoots],
               ...reviewPathSnapshot,
             };
@@ -3316,10 +3338,12 @@ export class PiAgent extends BaseAgent {
         if (gen === permissionWriteGen) {
           permissionMode = snapshot.mode;
           mutableExtraDirs = [...snapshot.readOnlyRoots];
+          mutableLibraryRoot = snapshot.libraryRoot;
           mutableWritableDirs = [...snapshot.writableRoots];
           persistedPermissionSnapshot = {
             mode: snapshot.mode,
             readOnlyRoots: [...snapshot.readOnlyRoots],
+            libraryRoot: snapshot.libraryRoot,
             writableRoots: [...snapshot.writableRoots],
             ...reviewPathSnapshot,
           };
@@ -3775,7 +3799,8 @@ export class PiAgent extends BaseAgent {
     let mutableProviderId: string | null | undefined = opts.providerId ?? authProviderId;
     let activeEffortSnapshot = initialEffortSnapshot;
     let mutableEffort: Effort | null = startupEffort ?? null;
-    let currentAutoReviewIntent = '';
+    let currentAutoReviewIntent: AutoReviewUserIntent = '';
+    const autoReviewActionContext = createAutoReviewActionContext();
     const autoReviewContext = () => activeTurnPermissionPolicy?.autoReviewContext
       ?? (activeTurnPermissionPolicy?.origin.kind === 'im'
         ? { requesterAuthority: 'unknown' as const, source: 'direct' as const }
@@ -3784,8 +3809,9 @@ export class PiAgent extends BaseAgent {
     let currentAutoReviewAuthority: ReturnType<typeof autoReviewContext> | null;
     const priorAutoReviewIntent = () => JSON.stringify(currentAutoReviewAuthority ?? null) === JSON.stringify(autoReviewContext() ?? null) ? currentAutoReviewIntent : '';
     const autoReviewDecisionCache = new Map<string, Promise<AutoReviewDecision>>();
-    const setAutoReviewIntent = (content: UserMessage['content'], source = { authority: currentAutoReviewAuthority }): void => {
-      currentAutoReviewIntent = extractAutoReviewUserIntent(content);
+    const setAutoReviewIntent = (content: AutoReviewUserIntent, source = { authority: currentAutoReviewAuthority }): void => {
+      autoReviewActionContext.advance(typeof content !== 'string' && JSON.stringify(currentAutoReviewAuthority ?? null) === JSON.stringify(source.authority ?? null));
+      currentAutoReviewIntent = normalizeAutoReviewUserIntent(content);
       currentAutoReviewAuthority = source.authority && { ...source.authority };
       autoReviewDecisionCache.clear();
       // 每条新用户消息 = 新一轮,提示重新武装。ErrorBanner 那份只活到下一条非 error 事件
@@ -3903,6 +3929,7 @@ export class PiAgent extends BaseAgent {
         providerId: mutableProviderId,
         model: mutableModel,
         userIntent: currentAutoReviewIntent,
+        precedingBlockedActions: autoReviewActionContext.precedingBlockedActions,
         ...(currentAutoReviewAuthority ? { authorizationContext: currentAutoReviewAuthority } : {}),
         action,
         workspaceRoots: [opts.workingDir, ...mutableExtraDirs, ...mutableWritableDirs],
@@ -3915,7 +3942,7 @@ export class PiAgent extends BaseAgent {
         pending = resolveAutoReviewDecision(request, this.deps.reviewAutoPermissionAction);
         autoReviewDecisionCache.set(cacheKey, pending);
       }
-      return pending.then((decision) => (
+      return pending.then<AutoReviewDecision>((decision) => (
         autoReviewDecisionCache.get(cacheKey) !== pending
           ? { verdict: 'block', reason: 'User instructions changed; retry against the latest authorization.' }
           : directoryGeneration === autoReviewDirectoryGeneration
@@ -3925,7 +3952,12 @@ export class PiAgent extends BaseAgent {
               verdict: 'block',
               reason: 'Directory permissions changed; retry with the current scope.',
             }
-      ));
+      )).then((decision) => {
+        if (autoReviewDecisionCache.get(cacheKey) === pending && directoryGeneration === autoReviewDirectoryGeneration) {
+          autoReviewActionContext.record(action, decision);
+        }
+        return decision;
+      });
     };
     let closed = false;
     /**
@@ -5080,6 +5112,7 @@ export class PiAgent extends BaseAgent {
         PI_CODING_AGENT_DIR: configHome,
         [PI_BASH_PACKAGE_HOME_ENV]: bashPackageHome,
         CINDY_PI_PERMISSION_FILE: permissionFile,
+        CINDY_PI_TURN_TOOL_POLICY: remote ? '' : runtimeInstanceId,
         ...(allowPiPackageManagement ? { [PI_PACKAGE_MANAGEMENT_ENV]: piPackageManagementToken } : {}),
         // 轮 40-w4-t12 HIGH-1:review-only 启动标记 —— 独立于权限文件(文件损坏/
         // 缺失时 bridge 仍保留 reviewOnly 语义, 不降级成普通 ask;见
@@ -5159,6 +5192,16 @@ export class PiAgent extends BaseAgent {
         onEvent: (event: PiRpcEvent) => {
           if (event.type === 'agent_start' || event.type === 'agent_settled') {
             piAgentLifecycleSequence += 1;
+          }
+          if (!remote && event.type === 'extension_ui_request' && event.method === 'notify') {
+            if (event.message === `${CINDY_PI_TEXT_ONLY_READY_PREFIX}${runtimeInstanceId}`) {
+              textOnlyPolicyReady = true;
+              return;
+            }
+            if (event.message === `${CINDY_PI_TEXT_ONLY_CLOSED_PREFIX}${runtimeInstanceId}`) {
+              textOnlyPolicyReady = false;
+              return;
+            }
           }
           if (event.type === 'extension_ui_request') {
             this.handleExtensionUiRequest(event, proc, () => ({
@@ -6532,6 +6575,12 @@ export class PiAgent extends BaseAgent {
       // Full Access 下 fail-closed 拒绝带策略的 send(与 capability
       // turnPermissionPolicy.unsupportedPermissionModes 一致,也与 CC/Codex 同口径)。
       validateSendOptions(sendOpts: SendOptions) {
+        if (sendOpts.toolsDisabled && remote) {
+          throw new Error('Host text-only Pi turns require a local runtime, not a shared remote daemon.');
+        }
+        if (sendOpts.toolsDisabled && !textOnlyPolicyReady) {
+          throw new Error('Pi text-only input policy is unavailable.');
+        }
         if (sendOpts.turnPermissionPolicy && permissionMode === 'bypassPermissions') {
           throw new TurnPermissionPolicyUnsupportedError('pi', permissionMode);
         }
@@ -6551,10 +6600,17 @@ export class PiAgent extends BaseAgent {
         let promptRequestStarted = false;
         let reviewIntentUpdated = false;
         try {
+          const nextToolsDisabled = sendOpts?.toolsDisabled === true;
+          if ((ctx.isStreaming || ctx.pendingHostTurnStartToken) && activeToolsDisabled !== nextToolsDisabled) {
+            throw new Error('Cannot change the tool policy while a Pi turn is active.');
+          }
+          activeToolsDisabled = nextToolsDisabled;
+          rejectIfCancelled(sendOpts, 'send');
           if (reviewMode) {
             await assertReviewMessageContentPaths(message.content, opts.workingDir, reviewReadGrants);
           }
           let { text, images } = await buildPiPrompt(message, { remote });
+          const pinnedSkill = sendOpts?.[PINNED_SKILL_INVOCATION];
           rejectIfCancelled(sendOpts, 'send');
           assertImageInputSupported(images);
           setAutoReviewIntent(appendAutoReviewUserIntent(priorAutoReviewIntent(), message.content, sendOpts), { authority: autoReviewContext() });
@@ -6571,12 +6627,18 @@ export class PiAgent extends BaseAgent {
           // erase the user message/receipt while leaving an installed package.
           if (!managedPackageRoute.accepted) rejectIfCancelled(sendOpts, 'send');
           await awaitRuntimeCapabilitiesForSlashCommand(text);
+          if (pinnedSkill && !runtimeCapabilityManifest) {
+            await runtimeCapabilityRefreshPromise;
+          }
+          if (pinnedSkill) {
+            text = preparePinnedPiSkillInvocation(text, pinnedSkill, runtimeCapabilityManifest);
+          }
           if (!managedPackageRoute.accepted) rejectIfCancelled(sendOpts, 'send');
           // setExtraDirs 是热更新；Pi 没有独立的 mid-session system-prompt RPC，所以在
           // 后续 user turn 前附上短引用目录段(但 /skill: 起始时不前置,见 composePiPromptText)。
           const promptText = composePiPromptText(
             text,
-            piExtraDirsPrompt(mutableExtraDirs, mutableWritableDirs),
+            [piExtraDirsPrompt(mutableExtraDirs, mutableWritableDirs), libraryNativeReadContext(mutableLibraryRoot, mutableExtraDirs, text)].filter(Boolean).join("\n\n"),
             runtimeCapabilityManifest,
           );
           const managedExtensionCommandName = managedExtensionSlashCommandName(
@@ -6592,7 +6654,7 @@ export class PiAgent extends BaseAgent {
           }
           const command: Record<string, unknown> = {
             type: 'prompt',
-            message: escapeLeadingSlashCommand(promptText, runtimeCapabilityManifest),
+            message: textOnlyInput(escapeLeadingSlashCommand(promptText, runtimeCapabilityManifest)),
           };
           if (images.length > 0) command.images = images;
           // send 语义 = 排队开新 turn;pi streaming 中裸 prompt 会被拒,补 followUp。
@@ -6819,7 +6881,7 @@ export class PiAgent extends BaseAgent {
         // /skill: 起始时不前置 Extra Dir 引用段(否则命令退化成文本),与 send 同口径。
         const promptText = composePiPromptText(
           text,
-          piExtraDirsPrompt(mutableExtraDirs, mutableWritableDirs),
+          [piExtraDirsPrompt(mutableExtraDirs, mutableWritableDirs), libraryNativeReadContext(mutableLibraryRoot, mutableExtraDirs, text)].filter(Boolean).join("\n\n"),
           runtimeCapabilityManifest,
         );
         const managedExtensionCommandName = managedExtensionSlashCommandName(
@@ -7141,11 +7203,12 @@ export class PiAgent extends BaseAgent {
         }
       },
 
-      async setExtraDirs(dirs: string[]): Promise<void> {
+      async setExtraDirs(dirs: string[], libraryRoot?: string | null): Promise<void> {
         if (reviewMode) return;
         await writePermissionSnapshotOrFailClosed({
           ...requestedPermissionSnapshot,
           readOnlyRoots: [...dirs],
+          libraryRoot: remote ? undefined : (libraryRoot ?? (requestedPermissionSnapshot.libraryRoot === undefined ? undefined : null)),
         });
       },
 
