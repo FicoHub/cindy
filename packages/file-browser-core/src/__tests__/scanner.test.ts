@@ -448,8 +448,6 @@ describe('writeNewFile', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xdt-write-new-sync-'));
     const realOpen = fsp.open.bind(fsp);
     const order: string[] = [];
-    const linkSpy = vi.spyOn(fsp, 'link').mockImplementation(async (from, to) => { order.push('link'); return fsp.link.getMockImplementation ? (await (Object.getPrototypeOf(fsp).link ?? fsp.link)) && undefined : undefined; });
-    linkSpy.mockRestore();
     const realLink = fsp.link.bind(fsp);
     const linkSpy2 = vi.spyOn(fsp, 'link').mockImplementation(async (from, to) => { order.push('link'); return realLink(from, to); });
     const openSpy = vi.spyOn(fsp, 'open').mockImplementation(async (...args: Parameters<typeof fsp.open>) => {
@@ -905,7 +903,7 @@ describe('verifyNewFile / eraseIfSame', () => {
       }
     });
 
-    it('holds are bounded in number (oldest evicted) and expire after their TTL', async () => {
+    it('holds reject capacity exhaustion without evicting active capabilities and expire after their TTL', async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'xdt-hold-ttl-'));
       // Count bound: a TTL long enough that the three fsync-heavy writes (slow on Windows CI)
       // cannot expire anything while the assertions run.
@@ -914,10 +912,13 @@ describe('verifyNewFile / eraseIfSame', () => {
       try {
         const a = await writeNewFile(root, 'a.json', '{"a":1}', bounded);
         await writeNewFile(root, 'b.json', '{"b":1}', bounded);
-        const c = await writeNewFile(root, 'c.json', '{"c":1}', bounded);
+        await expect(writeNewFile(root, 'c.json', '{"c":1}', bounded)).rejects.toThrow(/hold capacity/);
         expect(bounded.size).toBe(2);
-        expect(bounded.get(a.holdId!)).toBeNull(); // oldest evicted
-        expect(bounded.get(c.holdId!)).not.toBeNull();
+        expect(bounded.get(a.holdId!)).not.toBeNull();
+        expect(await fsp.stat(path.join(root, 'c.json')).catch(() => null)).toBeNull();
+        await fsp.rename(path.join(root, 'a.json'), path.join(root, 'moved.json'));
+        expect(await eraseIfSame(root, 'a.json', a.dev, a.ino, bounded, a.holdId)).toEqual({ erased: true });
+        expect(await fsReadFile(path.join(root, 'moved.json'), 'utf8')).toBe('');
         const d = await writeNewFile(root, 'd.json', '{"d":1}', expiring);
         await new Promise(r => setTimeout(r, 100));
         expect(expiring.size).toBe(0);
@@ -995,6 +996,28 @@ describe('verifyNewFile / eraseIfSame', () => {
       spy.mockRestore();
       await rm(root, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('verifyNewFile rejects an extra hard link created after the content read', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xdt-verify-late-link-'));
+    const realOpen = fsp.open.bind(fsp);
+    const spy = vi.spyOn(fsp, 'open').mockImplementation(async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await realOpen(...args);
+      const origRead = handle.readFile.bind(handle);
+      handle.readFile = (async (...readArgs: Parameters<typeof origRead>) => {
+        const result = await origRead(...readArgs);
+        await fsLink(path.join(root, 'r.json'), path.join(root, 'extra.json'));
+        return result;
+      }) as typeof handle.readFile;
+      return handle;
+    });
+    try {
+      await fsWriteFile(path.join(root, 'r.json'), '{"a":1}');
+      await expect(verifyNewFile(root, 'r.json', sha('{"a":1}'), 7)).rejects.toThrow(/still in flight/);
+    } finally {
+      spy.mockRestore();
+      await rm(root, { recursive: true, force: true });
     }
   });
 

@@ -3381,6 +3381,21 @@ describe('oversized ghost result Host storage', () => {
     expect(remoteFsRequestMock.mock.calls.map(call => call[1])).toEqual(['createFolder', 'stat', 'writeNewFile']);
   });
 
+  it('does not treat an existing directory as success after createFolder fsync fails', async () => {
+    const deps = makeDeps('codex');
+    sessionSnapshotMock.mockResolvedValue({ workingDir: '/srv/work', remoteHostId: 'host-1', permissionMode: 'auto', planModeEnabled: false });
+    liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', remoteHostId: 'host-1', isCurrent: () => true, reviewAction: reviewAllow });
+    remoteFsRequestMock.mockImplementation(async (_host, method) => {
+      if (method === 'createFolder') throw Object.assign(new Error('EIO: directory fsync failed'), { code: 'OPERATION_FAILED' });
+      if (method === 'stat') return { relPath: 'tool-results', type: 'directory', size: 0, mtimeMs: 0 };
+      return {};
+    });
+    await expect(deps.saveLargeGhostResult!('result')).rejects.toThrow('EIO');
+    expect(remoteFsRequestMock.mock.calls.map(call => call[1])).toEqual(['createFolder']);
+    expect(ledgerAddRefMock).not.toHaveBeenCalled();
+    expect(releaseMutationMock).toHaveBeenCalledOnce();
+  });
+
   it('commits no refs and issues no delete when the remote exclusive write fails outright', async () => {
     const deps = makeDeps('codex');
     sessionSnapshotMock.mockResolvedValue({ workingDir: '/srv/work', remoteHostId: 'host-1', permissionMode: 'auto', planModeEnabled: false });
@@ -3718,10 +3733,31 @@ describe('oversized ghost result Host storage', () => {
     const deps = makeDeps('codex');
     sessionSnapshotMock.mockResolvedValue({ workingDir: '/srv/work', remoteHostId: 'host-1', permissionMode: 'auto', planModeEnabled: false });
     liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', remoteHostId: 'host-1', isCurrent: () => true, reviewAction: reviewAllow });
-    remoteFsRequestMock.mockImplementation(async (_host, method) => (method === 'writeNewFile' ? { size: 5, mtimeMs: 1, dev: '7', ino: '9', holdId: 'hold-1', durable: false } : {}));
+    remoteFsRequestMock.mockImplementation(async (_host, method) => (method === 'writeNewFile' ? { size: 5, mtimeMs: 1, dev: '7', ino: '9', holdId: 'hold-1', durable: false } : { erased: true }));
     await expect(deps.saveLargeGhostResult!('result')).rejects.toThrow('not durable');
     expect(remoteFsRequestMock.mock.calls.map(call => call[1])).toEqual(['createFolder', 'writeNewFile', 'eraseIfSame']);
     expect(remoteFsRequestMock).toHaveBeenCalledWith('host-1', 'eraseIfSame', expect.objectContaining({ dev: '7', ino: '9', holdId: 'hold-1' }));
+    expect(ledgerAddRefMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['TIMEOUT', 'CHANNEL_CLOSED', 'OPERATION_FAILED', 'not-erased'])('reports unconfirmed withdrawal without accepting the non-durable write (%s)', async (code) => {
+    const deps = makeDeps('codex');
+    sessionSnapshotMock.mockResolvedValue({ workingDir: '/srv/work', remoteHostId: 'host-1', permissionMode: 'auto', planModeEnabled: false });
+    liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', remoteHostId: 'host-1', isCurrent: () => true, reviewAction: reviewAllow });
+    remoteFsRequestMock.mockImplementation(async (_host, method) => {
+      if (method === 'writeNewFile') return { size: 6, mtimeMs: 1, dev: '7', ino: '9', holdId: 'hold-1', durable: false };
+      if (method === 'eraseIfSame') {
+        if (code === 'not-erased') return { erased: false };
+        throw Object.assign(new Error('private upstream diagnostic'), { code });
+      }
+      if (method === 'verifyNewFile') return { size: 6, mtimeMs: 1, dev: '7', ino: '9', holdId: 'hold-v' };
+      return {};
+    });
+    await expect(deps.saveLargeGhostResult!('result')).rejects.toMatchObject({
+      code: 'REMOTE_SPILL_CLEANUP_UNCONFIRMED',
+      message: expect.stringContaining('cleanup unconfirmed'),
+    });
+    expect(remoteFsRequestMock.mock.calls.map(call => call[1])).toEqual(['createFolder', 'writeNewFile', 'eraseIfSame']);
     expect(ledgerAddRefMock).not.toHaveBeenCalled();
   });
 

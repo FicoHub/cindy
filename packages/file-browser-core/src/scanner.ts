@@ -654,6 +654,7 @@ export async function writeNewFile(
   const stagingAbs = path.join(stagingDir, `.${path.basename(abs)}.${randomUUID()}.staging`);
   const handle = await fs.open(stagingAbs, 'wx', 0o600);
   let published = false;
+  let holdId: string | undefined;
   const escape = () => new Error(`path escapes workdir via symlink: ${sub}`);
   const isOurs = async (candidate: string): Promise<boolean> => {
     const [own, current] = await Promise.all([
@@ -663,6 +664,7 @@ export async function writeNewFile(
     return !!own && !!current && current.isFile() && current.ino === own.ino && current.dev === own.dev;
   };
   try {
+    if (holds) holdId = holds.register(handle, await handle.stat({ bigint: true }), false);
     await handle.writeFile(buf);
     // Durability before publication: a host that loses power right after the RPC
     // succeeded must not come back with an empty or partial published file.
@@ -726,7 +728,8 @@ export async function writeNewFile(
     // names are the conservative residue; a leftover staging name also keeps verifyNewFile
     // from ever accepting this withdrawn publish.
     await handle.truncate(0).catch(() => undefined);
-    await handle.close().catch(() => undefined);
+    if (holds && holdId) await holds.release(holdId);
+    else await handle.close().catch(() => undefined);
     throw err;
   }
   // Past this point the publish is complete and is never withdrawn *by this call* (a recovery
@@ -752,7 +755,8 @@ export async function writeNewFile(
   // for the caller's bookkeeping window. `eraseIfSame` with this hold zeroes the content
   // through the descriptor wherever the directory went; `releaseNewFile` closes it. Nothing
   // is ever deleted by pathname after the fact — no marker, no finalize unlink.
-  return { ...identity, holdId: holds.register(handle, st) };
+  if (holdId) holds.startExpiry(holdId);
+  return { ...identity, holdId };
 }
 
 /**
@@ -773,21 +777,25 @@ export interface NewFileHold { handle: FileHandle; dev: bigint; ino: bigint }
  * the published file exactly as a plain `writeNewFile` would have.
  */
 export class NewFileHoldRegistry {
-  private readonly holds = new Map<string, NewFileHold & { timer: NodeJS.Timeout }>();
+  private readonly holds = new Map<string, NewFileHold & { timer?: NodeJS.Timeout }>();
   constructor(private readonly opts: { ttlMs?: number; max?: number } = {}) {}
 
-  register(handle: FileHandle, st: { dev: bigint; ino: bigint }): string {
+  register(handle: FileHandle, st: { dev: bigint; ino: bigint }, startExpiry = true): string {
     const max = this.opts.max ?? 64;
-    while (this.holds.size >= max) {
-      const oldest = this.holds.keys().next().value;
-      if (oldest === undefined) break;
-      void this.release(oldest);
-    }
+    if (this.holds.size >= max) throw new Error('new file hold capacity exhausted');
     const id = randomUUID();
-    const timer = setTimeout(() => { void this.release(id); }, this.opts.ttlMs ?? 120_000);
-    timer.unref?.();
-    this.holds.set(id, { handle, dev: st.dev, ino: st.ino, timer });
+    this.holds.set(id, { handle, dev: st.dev, ino: st.ino });
+    if (startExpiry) this.startExpiry(id);
     return id;
+  }
+
+  // In-flight writers reserve capacity before writing; their cleanup handle must not
+  // expire during an awaited filesystem operation. TTL starts at publication handoff.
+  startExpiry(id: string): void {
+    const hold = this.holds.get(id);
+    if (!hold || hold.timer) return;
+    hold.timer = setTimeout(() => { void this.release(id); }, this.opts.ttlMs ?? 120_000);
+    hold.timer.unref?.();
   }
 
   get(id: string): NewFileHold | null {
@@ -891,10 +899,13 @@ export async function verifyNewFile(
     if (!after || !after.isFile() || after.dev !== opened.dev || after.ino !== opened.ino) {
       throw new Error(`identity mismatch after read: ${sub}`);
     }
+    const finalStat = await handle.stat({ bigint: true });
+    if (finalStat.nlink !== 1n) throw new Error(`write still in flight: ${sub}`);
     const identity = { size: Number(opened.size), mtimeMs: Number(opened.mtimeMs), ...identityOf(opened) };
     if (!holds) return identity;
+    const holdId = holds.register(handle, opened);
     retained = true;
-    return { ...identity, holdId: holds.register(handle, opened) };
+    return { ...identity, holdId };
   } finally {
     if (!retained) await handle.close();
   }

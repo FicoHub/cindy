@@ -757,8 +757,14 @@ async function writeLargeResultToRemote(
     await remote.request(remoteHostId, 'createFolder', { workdir, relPath: dir }, { beforeSend });
   } catch (err) {
     if (authorizationRevoked) throw err;
-    // 超时/断链时 daemon 可能仍在 mkdir:按结果未知轮询等目录出现;明确失败(EEXIST 等)
-    // 只 stat 一次确认目录已在。目录仍不可见就放弃,不能把唯一文件写进不存在的目录。
+    const code = (err as { code?: unknown } | null)?.code;
+    const message = err instanceof Error ? err.message : '';
+    // The daemon wraps filesystem errors as OPERATION_FAILED while preserving Node's
+    // leading errno. Only EEXIST or an unknown transport outcome can be reconciled by
+    // presence; in particular, an EIO from syncing the new parent entry is not success.
+    const alreadyExists = code === 'EEXIST' || /^EEXIST:/.test(message);
+    if (!alreadyExists && !isRemoteResultUnknown(err)) throw err;
+    // 超时/断链按结果未知轮询；EEXIST只stat一次核实目标确实为目录。
     const ready = await pollRemoteStat(remote, remoteHostId, workdir, dir, {
       attempts: isRemoteResultUnknown(err) ? REMOTE_WRITE_RECONCILE.maxAttempts : 1,
       done: (stat) => stat?.type === 'directory',
@@ -785,7 +791,17 @@ async function writeLargeResultToRemote(
       // hard link back with the full private content outside the ledger lifecycle. This
       // client is the only party that accepted the publish and still holds the descriptor:
       // withdraw through it and report the write as failed.
-      await remote.request(remoteHostId, 'eraseIfSame', { workdir, relPath, dev: anchor.dev, ino: anchor.ino, ...(anchor.holdId !== undefined ? { holdId: anchor.holdId } : {}) }).catch(() => undefined);
+      try {
+        const cleanup = await remote.request(remoteHostId, 'eraseIfSame', { workdir, relPath, dev: anchor.dev, ino: anchor.ino, ...(anchor.holdId !== undefined ? { holdId: anchor.holdId } : {}) });
+        if (!cleanup.erased) throw new Error('inode withdrawal was not confirmed');
+      } catch (cause) {
+        // This is a failed withdrawal, not an unknown write. Preserve that distinction:
+        // propagating TIMEOUT directly would let the outer catch verify and accept a
+        // publish already known to be non-durable. Do not expose raw upstream diagnostics.
+        throw Object.assign(new Error('remote spill not durable; cleanup unconfirmed, private output may remain', { cause }), {
+          code: 'REMOTE_SPILL_CLEANUP_UNCONFIRMED',
+        });
+      }
       throw new Error('remote spill not durable: staging removal did not reach disk');
     }
     return anchor;
