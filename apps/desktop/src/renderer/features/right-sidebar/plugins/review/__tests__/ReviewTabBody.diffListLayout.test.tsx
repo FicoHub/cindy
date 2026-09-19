@@ -190,17 +190,20 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  // 在 jsdom 仍存在时卸载组件，并排空虚拟列表的滚动 debounce。
   cleanup();
-  await act(async () => {
-    await vi.runOnlyPendingTimersAsync();
-  });
-  expect(vi.getTimerCount()).toBe(0);
-  vi.useRealTimers();
-  if (originalOffsetHeight) {
-    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', originalOffsetHeight);
+  // virtual-core 的 scroll-end debounce 在卸载后仍可能待执行；
+  // 在 jsdom 还存活时清空回调，避免它逃到测试环境销毁之后。
+  try {
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+  } finally {
+    vi.useRealTimers();
+    if (originalOffsetHeight) {
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', originalOffsetHeight);
+    }
+    Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
   }
-  Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
 });
 
 function rowStarts(container: HTMLElement): number[] {

@@ -3074,6 +3074,26 @@
           "$type": "shadow",
           "$value": "{reference.defaults.slider-thumb-shadow.dark}"
         }
+      },
+      "segmented-track": {
+        "light": {
+          "$type": "color",
+          "$value": "{reference.defaults.segmented-track.light}"
+        },
+        "dark": {
+          "$type": "color",
+          "$value": "{reference.defaults.segmented-track.dark}"
+        }
+      },
+      "segmented-selected-shadow": {
+        "light": {
+          "$type": "shadow",
+          "$value": "{reference.defaults.segmented-selected-shadow.light}"
+        },
+        "dark": {
+          "$type": "shadow",
+          "$value": "{reference.defaults.segmented-selected-shadow.dark}"
+        }
       }
     }
   }
