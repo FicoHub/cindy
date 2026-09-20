@@ -642,6 +642,8 @@ export interface ComputerDriverPermissionState {
 
 export interface ComputerMcpCallContext {
   sessionId?: string;
+  /** Host-only observation origin; automatic reads must not authorize resumed input. */
+  observationPurpose?: 'recovery';
   /** Request cancellation stays on the host side; never serialized to the driver. */
   signal?: AbortSignal;
   /** Identifies the agent runtime whose MCP server dispatched this call. */
