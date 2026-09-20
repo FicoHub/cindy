@@ -2235,6 +2235,108 @@ describe('TelegramIM', () => {
     }
   });
 
+  // issue #1558: 回挂目标的归属单位是逻辑 turn, 不是流式段。
+  function groupQuotedSince(from: number): Array<number | undefined> {
+    return api.calls
+      .slice(from)
+      .filter(
+        (c) =>
+          (c.method === 'sendMessage' || c.method === 'sendRichMessage') &&
+          String(c.params.chat_id) === '-100200',
+      )
+      .map((c) => (c.params.reply_parameters as { message_id?: number } | undefined)?.message_id);
+  }
+
+  async function connectAllQuoteGroup(): Promise<{ events: IMMessageEvent[] }> {
+    await im.dispose();
+    im = new TelegramIM(ctx.host, {
+      apiFactory: () => api,
+      behavior: () => ({ emojiReactions: 'off', replyQuoteGroup: 'all', replyQuoteDm: 'off' }),
+    });
+    im.registerIpc();
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    return { events };
+  }
+
+  it("issue #1558 群 'all' 档: 交互卡前收口后 B 的排队提示挂回 B 自己, A 续流仍挂回 A, B 的 turn 领到 B", async () => {
+    const { events } = await connectAllQuoteGroup();
+    api.pushUpdates([groupMessage({ text: 'A 问', fromId: 222, messageId: 70, mentionBot: true })]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    const lane = events[0].senderId;
+
+    const turnA = im.beginOutboundTurn(lane);
+    const first = await im.startStreamingText(lane, undefined, { turn: turnA });
+    // 交互卡前 Host 会 finalize 当前流式段 —— turn 并未结束
+    await first.finalize('A 等待确认');
+
+    api.pushUpdates([groupMessage({ text: 'B 问', fromId: 333, messageId: 71, mentionBot: true })]);
+    await vi.waitFor(() => expect(events).toHaveLength(2));
+    let mark = api.calls.length;
+    await im.sendMarkdownText(lane, '你排在第 1 位', { replyToMessageId: events[1].messageId });
+    expect(groupQuotedSince(mark)).toEqual([71]);
+
+    // A 交互后续流: 必须仍挂回 70(修复前从空队列领取 → undefined)
+    mark = api.calls.length;
+    const resumed = await im.startStreamingText(lane, undefined, { turn: turnA });
+    await resumed.finalize('A 的续答');
+    const quotedA = groupQuotedSince(mark);
+    expect(quotedA.length).toBeGreaterThan(0);
+    expect(quotedA.every((id) => id === 70)).toBe(true);
+    im.endOutboundTurn(turnA);
+    im.endOutboundTurn(turnA); // 幂等
+
+    // B 的目标没有被提示消耗: B 自己的 turn 领到 71
+    mark = api.calls.length;
+    const turnB = im.beginOutboundTurn(lane);
+    const b = await im.startStreamingText(lane, undefined, { turn: turnB });
+    await b.finalize('B 的答案');
+    const quotedB = groupQuotedSince(mark);
+    expect(quotedB.length).toBeGreaterThan(0);
+    expect(quotedB.every((id) => id === 71)).toBe(true);
+    im.endOutboundTurn(turnB);
+  });
+
+  it('issue #1558: 活动 turn 期间无归属的独立流式(调度转播)不领取队列、不改向 turn 目标', async () => {
+    const { events } = await connectAllQuoteGroup();
+    api.pushUpdates([groupMessage({ text: 'A 问', fromId: 222, messageId: 70, mentionBot: true })]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    const lane = events[0].senderId;
+
+    const turnA = im.beginOutboundTurn(lane);
+    const a = await im.startStreamingText(lane, undefined, { turn: turnA });
+    a.replace('A 的第一段');
+    await vi.waitFor(() => expect(groupQuotedSince(0)).toEqual([70]), { timeout: 3_000, interval: 50 });
+
+    // 另一条触发消息入队(其目标 71 留在队列里等它自己的 turn)
+    api.pushUpdates([groupMessage({ text: 'C 问', fromId: 444, messageId: 72, mentionBot: true })]);
+    await vi.waitFor(() => expect(events).toHaveLength(2));
+
+    // 无 token 的独立流式: 既不能拿 72, 也不能拿 A 的 70
+    let mark = api.calls.length;
+    const stray = await im.startStreamingText(lane);
+    await stray.finalize('调度转播内容');
+    const quotedStray = groupQuotedSince(mark);
+    expect(quotedStray.length).toBeGreaterThan(0);
+    expect(quotedStray.every((id) => id === undefined)).toBe(true);
+
+    mark = api.calls.length;
+    await a.finalize('A 的最终答案');
+    const quotedA = groupQuotedSince(mark);
+    expect(quotedA.length).toBeGreaterThan(0);
+    expect(quotedA.every((id) => id === 70)).toBe(true);
+    im.endOutboundTurn(turnA);
+
+    // 72 仍在队列: 下一轮 turn 正常领到
+    mark = api.calls.length;
+    const turnC = im.beginOutboundTurn(lane);
+    const c = await im.startStreamingText(lane, undefined, { turn: turnC });
+    await c.finalize('C 的答案');
+    expect(groupQuotedSince(mark).every((id) => id === 72)).toBe(true);
+    im.endOutboundTurn(turnC);
+  });
+
   it("群 'all' 档: A 流式期间 B 排队发提示, A 剩下的答案不能改挂到 B", async () => {
     await im.dispose();
     im = new TelegramIM(ctx.host, {
