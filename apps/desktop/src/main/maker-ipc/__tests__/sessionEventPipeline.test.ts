@@ -110,6 +110,7 @@ vi.mock('../../messagePersistBroadcaster.js', () => ({
   enqueueDurableWrite: effects.fn('enqueueDurableWrite'),
   flushAssistantBlock: effects.fn('flushAssistantBlock'),
   onAssistantTextEvent: effects.fn('onAssistantTextEvent'),
+  onStandaloneTextEvent: effects.fn('onStandaloneTextEvent'),
   onAgentTaskUpdateEvent: effects.fn('onAgentTaskUpdateEvent'),
   onThinkingEvent: effects.fn('onThinkingEvent'),
   onToolResultEvent: effects.fn('onToolResultEvent'),
@@ -240,6 +241,7 @@ function harness() {
   });
   const activity = new SessionTurnActivityTracker();
   const deps = {
+    onSuccessfulProductTurn: vi.fn(async () => {}),
     log,
     botCompactRuntimeRefreshCoordinator: { noteBoundary: vi.fn() },
     attemptBotCompactRuntimeRefresh: vi.fn(),
@@ -389,6 +391,72 @@ function ordered(...names: string[]) {
 }
 
 describe('production Session event pipeline', () => {
+  it('delivers Pi notices as durable rows without entering model streaming or turn bookkeeping', async () => {
+    const h = harness();
+    h.deps.redactEventForRenderer.mockImplementation((value) => value);
+    try {
+      h.emit(event('text', { text: 'Plan mode enabled.', isFinal: true }, {
+        source: 'pi', standaloneText: true, turnScope: 'background',
+      }));
+      await microtasks();
+      expect(effects.fn('onStandaloneTextEvent')).toHaveBeenCalledWith('task', 'Plan mode enabled.', null);
+      expect(effects.fn('onAssistantTextEvent')).not.toHaveBeenCalled();
+      expect(effects.fn('flushAssistantBlock')).not.toHaveBeenCalled();
+      expect(effects.fn('noteTurnStarted')).not.toHaveBeenCalled();
+      expect(effects.fn('markAssistantTurnCompleted')).not.toHaveBeenCalled();
+      expect(h.deps.broadcastToAllWindows).not.toHaveBeenCalled();
+      expect(h.deps.orcaTeamServiceForEvents?.captureWorkerText).not.toHaveBeenCalled();
+      h.emit(event('text', { text: 'Actual reply', isFinal: true, isFullText: true }, { source: 'pi' }));
+      expect(effects.fn('onAssistantTextEvent')).toHaveBeenCalledOnce();
+      expect(h.deps.broadcastToAllWindows).toHaveBeenCalled();
+    } finally {
+      await h.dispose();
+    }
+  });
+
+  it('drops a pre-clear Pi notice on delayed delivery while accepting a new notice', async () => {
+    const h = harness();
+    h.deps.redactEventForRenderer.mockImplementation((value) => value);
+    try {
+      effects.fn('backgroundTurnPredatesSessionClear').mockReturnValueOnce(true);
+      h.emit(event('text', { text: 'Old plan notice', isFinal: true }, {
+        source: 'pi', standaloneText: true, turnScope: 'background', backgroundTurnStartedAt: 1000,
+      }));
+      expect(effects.fn('backgroundTurnPredatesSessionClear')).toHaveBeenCalledWith('task', 1000);
+      expect(effects.fn('onStandaloneTextEvent')).not.toHaveBeenCalled();
+      expect(h.deps.broadcastToAllWindows).not.toHaveBeenCalled();
+      effects.fn('backgroundTurnPredatesSessionClear').mockReturnValueOnce(false);
+      h.emit(event('text', { text: 'New plan notice', isFinal: true }, {
+        source: 'pi', standaloneText: true, turnScope: 'background', backgroundTurnStartedAt: 3000,
+      }));
+      expect(effects.fn('onStandaloneTextEvent')).toHaveBeenCalledExactlyOnceWith('task', 'New plan notice', null);
+      expect(effects.fn('onAssistantTextEvent')).not.toHaveBeenCalled();
+    } finally {
+      await h.dispose();
+    }
+  });
+
+  it('retains accepted private-message visibility for independent Pi notices', async () => {
+    const h = harness();
+    h.deps.redactEventForRenderer.mockImplementation((value) => value);
+    h.deps.agentInputCoordinatorHolder.getActiveInputClientId.mockReturnValue('bot-dm:private-input');
+    h.emit(event('text', { text: 'Extension result', isFinal: true }, {
+      source: 'pi', standaloneText: true, turnScope: 'background',
+    }));
+    expect(effects.fn('onStandaloneTextEvent')).toHaveBeenCalledWith('task', 'Extension result', { botPrivateReply: true });
+    await h.dispose();
+  });
+
+  it.each(['completed', 'failed', 'cancelled', 'interrupted'])(
+    'runs the upstream-merge follow-up only for a successful product boundary: %s', async (status) => {
+      const h = harness();
+      h.emit(event('status', { isRunning: true }));
+      h.emit(event('done', { status }));
+      await microtasks();
+      expect(h.deps.onSuccessfulProductTurn).toHaveBeenCalledTimes(status === 'completed' ? 1 : 0);
+      await h.dispose();
+    },
+  );
   it.each([
     ['zh-CN', 'Pi 扩展未能完成刷新。请重启 Cindy 后再使用 Pi。'],
     ['zh-TW', 'Pi 擴充功能未能完成重新整理。請重新啟動 Cindy 後再使用 Pi。'],
@@ -419,6 +487,22 @@ describe('production Session event pipeline', () => {
     await h.dispose();
   });
 
+  // #4349: the Host recovery notice reaches Desktop through the dedicated
+  // onRuntimeRecovery channel but shares handleSessionEvent with turn text. It is
+  // persisted and broadcast, yet must not be captured as an Orca worker result.
+  it('keeps a Host runtime-recovery notice out of Orca worker capture while still persisting it', async () => {
+    const h = harness();
+    const data = { isFinal: true, text: 'restart-cindy-to-refresh-packages' };
+    h.emit(event('text', data, { source: 'pi', runtimeRecovery: true }));
+    expect(h.deps.orcaTeamServiceForEvents.captureWorkerText).not.toHaveBeenCalled();
+    // Still persisted (with the localized notice text) for the transcript.
+    expect(effects.fn('onAssistantTextEvent')).toHaveBeenCalledOnce();
+    // Ordinary worker text is still captured.
+    h.emit(event('text', { isFinal: true, text: 'real worker reply' }, { source: 'pi' }));
+    expect(h.deps.orcaTeamServiceForEvents.captureWorkerText).toHaveBeenCalledWith('task', 'real worker reply', { isFinal: true });
+    await h.dispose();
+  });
+
   it('preserves ordinary Pi text without the Host recovery marker', async () => {
     const h = harness();
     const data = { isFinal: true, text: 'partial: restart-cindy-to-refresh-packages' };
@@ -427,13 +511,15 @@ describe('production Session event pipeline', () => {
     await h.dispose();
   });
 
-  it('keeps continuation segments running, then seals the final product boundary', async () => {
+  it.each(['claude-code', 'codex'] as const)('keeps %s continuation segments running, then seals the final product boundary', async (source) => {
     const h = harness();
+    Object.defineProperty(h.session, 'agentKind', { value: source });
     vi.setSystemTime(1000);
-    h.emit(event('status', { isRunning: true }, { source: 'claude-code' }));
+    h.emit(event('status', { isRunning: true }, { source }));
     effects.fn('consumeLastAssistantPersistId').mockReturnValueOnce('segment-row');
     vi.setSystemTime(3000);
-    h.emit(event('done', {}, { source: 'claude-code', turnContinuationId: 0 }));
+    h.emit(event('done', {}, { source, turnContinuationId: 0 }));
+    expect(h.deps.onSuccessfulProductTurn).not.toHaveBeenCalled();
     expect(h.activity.isSessionInTurn('task')).toBe(true);
     expect(h.deps.notifyGoalIdleAfterTurnSettled).not.toHaveBeenCalled();
     expect(effects.fn('turn-drain')).not.toHaveBeenCalled();
@@ -444,15 +530,20 @@ describe('production Session event pipeline', () => {
     expect(h.deps.orcaTeamServiceForEvents.handleWorkerTerminalTurn).not.toHaveBeenCalled();
     effects.fn('recordTurnUsageOnMessage').mockClear();
     vi.setSystemTime(5000);
-    h.emit(event('done', { total_cost_usd: 0, duration_ms: 20 }, { source: 'claude-code' }));
+    h.emit(event('done', { total_cost_usd: 0, duration_ms: 20 }, { source }));
     expect(h.activity.isSessionInTurn('task')).toBe(false);
     expect(h.deps.notifyGoalIdleAfterTurnSettled).toHaveBeenCalledOnce();
     await microtasks();
-    expect(effects.fn('recordTurnUsageOnMessage')).toHaveBeenCalledWith({
-      sessionId: 'task',
-      clientId: 'segment-row',
-      turnUsageDetails: expect.objectContaining({ turnDurationMs: 4000 }),
-    });
+    if (source === 'claude-code') {
+      expect(effects.fn('recordTurnUsageOnMessage')).toHaveBeenCalledWith({
+        sessionId: 'task',
+        clientId: 'segment-row',
+        turnUsageDetails: expect.objectContaining({ turnDurationMs: 4000 }),
+      });
+    } else {
+      // A synthetic Codex terminal carries no second copy of SDK usage.
+      expect(effects.fn('recordTurnUsageOnMessage')).not.toHaveBeenCalled();
+    }
     await h.dispose();
   });
 
@@ -809,6 +900,80 @@ describe('provider turn observer on real Session.send', () => {
       },
     };
   }
+  it('holds the send reservation while waiting for the local project boundary', async () => {
+    const harnessState = harness();
+    const gate = deferred();
+    const onAccepted = vi.fn();
+    const beforeLocalProviderStart = vi.fn(async (session: Session) => {
+      expect(session.isTurnRunning()).toBe(true);
+      await gate.promise;
+      effects.calls.push('project-ready');
+    });
+    const dispose = installSessionTurnObserver(
+      { ...observerDeps(), beforeLocalProviderStart }, harnessState.session,
+    );
+    const sending = harnessState.session.send('test', { onAccepted });
+    try {
+      await microtasks();
+      expect(beforeLocalProviderStart).toHaveBeenCalledWith(harnessState.session);
+      expect(harnessState.session.isTurnRunning()).toBe(true);
+      expect(onAccepted).not.toHaveBeenCalled();
+      expect(harnessState.handle.send).not.toHaveBeenCalled();
+      expect(effects.fn('verdictForModelRoute')).not.toHaveBeenCalled();
+      gate.resolve();
+      await sending;
+      ordered('project-ready', 'lease-start');
+      expect(effects.fn('verdictForModelRoute')).toHaveBeenCalledOnce();
+      expect(onAccepted).toHaveBeenCalledOnce();
+      expect(harnessState.handle.send).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve();
+      await sending;
+      dispose();
+      await harnessState.dispose();
+    }
+  });
+
+  it('rejects unavailable local projects before persistence, lease and provider dispatch', async () => {
+    const harnessState = harness();
+    const deps = observerDeps();
+    const onAccepted = vi.fn();
+    const beforeLocalProviderStart = vi.fn(async () => {
+      throw new Error('project unavailable');
+    });
+    const dispose = installSessionTurnObserver(
+      { ...deps, beforeLocalProviderStart }, harnessState.session,
+    );
+    try {
+      await expect(harnessState.session.send('test', { onAccepted })).rejects.toThrow('project unavailable');
+      expect(beforeLocalProviderStart).toHaveBeenCalledOnce();
+      expect(onAccepted).not.toHaveBeenCalled();
+      expect(deps.sessionTurnLeaseTracker.markTurnStarted).not.toHaveBeenCalled();
+      expect(harnessState.handle.send).not.toHaveBeenCalled();
+      expect(harnessState.session.isTurnRunning()).toBe(false);
+    } finally {
+      dispose();
+      await harnessState.dispose();
+    }
+  });
+
+  it('does not apply the local project boundary to a remote session', async () => {
+    const harnessState = harness();
+    Object.defineProperty(harnessState.session, 'remoteHostId', { value: 'ssh-host' });
+    const beforeLocalProviderStart = vi.fn(async () => {});
+    const dispose = installSessionTurnObserver(
+      { ...observerDeps(), beforeLocalProviderStart }, harnessState.session,
+    );
+    try {
+      await harnessState.session.send('test');
+      expect(beforeLocalProviderStart).not.toHaveBeenCalled();
+      expect(harnessState.handle.send).toHaveBeenCalledOnce();
+    } finally {
+      dispose();
+      await harnessState.dispose();
+    }
+  });
+
   it.each(['reject', 'reroute'] as const)(
     'stops a paid-model %s before lease and provider dispatch',
     async (kind) => {

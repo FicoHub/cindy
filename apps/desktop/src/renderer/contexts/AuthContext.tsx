@@ -1,3 +1,4 @@
+import { resetTaskTagCatalogCache } from '@/features/task-tags/taskTagEvents';
 import {
   createContext,
   useCallback,
@@ -39,6 +40,7 @@ import {
   setChatEmbeddingSettingsOwner,
 } from '@/lib/chatEmbeddingStore';
 import { sessionsStore } from '@/lib/sessionsStore';
+import { recentWorkdirsStore } from '@/lib/recentWorkdirsStore';
 import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { isGhostPanelWindow } from '@/lib/ghostPanelWindow';
 import { setModelEnginePrefsOwner } from '@/state/modelEnginePrefs';
@@ -115,9 +117,11 @@ const log = createLogger('AuthContext');
 function publishDataOwnerGeneration(dataOwnerId: string | null, ownerGeneration?: number): void {
   const previousOwnerId = getDataOwnerGeneration().dataOwnerId;
   if (previousOwnerId !== dataOwnerId) {
+    resetTaskTagCatalogCache();
     cancelRemoteOptimisticSendsForDataOwnerBoundary();
   }
   setDataOwnerGeneration(dataOwnerId, ownerGeneration);
+  recentWorkdirsStore.setDataOwner(getDataOwnerGeneration());
   setSelectedMachineOwner(dataOwnerId);
   if (previousOwnerId !== dataOwnerId) invalidateProvidersSnapshot();
 }

@@ -12,6 +12,7 @@ import {
   AUTO_REVIEW_SOURCE_CONTENT,
   INHERITED_CAPABILITY_SELECTION,
   MAIN_OWNED_SEND_CONTEXT,
+  PINNED_SKILL_INVOCATION,
   CodexResumePreparationBlockedError,
   AgentNotAuthenticatedError,
   type AgentDeps,
@@ -360,6 +361,183 @@ function createDeps(
 }
 
 describe('CodexAgent spawn configuration', () => {
+  it('holds account session recovery until the MCP bridge replacement is ready', async () => {
+    let endpoint = 'http://127.0.0.1:51359/mcp/cindy_scheduler';
+    const prepare = vi.fn(async () => {
+      const frozenEndpoint = endpoint;
+      return { extraArgs: [], extraEnv: {},
+        buildSessionMcpConfig: () => ({ 'mcp_servers.cindy_scheduler.url': frozenEndpoint }) };
+    });
+    const agent = new CodexAgent(createDeps({}, {
+      isolateCodexAccountSessions: true,
+      prepareCodexExtraSpawnConfig: prepare,
+    }));
+    const guard = await agent.beginLocalHostCredentialChange('MCP refresh', { allLocalHosts: true });
+    guard.assertIdle();
+    const recovery = agent.startSession({ sessionId: 'recover-account', sessionInstanceId: 'recover-instance', model: 'gpt-5.4',
+      workingDir: '/repo', resumeSessionId: '11111111-1111-1111-1111-111111111111' });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(prepare).not.toHaveBeenCalled();
+    await guard.retireActiveHost();
+    endpoint = 'http://127.0.0.1:51409/mcp/cindy_scheduler';
+    await guard.finalize();
+    const handle = await recovery;
+    const resume = createdTransports[0].lines.map(line => JSON.parse(line))
+      .find(message => message.method === Method.ThreadResume);
+    expect(resume.params.config['mcp_servers.cindy_scheduler.url']).toBe(endpoint);
+    await handle.close();
+    await agent.dispose();
+  });
+
+  it('defers MCP refresh while an account session is recovering before registration', async () => {
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    MockCodexTransport.beforeThreadStartResponse = async () => {
+      started.resolve();
+      await finish.promise;
+    };
+    const agent = new CodexAgent(createDeps({}, { isolateCodexAccountSessions: true }));
+    const startup = agent.startSession({ sessionId: 'starting-account', model: 'gpt-5.4', workingDir: '/repo' });
+    await started.promise;
+    const guard = await agent.beginLocalHostCredentialChange('MCP refresh', { allLocalHosts: true });
+    expect(() => guard.assertIdle()).toThrow(/active Codex session/);
+    expect(createdTransports[0].closed).toBe(false);
+    guard.release();
+    finish.resolve();
+    const handle = await startup;
+    await handle.close();
+    await agent.dispose();
+  });
+
+  it('defers MCP refresh during asynchronous control-plane host preparation', async () => {
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    const agent = new CodexAgent(createDeps({}, { prepareCodexExtraSpawnConfig: async () => {
+      started.resolve();
+      await finish.promise;
+      return { extraArgs: [], extraEnv: {} };
+    } }));
+    const models = agent.refreshLocalModels({ credentialMode: 'oauth-bearer' });
+    await started.promise;
+    const busy = new Error('deferrable startup');
+    const guard = await agent.beginLocalHostCredentialChange('MCP refresh', { allLocalHosts: true, busyError: () => busy });
+    expect(() => guard.assertIdle()).toThrow(busy);
+    guard.release();
+    finish.resolve();
+    await models;
+    await agent.dispose();
+  });
+
+  it.each([Method.ModelList, Method.ThreadFork, Method.AccountRateLimitsRead, Method.SkillsList, Method.ConfigRead, Method.MemoryReset])(
+    'keeps %s leased until the control-plane operation settles', async (method) => {
+      const started = deferred<void>();
+      const finish = deferred<void>();
+      const agent = new CodexAgent(createDeps());
+      const host = installFakeHost(agent, async (requested) => {
+        if (requested !== method) return undefined;
+        started.resolve();
+        await finish.promise;
+        if (method === Method.ModelList) return { data: [], nextCursor: null };
+        if (method === Method.AccountRateLimitsRead || method === Method.MemoryReset) return {};
+        return undefined;
+      });
+      const operation = method === Method.ModelList ? agent.refreshLocalModels({ credentialMode: 'oauth-bearer' })
+        : method === Method.ThreadFork ? agent.forkSdkSession({ sourceSdkSessionId: 'source', upToMessageId: 'message', workingDir: '/repo' })
+        : method === Method.AccountRateLimitsRead ? agent.readAccountRateLimits()
+        : method === Method.SkillsList ? agent.listAgentSkills({ workingDir: '/repo' })
+        : method === Method.ConfigRead ? agent.getMemoryStatus()
+        : agent.resetMemory();
+      await started.promise;
+      const busy = new Error('defer auxiliary operation');
+      const guard = await agent.beginLocalHostCredentialChange('MCP refresh', {
+        allLocalHosts: true, busyError: () => busy,
+      });
+      expect(() => guard.assertIdle()).toThrow(busy);
+      await expect(guard.retireActiveHost()).rejects.toThrow(/active Codex session/);
+      expect(host.retire).not.toHaveBeenCalled();
+      guard.release();
+      finish.resolve();
+      await operation;
+      const after = await agent.beginLocalHostCredentialChange('after operation', { allLocalHosts: true });
+      after.assertIdle();
+      await after.finalize();
+    },
+  );
+
+  it('releases the control-plane lease when its RPC rejects', async () => {
+    const agent = new CodexAgent(createDeps());
+    installFakeHost(agent, (method) => {
+      if (method === Method.ModelList) throw new Error('model failure');
+    });
+    await expect(agent.refreshLocalModels({ credentialMode: 'oauth-bearer' })).rejects.toThrow('model failure');
+    const guard = await agent.beginLocalHostCredentialChange('after failure', { allLocalHosts: true });
+    guard.assertIdle();
+    await guard.finalize();
+  });
+
+  it('defers memory push while refresh owns admission and new RPCs use the replacement host', async () => {
+    const agent = new CodexAgent(createDeps());
+    await agent.refreshLocalModels();
+    const old = createdTransports[0];
+    const guard = await agent.beginLocalHostCredentialChange('MCP refresh', { allLocalHosts: true });
+    const before = old.lines.length;
+    expect(await agent.setMemory(true)).toEqual({ effective: 'next-session' });
+    const models = agent.refreshLocalModels();
+    await Promise.resolve();
+    expect(old.lines).toHaveLength(before);
+    guard.assertIdle();
+    await guard.retireActiveHost();
+    await guard.finalize();
+    await models;
+    expect(old.closed).toBe(true);
+    expect(createdTransports).toHaveLength(2);
+    await agent.dispose();
+  });
+
+  it('serializes overlapping MCP refresh reservations and releases after failure', async () => {
+    const prepare = vi.fn(async () => ({ extraArgs: [], extraEnv: {} }));
+    const agent = new CodexAgent(createDeps({}, { prepareCodexExtraSpawnConfig: prepare }));
+    const first = await agent.beginLocalHostCredentialChange('first refresh', { allLocalHosts: true });
+    let acquired = false;
+    const secondPromise = agent.beginLocalHostCredentialChange('second refresh', { allLocalHosts: true })
+      .then(guard => { acquired = true; return guard; });
+    await Promise.resolve();
+    expect(acquired).toBe(false);
+    // A bridge replacement failure must release its reservation without
+    // releasing a later refresh that has already acquired admission.
+    first.release();
+    const second = await secondPromise;
+    first.release();
+    const startup = agent.startSession({ sessionId: 'after-failed-refresh', model: 'gpt-5.4', workingDir: '/repo' });
+    await Promise.resolve();
+    expect(prepare).not.toHaveBeenCalled();
+    second.release();
+    const handle = await startup;
+    expect(prepare).toHaveBeenCalledOnce();
+    await handle.close();
+    await agent.dispose();
+  });
+
+  it('retires all local MCP consumers without blocking or retiring remote sessions', async () => {
+    const agent = new CodexAgent(createDeps({}, { getRemoteCodexTransport: () => {
+      const transport = new MockCodexTransport();
+      createdTransports.push(transport);
+      return transport;
+    } }));
+    await agent.refreshLocalModels({ credentialMode: 'oauth-bearer' });
+    const localTransport = createdTransports[0];
+    const guard = await agent.beginLocalHostCredentialChange('MCP refresh', { allLocalHosts: true });
+    const remote = await agent.startSession({ sessionId: 'remote-during-refresh', model: 'gpt-5.4',
+      workingDir: '/repo', remoteHostId: 'remote-1' });
+    guard.assertIdle();
+    await guard.retireActiveHost();
+    expect(localTransport.closed).toBe(true);
+    expect(createdTransports[1].closed).toBe(false);
+    await guard.finalize();
+    await remote.close();
+    await agent.dispose();
+  });
+
   it.each(['oauth-bearer', 'gateway-key'] as const)('separates canonical history from target credentials (%s)', async mode => {
     const credentialHome = path.resolve(os.tmpdir(), 'target-account-fixture');
     const historyHome = path.resolve(os.tmpdir(), 'original-history-fixture');
@@ -570,6 +748,7 @@ describe('CodexAgent oneShot dispatch guard', () => {
     });
     const subscribeThread = vi.fn(() => ({ release: vi.fn() }));
     const host = { ensureStarted, request, subscribeThread };
+    (agent as any).hosts.set('test-utility-host', host);
     Object.defineProperty(agent, 'getUtilityHost', {
       value: vi.fn(async () => ({ key: 'test-utility-host', host })),
       configurable: true,
@@ -602,6 +781,7 @@ describe('CodexAgent oneShot dispatch guard', () => {
       request,
       subscribeThread,
     };
+    (agent as any).hosts.set('test-utility-host', host);
     Object.defineProperty(agent, 'getUtilityHost', {
       value: vi.fn(async () => ({ key: 'test-utility-host', host })),
       configurable: true,
@@ -684,6 +864,7 @@ function installFakeHost(
   agent: CodexAgent,
   requestImpl?: (method: string, params: unknown) => Promise<unknown> | unknown,
   opts: {
+    connectionId?: string;
     codexProxyActive?: boolean;
     codexBrowserUseAvailable?: boolean;
     codexBrowserUseVersion?: string;
@@ -818,6 +999,9 @@ function installFakeHost(
   );
   const getOpenAiWebSocketsEnabled = vi.fn(() => opts.openAiWebSocketsEnabled !== false);
   const host = {
+    activeSubscriptions: 0,
+    retire: vi.fn(async () => {}),
+    notifySubscribersOfForcedRetire: vi.fn(),
     ensureStarted,
     // startSession 的 initialize 直调走限时变体 (codex R13 P1): fake 里
     // 直接委托 ensureStarted (超时语义由 host.test.ts 的真 transport 覆盖)。
@@ -840,7 +1024,7 @@ function installFakeHost(
     getSubagentRoute,
     getObservedSubagentIdentity,
     getOpenAiWebSocketsEnabled,
-    getConnectionId: () => 'test-connection',
+    getConnectionId: () => opts.connectionId ?? 'test-connection',
     getThreadHandlers: () => threadHandlers,
     // 0.145 不给 spawn 子线程发 thread/started,session 层改为从 spawn item 主动
     // 登记血缘;fake 里只记录调用,路由行为由 host.test.ts 的真 transport 覆盖。
@@ -849,7 +1033,11 @@ function installFakeHost(
     discardPendingDescendantLineage: vi.fn(),
   };
 
-  const getHost = vi.fn(async () => host);
+  const getHost = vi.fn(async (remoteHostId?: string, _mode?: string, options?: { keyOverride?: string }) => {
+    const key = options?.keyOverride ?? (remoteHostId ? `remote:${remoteHostId}` : 'local');
+    (agent as any).hosts.set(key, host);
+    return host;
+  });
   Object.defineProperty(agent, 'getHost', {
     value: getHost,
   });
@@ -3094,9 +3282,11 @@ describe('CodexAgent reference directories', () => {
       turn: { id: 'turn-1', status: 'completed' },
     });
 
-    await handle.setExtraDirs?.(['/shared-b']);
+    await handle.setExtraDirs?.(['/shared-b'], '/shared-b');
     await handle.send({ type: 'user', content: 'use the replacement reference' });
     const [, secondTurn] = turnCalls()[1] as [string, Record<string, unknown>];
+    expect(JSON.stringify(secondTurn.input)).toContain('libraryRoot');
+    expect(JSON.stringify(secondTurn.input)).toContain('/shared-b');
     expect(secondTurn.runtimeWorkspaceRoots).toEqual(['/repo', '/shared-b']);
     expect('permissions' in secondTurn).toBe(false);
     expect('sandboxPolicy' in secondTurn).toBe(false);
@@ -3117,9 +3307,11 @@ describe('CodexAgent reference directories', () => {
     });
 
     await handle.setPermissionMode?.('ask');
-    await handle.setExtraDirs?.([]);
+    await handle.setExtraDirs?.([], null);
     await handle.send({ type: 'user', content: 'continue without references' });
     const [, noReferencesTurn] = turnCalls()[3] as [string, Record<string, unknown>];
+    expect(JSON.stringify(noReferencesTurn.input)).toContain('No library root is currently authorized');
+    expect(JSON.stringify(noReferencesTurn.input)).not.toContain('/shared-b');
     expect(noReferencesTurn.runtimeWorkspaceRoots).toEqual(['/repo']);
     expect('permissions' in noReferencesTurn).toBe(false);
     expect(noReferencesTurn.sandboxPolicy).toEqual({
@@ -3127,6 +3319,45 @@ describe('CodexAgent reference directories', () => {
       writableRoots: ['/tmp/mock-codex-home/memories'],
     });
     await handle.close();
+  });
+
+  it.each(['ask', 'auto', 'bypassPermissions'] as const)(
+    'switches %s text-only turns using local state without lifecycle RPCs or native hook changes',
+    async (permissionMode) => {
+      let disabled: (() => boolean) | undefined;
+      const cleanup = vi.fn();
+      const register = vi.fn((_threadId: string, state: () => boolean) => { disabled = state; return cleanup; });
+      const agent = new CodexAgent(createDeps({}, { registerCodexTextOnlyPolicy: register }));
+      const host = installFakeHost(agent, method => method === Method.TurnStart ? { turn: { id: 'text-turn' } } : undefined,
+        { codexProxyActive: true });
+      const handle = await agent.startSession({ sessionId: 'text-only', model: 'gpt-5.4', workingDir: '/repo', permissionMode });
+      try {
+        expect(disabled?.()).toBe(false);
+        const before = host.request.mock.calls.length;
+        await handle.send({ type: 'user', content: 'Say hello.' }, { toolsDisabled: true, throwOnStartFailure: true });
+        expect(disabled?.()).toBe(true);
+        await expect(handle.send({ type: 'user', content: 'Premature next turn.' })).rejects.toThrow('tool policy');
+        host.getThreadHandlers()!.turnCompleted!({ threadId: handle.id, turn: { id: 'text-turn', status: 'completed' } } as never);
+        await handle.send({ type: 'user', content: 'Now do normal work.' }, { throwOnStartFailure: true });
+        expect(disabled?.()).toBe(false);
+        expect(host.request.mock.calls.slice(before).map(([method]) => method)).toEqual([Method.TurnStart, Method.TurnStart]);
+        const config = (host.request.mock.calls.find(([method]) => method === Method.ThreadStart)![1] as { config: Record<string, unknown> }).config;
+        expect(config.hooks).toBeUndefined();
+        expect(config['features.hooks']).toBeUndefined();
+        expect(register).toHaveBeenCalledOnce();
+      } finally { await handle.close(); }
+      expect(cleanup).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('refuses a text-only turn before dispatch when its proxy policy is unavailable', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({ sessionId: 'no-policy', model: 'gpt-5.4', workingDir: '/repo' });
+    try {
+      await expect(handle.send({ type: 'user', content: 'Hello' }, { toolsDisabled: true })).rejects.toThrow('request policy proxy');
+      expect(host.request.mock.calls.some(([method]) => method === Method.TurnStart)).toBe(false);
+    } finally { await handle.close(); }
   });
 
   it('replaces an unused thread instead of resuming before its first rollout exists', async () => {
@@ -6325,7 +6556,10 @@ describe('CodexAgent MCP thread context hooks', () => {
     const agent = new CodexAgent(createDeps());
 
     await expect(agent.listAgentSkills({})).resolves.toMatchObject({
-      skills: [expect.objectContaining({ name: 'pr-watch', scope: 'user' })],
+      skills: [
+        expect.objectContaining({ name: 'pr-watch', scope: 'user' }),
+        expect.objectContaining({ name: 'skill-creator', scope: 'system' }),
+      ],
     });
 
     const request = createdTransports[0].lines
@@ -6335,6 +6569,193 @@ describe('CodexAgent MCP thread context hooks', () => {
 
     await agent.dispose();
   });
+
+  it('keeps an installed skill-creator ahead of the native system fallback', async () => {
+    const home = os.homedir();
+    const installedPath = path.join(home, '.agents', 'skills', 'skill-creator', 'SKILL.md');
+    MockCodexTransport.onCreate = (transport) => {
+      transport.setMockResponse(Method.SkillsList, {
+        result: {
+          data: [{
+            cwd: home,
+            skills: [
+              {
+                name: 'skill-creator',
+                description: 'User copy',
+                path: installedPath,
+                scope: 'user',
+                enabled: true,
+              },
+              {
+                name: 'skill-creator',
+                description: 'System fallback',
+                path: path.join(home, '.codex', 'skills', '.system', 'skill-creator', 'SKILL.md'),
+                scope: 'system',
+                enabled: true,
+              },
+            ],
+            errors: [],
+          }],
+        },
+      });
+    };
+    const agent = new CodexAgent(createDeps());
+
+    const result = await agent.listAgentSkills({});
+    expect(result.skills).toEqual([
+      expect.objectContaining({ name: 'skill-creator', path: installedPath, scope: 'user' }),
+    ]);
+
+    await agent.dispose();
+  });
+
+  it('resolves /skill-creator to the native system Skill when no installed copy exists', async () => {
+    const skillPath = path.join(
+      os.homedir(),
+      '.codex',
+      'skills',
+      '.system',
+      'skill-creator',
+      'SKILL.md',
+    );
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method, params) => {
+      if (method === Method.SkillsList) {
+        const { cwds = ['/repo'] } = params as { cwds?: string[] };
+        return {
+          data: cwds.map((cwd) => ({
+            cwd,
+            skills: [{
+              name: 'skill-creator',
+              description: 'Create a Skill',
+              path: skillPath,
+              scope: 'system',
+              enabled: true,
+            }],
+            errors: [],
+          })),
+        };
+      }
+      if (method === Method.TurnStart) return { turn: { id: 'turn-skill-creator' } };
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-system-skill-creator',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+
+    await handle.send({
+      type: 'user',
+      content: '/skill-creator Create a release-note checker',
+    });
+
+    const turnStart = host.request.mock.calls.find(
+      ([method]) => method === Method.TurnStart,
+    )?.[1] as { input?: unknown[] };
+    expect(turnStart.input).toEqual([
+      { type: 'skill', name: 'skill-creator', path: skillPath },
+      { type: 'text', text: 'Create a release-note checker' },
+    ]);
+
+    await handle.close();
+  });
+
+  it.each(['/learn release flow', '/skill:learn release flow'])(
+    'dispatches the exact Host-attested Skill path for %s without rescanning a new winner',
+    async (command) => {
+      const pinnedPath = '/cindy/system-skills/v10/learn/SKILL.md';
+      let skillsListCalls = 0;
+      const agent = new CodexAgent(createDeps());
+      const host = installFakeHost(agent, (method, params) => {
+        if (method === Method.SkillsList) {
+          skillsListCalls += 1;
+          const { cwds = ['/repo'] } = params as { cwds?: string[] };
+          return {
+            data: cwds.map((cwd) => ({
+              cwd,
+              skills: [{
+                name: 'learn',
+                description: 'Untrusted replacement',
+                path: '/repo/.agents/skills/learn/SKILL.md',
+                scope: 'repo',
+                enabled: true,
+              }],
+              errors: [],
+            })),
+          };
+        }
+        if (method === Method.TurnStart) return { turn: { id: 'turn-pinned-learn' } };
+        return undefined;
+      });
+      const handle = await agent.startSession({
+        sessionId: 'session-pinned-learn',
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+
+      await handle.send(
+        { type: 'user', content: command },
+        { [PINNED_SKILL_INVOCATION]: { name: 'learn', path: pinnedPath } },
+      );
+
+      const turnStart = host.request.mock.calls.find(
+        ([method]) => method === Method.TurnStart,
+      )?.[1] as { input?: unknown[] };
+      expect(turnStart.input).toEqual([
+        { type: 'skill', name: 'learn', path: pinnedPath },
+        { type: 'text', text: 'release flow' },
+      ]);
+      expect(skillsListCalls).toBe(0);
+
+      await handle.close();
+    },
+  );
+
+  it.each(['system', 'admin'] as const)(
+    'keeps a palette-hidden %s Skill directly invocable',
+    async (scope) => {
+      const skillPath = path.join(os.homedir(), '.codex', 'skills', `.${scope}`, 'slides', 'SKILL.md');
+      const agent = new CodexAgent(createDeps());
+      const host = installFakeHost(agent, (method, params) => {
+        if (method === Method.SkillsList) {
+          const { cwds = ['/repo'] } = params as { cwds?: string[] };
+          return {
+            data: cwds.map((cwd) => ({
+              cwd,
+              skills: [{
+                name: 'slides',
+                description: 'Create slides',
+                path: skillPath,
+                scope,
+                enabled: true,
+              }],
+              errors: [],
+            })),
+          };
+        }
+        if (method === Method.TurnStart) return { turn: { id: `turn-${scope}-slides` } };
+        return undefined;
+      });
+      const handle = await agent.startSession({
+        sessionId: `session-${scope}-slides`,
+        model: 'gpt-5.4',
+        workingDir: '/repo',
+      });
+
+      await handle.send({ type: 'user', content: '/slides Build a quarterly update' });
+
+      const turnStart = host.request.mock.calls.find(
+        ([method]) => method === Method.TurnStart,
+      )?.[1] as { input?: unknown[] };
+      expect(turnStart.input).toEqual([
+        { type: 'skill', name: 'slides', path: skillPath },
+        { type: 'text', text: 'Build a quarterly update' },
+      ]);
+
+      await handle.close();
+    },
+  );
 
   it('lists remote skills through the target remote app-server host', async () => {
     const remoteWorkingDir = '/srv/project';
@@ -13871,8 +14292,8 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handlers.mcpServerElicitation({ threadId: 'start-thread-id', turnId: 'raw-turn', serverName: 'cindy', mode: 'form',
       _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'send', tool_params: { to: 'recipient' } }, message: 'Allow tool call', requestedSchema: {},
     });
-    expect(review.mock.calls[0]?.[0].userIntent).toContain('Do not send.');
-    expect(review.mock.calls[0]?.[0].userIntent).not.toContain('SEND THE REPORT');
+    expect(JSON.stringify(review.mock.calls[0]?.[0].userIntent)).toContain('Do not send.');
+    expect(JSON.stringify(review.mock.calls[0]?.[0].userIntent)).not.toContain('SEND THE REPORT');
     await handle.close();
   });
 
@@ -14481,6 +14902,34 @@ describe('CodexAgent MCP thread context hooks', () => {
     });
     await handle.close();
   });
+
+  it.each([undefined, '11111111-1111-1111-1111-111111111111'].flatMap(resumeSessionId =>
+    (['auto', 'ask', 'bypassPermissions'] as const).map(permissionMode => ({ resumeSessionId, permissionMode }))))(
+    'preinstalls scoped follow-up policy on start/resume ($permissionMode, $resumeSessionId)', async ({ resumeSessionId, permissionMode }) => {
+      const agent = new CodexAgent(createDeps());
+      const host = installFakeHost(agent, method => method === Method.TurnStart
+        ? { turn: { id: 'turn-followup-policy' } } : undefined, { userAgent: 'codex_cli_rs/0.145.0' });
+      const handle = await agent.startSession({
+        sessionId: 'session-followup-policy', model: 'gpt-5.5', providerId: 'openai',
+        workingDir: '/repo', permissionMode, ...(resumeSessionId ? { resumeSessionId } : {}),
+      });
+      const method = resumeSessionId ? Method.ThreadResume : Method.ThreadStart;
+      const params = host.request.mock.calls.find(([name]) => name === method)?.[1] as {
+        config?: Record<string, unknown>; approvalsReviewer?: string; approvalPolicy?: string;
+      };
+      expect(params.approvalsReviewer).toBe(permissionMode === 'auto' ? 'auto_review'
+        : permissionMode === 'ask' ? 'user' : undefined);
+      expect(params.approvalPolicy).toBe(permissionMode === 'bypassPermissions' ? 'never' : 'on-request');
+      expect(params.config?.['auto_review.policy']).toContain('authorization to complete work');
+      expect(params.config?.['auto_review.policy']).toContain('### Data Exfiltration');
+      await handle.setPermissionMode?.('auto');
+      await handle.send({ type: 'user', content: 'continue' });
+      expect(host.request.mock.calls.find(([name]) => name === Method.TurnStart)?.[1]).toMatchObject({
+        approvalPolicy: 'on-request', approvalsReviewer: 'auto_review',
+      });
+      await handle.close();
+    },
+  );
 
   it('maps auto permission mode to Codex built-in automatic approval review', async () => {
     const agent = new CodexAgent(createDeps());
@@ -16565,7 +17014,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       seen(req);
       expect(req).toMatchObject({
         kind: 'ask_user_question',
-        requestId: 'req-user-input',
+        requestId: 'codex:test-connection:req-user-input',
         questions: [
           {
             question: 'Which mode should Codex use?',
@@ -16653,7 +17102,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     handle.setInteractionResolver(async (req) => {
       expect(req).toMatchObject({
         kind: 'permission',
-        requestId: 'req-tool-input',
+        requestId: 'codex:test-connection:req-tool-input',
         toolName: 'mcp:third_party:block_contacts',
         metadata: { userInputKind: 'tool_side_effect' },
       });
@@ -18824,7 +19273,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       requestCount += 1;
       expect(req).toMatchObject({
         kind: 'ask_user_question',
-        requestId: 'req-dynamic',
+        requestId: 'codex:test-connection:req-dynamic',
         toolUseId: 'dynamic-call-1',
       });
       return pendingDecision.promise;
@@ -19054,8 +19503,8 @@ describe('CodexAgent MCP thread context hooks', () => {
     handle.setInteractionResolver(async (req) => {
       if (req.kind !== 'ask_user_question') throw new Error('expected ask_user_question');
       requestCount += 1;
-      if (req.requestId === 'req-first') return firstDecision.promise;
-      if (req.requestId === 'req-second') return secondDecision.promise;
+      if (req.requestId === 'codex:test-connection:req-first') return firstDecision.promise;
+      if (req.requestId === 'codex:test-connection:req-second') return secondDecision.promise;
       return {
         kind: 'ask_user_question',
         answers: { [req.questions[0]?.question ?? '']: 'Unexpected repeat' },
@@ -19106,6 +19555,58 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
+  it.each(['native', 'dynamic'] as const)('isolates two %s questions with RPC id 0 across connections', async (kind) => {
+    // Model Desktop's shared request registry. Each Host may independently
+    // start numbering at zero; answering B must leave A available after done.
+    const registry = new Map<string, (decision: InteractionDecision) => void>();
+    const fixtures = await Promise.all(['first', 'second'].map(async (connectionId) => {
+      const agent = new CodexAgent(createDeps());
+      const host = installFakeHost(agent, undefined, { connectionId });
+      const handle = await agent.startSession({
+        sessionId: `collision-${connectionId}`, model: 'gpt-5.4', workingDir: '/repo',
+      });
+      handle.setInteractionResolver((request) => new Promise((resolve) => {
+        registry.set(request.requestId, resolve);
+      }));
+      const handlers = host.getThreadHandlers()!;
+      const response = kind === 'native'
+        ? handlers.requestUserInput!({
+            threadId: 'start-thread-id', turnId: 'turn-1', itemId: 'question',
+            questions: [{ id: 'q', header: 'Choose', question: 'Choose?', isOther: false, isSecret: false, options: null }],
+          }, { requestId: 0 })
+        : handlers.dynamicToolCall!({
+            threadId: 'start-thread-id', turnId: 'turn-1', callId: 'question',
+            namespace: 'cindy', tool: 'ask_user_question',
+            arguments: { questions: [{ id: 'q', header: 'Choose', question: 'Choose?' }] },
+          }, { requestId: 0 });
+      return { handle, host, handlers, response };
+    }));
+    try {
+      await waitForExpectation(() => expect(registry.size).toBe(2));
+      const keys = [...registry.keys()];
+      const firstKey = keys.find((key) => key.includes('first'))!;
+      const secondKey = keys.find((key) => key.includes('second'))!;
+      expect(firstKey).not.toBe(secondKey);
+      const events = await collectAgentEvents(fixtures[0].handle);
+      fixtures[0].handlers.turnCompleted?.({
+        threadId: 'start-thread-id', turn: { id: 'turn-1', status: 'completed' },
+      });
+      await fixtures[0].response;
+      await waitForExpectation(() => expect(events.some((event) => event.type === 'done')).toBe(true));
+      expect(events.filter((event) => event.type === 'interaction_dismissed')).toEqual([]);
+      registry.get(secondKey)!({ kind: 'ask_user_question', answers: { 'Choose?': 'B' } });
+      registry.delete(secondKey);
+      await expect(fixtures[1].response).resolves.toEqual(kind === 'native'
+        ? { answers: { q: { answers: ['B'] } } }
+        : { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify({ q: { answers: ['B'] } }) }] });
+      expect(registry.has(firstKey)).toBe(true);
+      registry.get(firstKey)!({ kind: 'ask_user_question', answers: { 'Choose?': 'A' } });
+      await waitForExpectation(() => expect(askUserTurnStartCalls(fixtures[0].host)).toHaveLength(1));
+    } finally {
+      await Promise.all(fixtures.map(({ handle }) => handle.close()));
+    }
+  });
+
   it('cancels pending user input when serverRequest/resolved arrives', async () => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent);
@@ -19122,7 +19623,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     let requestCount = 0;
     handle.setInteractionResolver(async (req) => {
       requestCount += 1;
-      return req.requestId === 'req-resolved'
+      return req.requestId === 'codex:test-connection:req-resolved'
         ? cancelledDecision.promise
         : retryDecision.promise;
     });
@@ -19148,7 +19649,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     await expect(nextEvent(iterator)).resolves.toMatchObject({
       type: 'interaction_dismissed',
       data: {
-        requestId: 'req-resolved',
+        requestId: 'codex:test-connection:req-resolved',
         reason: 'server_request_resolved',
         resolvedAs: 'deny',
       },
@@ -19277,7 +19778,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     let requestCount = 0;
     handle.setInteractionResolver(async (req) => {
       requestCount += 1;
-      return req.requestId === 'req-owner'
+      return req.requestId === 'codex:test-connection:req-owner'
         ? ownerDecision.promise
         : joinedDecision.promise;
     });
@@ -19319,7 +19820,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     await expect(nextEvent(iterator)).resolves.toMatchObject({
       type: 'interaction_dismissed',
       data: {
-        requestId: 'req-owner',
+        requestId: 'codex:test-connection:req-owner',
         reason: 'server_request_resolved',
         resolvedAs: 'deny',
       },
@@ -19459,7 +19960,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       await waitForExpectation(() => {
         expect(debug).toHaveBeenCalledWith(
           'joined duplicate same-turn user input request cancelled',
-          { requestId: 'req-joined', turnId: 'turn-1' },
+          { requestId: 'codex:test-connection:req-joined', turnId: 'turn-1' },
         );
       });
     }
@@ -19479,6 +19980,132 @@ describe('CodexAgent MCP thread context hooks', () => {
     })();
     return events;
   }
+
+  async function pendingHumanProduct(kind: 'native' | 'dynamic' | 'plan', followupStart?: () => Promise<unknown>) {
+    const agent = new CodexAgent(createDeps());
+    let turnSeq = 0;
+    const host = installFakeHost(agent, (method) => {
+      if (method !== Method.TurnStart) return undefined;
+      turnSeq += 1;
+      if (turnSeq === 2 && followupStart) return followupStart();
+      return { turn: { id: `human-turn-${turnSeq}` } };
+    });
+    const handle = await agent.startSession({ sessionId: `human-${kind}`, model: 'gpt-5.4',
+      workingDir: '/repo', planMode: kind === 'plan' });
+    const decision = deferred<InteractionDecision>();
+    handle.setInteractionResolver(async () => decision.promise);
+    const events = await collectAgentEvents(handle);
+    await handle.send({ type: 'user', content: 'Do the work after confirmation' });
+    const handlers = host.getThreadHandlers()!;
+    const base = { threadId: 'start-thread-id', turnId: 'human-turn-1' };
+    if (kind === 'plan') {
+      handlers.itemCompleted?.({ ...base, item: { type: 'plan', id: 'plan-1', text: '1. Make the change' } });
+    } else if (kind === 'native') {
+      void handlers.requestUserInput?.({ ...base, itemId: 'ask-1',
+        questions: [{ id: 'choice', header: 'Scope', question: 'Proceed?', options: [{ label: 'Yes' }] }] },
+      { requestId: 0 });
+    } else {
+      void handlers.dynamicToolCall?.({ ...base, callId: 'ask-1', namespace: 'cindy', tool: 'ask_user_question',
+        arguments: { questions: [{ question: 'Proceed?', options: [{ label: 'Yes' }] }] } }, { requestId: 0 });
+    }
+    // Independent progress remains visible while the answer is pending.
+    handlers.itemCompleted?.({ ...base,
+      item: { type: 'agentMessage', id: 'progress-1', text: 'Existing tests checked.', phase: 'commentary' } });
+    handlers.turnCompleted?.({ threadId: base.threadId, turn: { id: base.turnId, status: 'completed' } });
+    await waitForExpectation(() => expect(events.some((event) => event.type === 'done')).toBe(true));
+    const boundary = events.find((event) => event.type === 'done')!;
+    expect(boundary.turnContinuationId).toEqual(expect.any(Number));
+    expect(handle.beginTurnContinuationWait?.(boundary.turnContinuationId)).toBe('awaiting');
+    expect(handle.isTurnRunning?.()).toBe(true);
+    expect(events.some((event) => event.type === 'text' && JSON.stringify(event.data).includes('Existing tests checked.'))).toBe(true);
+    return { handle, host, handlers, decision, events };
+  }
+
+  it.each(['native', 'dynamic', 'plan'] as const)('%s pending confirmation retains the product until its follow-up finishes', async (kind) => {
+    const { handle, host, handlers, decision, events } = await pendingHumanProduct(kind);
+    expect(events.filter((event) => event.type === 'done' && event.turnContinuationId === undefined)).toHaveLength(0);
+    decision.resolve(kind === 'plan' ? { kind: 'plan_review', behavior: 'allow' }
+      : { kind: 'ask_user_question', answers: { 'Proceed?': 'Yes' } });
+    await vi.waitFor(() => expect(askUserTurnStartCalls(host)).toHaveLength(2));
+    expect(handle.isTurnRunning?.()).toBe(true);
+    handlers.turnCompleted?.({ threadId: 'start-thread-id', turn: { id: 'human-turn-2', status: 'completed' } });
+    await waitForExpectation(() => expect(events.filter((event) => event.type === 'done' && event.turnContinuationId === undefined)).toHaveLength(1));
+    expect(handle.isTurnRunning?.()).toBe(false);
+    // Duplicate provider completion cannot generate a second product terminal.
+    handlers.turnCompleted?.({ threadId: 'start-thread-id', turn: { id: 'human-turn-2', status: 'completed' } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events.filter((event) => event.type === 'done' && event.turnContinuationId === undefined)).toHaveLength(1);
+    await handle.close();
+  });
+
+  it.each(['native', 'dynamic', 'plan'] as const)('%s cancellation ends the product once without replaying SDK usage', async (kind) => {
+    const { handle, host, decision, events } = await pendingHumanProduct(kind);
+    decision.resolve(kind === 'plan' ? { kind: 'plan_review', behavior: 'deny', dismissed: true }
+      : { kind: 'ask_user_question', answers: {}, dismissed: true });
+    await waitForExpectation(() => expect(handle.isTurnRunning?.()).toBe(false));
+    await waitForExpectation(() => expect(events.filter((event) => event.type === 'done' && event.turnContinuationId === undefined)).toHaveLength(1));
+    expect(events.filter((event) => event.type === 'done' && event.data.usage)).toHaveLength(1);
+    expect(askUserTurnStartCalls(host)).toHaveLength(1);
+    await handle.close();
+  });
+
+  it.each(['abort', 'graceful', 'close'] as const)('supports %s while only a confirmation remains and ignores late approval', async (action) => {
+    const { handle, host, decision, events } = await pendingHumanProduct('plan');
+    if (action === 'abort') await handle.abort();
+    else if (action === 'graceful') await handle.requestGracefulStop?.();
+    else await handle.close();
+    expect(handle.isTurnRunning?.()).toBe(false);
+    decision.resolve({ kind: 'plan_review', behavior: 'allow' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(askUserTurnStartCalls(host)).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'done' && event.turnContinuationId === undefined)).toHaveLength(action === 'close' ? 0 : 1);
+    await handle.close();
+  });
+
+  it('keeps a human continuation result that completes before its start acknowledgement', async () => {
+    const start = deferred<unknown>();
+    const { handle, host, handlers, decision, events } = await pendingHumanProduct('dynamic', () => start.promise);
+    decision.resolve({ kind: 'ask_user_question', answers: { 'Proceed?': 'Yes' } });
+    await vi.waitFor(() => expect(askUserTurnStartCalls(host)).toHaveLength(2));
+    handlers.tokenUsageUpdated?.({ threadId: 'start-thread-id', turnId: 'human-turn-2', tokenUsage: {
+      total: { totalTokens: 100, inputTokens: 80, outputTokens: 20, cachedInputTokens: 0 },
+      last: { totalTokens: 100, inputTokens: 80, outputTokens: 20, cachedInputTokens: 0 },
+    } });
+    handlers.turnCompleted?.({ threadId: 'start-thread-id', turn: { id: 'human-turn-2', status: 'completed' } });
+    start.resolve({ turn: { id: 'human-turn-2' } });
+    await waitForExpectation(() => expect(events.filter((event) => event.type === 'done' && event.turnContinuationId === undefined)).toHaveLength(1));
+    expect(events.find((event) => event.type === 'done' && event.data.raw?.id === 'human-turn-2')?.data.usage)
+      .toMatchObject({ promptTokens: 80, completionTokens: 20 });
+    expect(handle.isTurnRunning?.()).toBe(false);
+    await handle.close();
+  });
+
+  it('does not signal successful cancellation before a human continuation start failure', async () => {
+    const { handle, decision, events } = await pendingHumanProduct('plan', async () => { throw new Error('stale host'); });
+    const changed = vi.fn();
+    handle.onTurnContinuationChange?.(changed);
+    decision.resolve({ kind: 'plan_review', behavior: 'allow' });
+    await waitForExpectation(() => expect(events.some((event) => event.type === 'error')).toBe(true));
+    expect(changed.mock.calls.some(([, state]) => state === 'cancelled')).toBe(false);
+    expect(handle.isTurnRunning?.()).toBe(false);
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(1);
+    await handle.close();
+  });
+
+  it('stops a human continuation whose start acknowledgement is still pending', async () => {
+    const start = deferred<unknown>();
+    const { handle, host, handlers, decision, events } = await pendingHumanProduct('plan', () => start.promise);
+    decision.resolve({ kind: 'plan_review', behavior: 'allow' });
+    await vi.waitFor(() => expect(askUserTurnStartCalls(host)).toHaveLength(2));
+    await handle.abort();
+    start.resolve({ turn: { id: 'human-turn-2' } });
+    await waitForExpectation(() => expect(handle.isTurnRunning?.()).toBe(false));
+    handlers.turnCompleted?.({ threadId: 'start-thread-id', turn: { id: 'human-turn-2', status: 'interrupted' } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events.filter((event) => event.type === 'done' && event.turnContinuationId === undefined)).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'error')).toHaveLength(0);
+    await handle.close();
+  });
 
   it('does not dismiss a pending ask_user on successful turn completion and continues once after the answer', async () => {
     const agent = new CodexAgent(createDeps());
@@ -19563,8 +20190,8 @@ describe('CodexAgent MCP thread context hooks', () => {
     const lastDecision = deferred<InteractionDecision>();
     handle.setInteractionResolver(async (req) => {
       if (req.kind !== 'ask_user_question') throw new Error('expected ask_user_question');
-      if (req.requestId === 'req-ask-first') return firstDecision.promise;
-      if (req.requestId === 'req-ask-last') return lastDecision.promise;
+      if (req.requestId === 'codex:test-connection:req-ask-first') return firstDecision.promise;
+      if (req.requestId === 'codex:test-connection:req-ask-last') return lastDecision.promise;
       throw new Error(`unexpected request ${req.requestId}`);
     });
     const events = await collectAgentEvents(handle);
@@ -19593,13 +20220,13 @@ describe('CodexAgent MCP thread context hooks', () => {
     await waitForExpectation(() => {
       expect(events.some((event) => (
         event.type === 'interaction_dismissed'
-        && (event.data as { requestId?: string }).requestId === 'req-ask-first'
+        && (event.data as { requestId?: string }).requestId === 'codex:test-connection:req-ask-first'
         && (event.data as { reason?: string }).reason === 'superseded'
       ))).toBe(true);
     });
     expect(events.filter((event) => (
       event.type === 'interaction_dismissed'
-      && (event.data as { requestId?: string }).requestId === 'req-ask-last'
+      && (event.data as { requestId?: string }).requestId === 'codex:test-connection:req-ask-last'
     ))).toEqual([]);
 
     firstDecision.resolve({
@@ -19706,7 +20333,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     await waitForExpectation(() => {
       expect(events.some((event) => (
         event.type === 'interaction_dismissed'
-        && (event.data as { requestId?: string }).requestId === 'req-ask-fail'
+        && (event.data as { requestId?: string }).requestId === 'codex:test-connection:req-ask-fail'
       ))).toBe(true);
     });
 
@@ -19853,10 +20480,74 @@ describe('CodexAgent MCP thread context hooks', () => {
     await handle.close();
   });
 
+  it.each([
+    { detached: false, answer: '没事儿，你可以用', verdict: 'allow' as const },
+    { detached: true, answer: '没事儿，你可以用', verdict: 'allow' as const },
+    { detached: false, answer: '不要用它，保持只读', verdict: 'block' as const },
+    { detached: true, answer: '不要用它，保持只读', verdict: 'block' as const },
+  ])('preserves denied action evidence for clarification "$answer" (detached=$detached)', async ({ detached, answer, verdict }) => {
+    const reviewer = vi.fn<AutoReviewDelegate>(async () => ({ verdict: 'block', reason: 'needs authorization' }));
+    const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction: reviewer }));
+    let turnSeq = 0;
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: `turn-${++turnSeq}` } };
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-clarification-action-context',
+      model: 'gpt-5.5', providerId: 'openai', workingDir: '/repo', permissionMode: 'auto',
+    });
+    try {
+      const handlers = host.getThreadHandlers();
+      if (!handlers?.requestUserInput || !handlers.commandExecutionApproval) {
+        throw new Error('expected ask and approval handlers');
+      }
+      const ownerDecision = deferred<InteractionDecision>();
+      handle.setInteractionResolver(async () => ownerDecision.promise);
+      await handle.send({ type: 'user', content: '检查项目，先不要安装依赖' });
+      const action = { command: 'npm install express', cwd: '/repo' };
+      const approve = (id: string) => handlers.commandExecutionApproval!({
+        threadId: 'start-thread-id', turnId: `turn-${turnSeq}`, itemId: id, approvalId: id, ...action,
+      });
+      await expect(approve('initial-denial')).resolves.toEqual({ decision: 'decline' });
+      const question = '安装 express 以继续检查？';
+      const response = handlers.requestUserInput({
+        threadId: 'start-thread-id', turnId: 'turn-1', itemId: 'ask-install',
+        questions: [{ id: 'install', header: 'Dependency', question, isOther: true, isSecret: false, options: null }],
+      }, { requestId: 'req-install' });
+      if (detached) {
+        handlers.turnCompleted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1', status: 'completed' } });
+      }
+      ownerDecision.resolve({ kind: 'ask_user_question', answers: { [question]: answer } });
+      await response;
+      if (detached) await vi.waitFor(() => expect(askUserTurnStartCalls(host)).toHaveLength(2));
+
+      reviewer.mockResolvedValue({ verdict, reason: 'clarification reviewed' });
+      await expect(approve('after-clarification')).resolves.toEqual({ decision: verdict === 'allow' ? 'accept' : 'decline' });
+      expect(reviewer).toHaveBeenCalledTimes(2);
+      expect(reviewer.mock.calls[1]?.[0]).toMatchObject({
+        userIntent: {
+          earlierUserMessages: ['检查项目，先不要安装依赖'],
+          currentUserMessage: expect.stringContaining(answer),
+        },
+        precedingBlockedActions: [{ kind: 'exec', ...action }],
+      });
+
+      handlers.turnCompleted?.({ threadId: 'start-thread-id', turn: { id: `turn-${turnSeq}`, status: 'completed' } });
+      await handle.send({ type: 'user', content: '继续检查' });
+      await approve('next-user-message');
+      expect(reviewer.mock.calls[2]?.[0].precedingBlockedActions).toEqual(
+        verdict === 'block' ? [{ kind: 'exec', ...action }] : [],
+      );
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('keeps the originating turn auto-review intent on detached continuation', async () => {
     const seenIntents: string[] = [];
     const reviewAutoPermissionAction = vi.fn<AutoReviewDelegate>(async (request) => {
-      seenIntents.push(request.userIntent);
+      seenIntents.push(typeof request.userIntent === 'string' ? request.userIntent : JSON.stringify(request.userIntent));
       return { verdict: 'allow' as const };
     });
     const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction }));
@@ -20106,8 +20797,8 @@ describe('CodexAgent yield continuation', () => {
     await handle.close();
   });
 
-  it('inherits the origin turnPermissionPolicy on the yield continuation turn', async () => {
-    const agent = new CodexAgent(createDeps());
+  it.each([false, true])('inherits the origin policies on yield continuation (text-only=%s)', async (toolsDisabled) => {
+    const agent = new CodexAgent(createDeps({}, { registerCodexTextOnlyPolicy: () => () => {} }));
     let turnSeq = 0;
     const host = installFakeHost(agent, (method) => {
       if (method === Method.TurnStart) {
@@ -20115,7 +20806,7 @@ describe('CodexAgent yield continuation', () => {
         return { turn: { id: `turn-${turnSeq}` } };
       }
       return undefined;
-    });
+    }, { userAgent: 'codex/0.145.0', codexProxyActive: true });
     const handle = await agent.startSession({
       sessionId: 'session-yield-permission-policy',
       model: 'gpt-5.4',
@@ -20132,7 +20823,10 @@ describe('CodexAgent yield continuation', () => {
       confirmationSurface: 'desktop',
       forceConfirmToolCall: (_toolName, input) => JSON.stringify(input).includes('rm -rf'),
     };
-    await handle.send({ type: 'user', content: 'run typecheck' }, { turnPermissionPolicy: policy });
+    // The fake notification exercises continuation policy even though a real
+    // text-only tool would have been denied before producing this output.
+    await handle.send({ type: 'user', content: 'run typecheck' }, { turnPermissionPolicy: policy, toolsDisabled });
+    const resumesBeforeContinuation = host.request.mock.calls.filter(([method]) => method === Method.ThreadResume).length;
     handlers.itemCompleted({
       threadId: 'start-thread-id',
       turnId: 'turn-1',
@@ -20157,6 +20851,7 @@ describe('CodexAgent yield continuation', () => {
       sandboxPolicy: { type: 'readOnly' },
     });
     expect(continuationParams).not.toHaveProperty('approvalsReviewer');
+    expect(host.request.mock.calls.filter(([method]) => method === Method.ThreadResume)).toHaveLength(resumesBeforeContinuation);
     expect(events.some((event) => event.type === 'done' && event.turnContinuationId != null)).toBe(true);
     await handle.close();
   });
@@ -20164,7 +20859,7 @@ describe('CodexAgent yield continuation', () => {
   it('inherits origin capability selection and auto-review intent on the yield continuation turn', async () => {
     const seenIntents: string[] = [];
     const reviewAutoPermissionAction = vi.fn<AutoReviewDelegate>(async (request) => {
-      seenIntents.push(request.userIntent);
+      seenIntents.push(typeof request.userIntent === 'string' ? request.userIntent : JSON.stringify(request.userIntent));
       return { verdict: 'allow' as const };
     });
     const agent = new CodexAgent(createDeps({}, {
@@ -20825,7 +21520,8 @@ describe('CodexAgent yield continuation', () => {
   });
 
   it('does not cancel a yield claim when ask_user continuation starts', async () => {
-    const agent = new CodexAgent(createDeps());
+    const reviewer = vi.fn<AutoReviewDelegate>(async () => ({ verdict: 'block', reason: 'user restriction' }));
+    const agent = new CodexAgent(createDeps({}, { reviewAutoPermissionAction: reviewer }));
     let turnSeq = 0;
     const host = installFakeHost(agent, (method) => {
       if (method === Method.TurnStart) {
@@ -20838,9 +21534,10 @@ describe('CodexAgent yield continuation', () => {
       sessionId: 'session-yield-ask-user-internal',
       model: 'gpt-5.4',
       workingDir: '/repo',
+      permissionMode: 'auto',
     });
     const handlers = host.getThreadHandlers();
-    if (!handlers?.itemCompleted || !handlers.turnCompleted || !handlers.requestUserInput) {
+    if (!handlers?.itemCompleted || !handlers.turnCompleted || !handlers.requestUserInput || !handlers.commandExecutionApproval) {
       throw new Error('expected item, turn, and user-input handlers');
     }
     const ownerDecision = deferred<InteractionDecision>();
@@ -20883,10 +21580,17 @@ describe('CodexAgent yield continuation', () => {
     });
     ownerDecision.resolve({
       kind: 'ask_user_question',
-      answers: { 'Pick one': 'A' },
+      answers: { 'Pick one': '不要安装依赖，保持只读' },
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(host.request.mock.calls.filter(([method]) => method === Method.TurnStart)).toHaveLength(2);
+    await expect(handlers.commandExecutionApproval({
+      threadId: 'start-thread-id', turnId: 'turn-2', itemId: 'install-while-yielded',
+      command: 'npm install express', cwd: '/repo',
+    })).resolves.toEqual({ decision: 'decline' });
+    expect(reviewer.mock.calls.at(-1)?.[0].userIntent).toMatchObject({
+      currentUserMessage: expect.stringContaining('不要安装依赖，保持只读'),
+    });
     const claimedDone = events.find((event) => event.type === 'done' && event.turnContinuationId != null);
     expect(handle.beginTurnContinuationWait?.(claimedDone?.turnContinuationId)).toBe('active');
     expect(handle.isTurnRunning?.()).toBe(true);
@@ -22217,7 +22921,7 @@ describe('CodexAgent yield continuation', () => {
     });
     expect(events.some((event) => (
       event.type === 'interaction_dismissed'
-      && (event.data as { requestId?: string }).requestId === 'req-ask-late'
+      && (event.data as { requestId?: string }).requestId === 'codex:test-connection:req-ask-late'
     ))).toBe(true);
     ownerDecision.resolve({
       kind: 'ask_user_question',
@@ -22792,6 +23496,150 @@ describe('CodexAgent resume preparation', () => {
       vendorOptions: { orcaRole: 'lead' },
     }));
     await handle.close();
+  });
+
+  it('recovers repeated model switches before the first turn without replacing the teammate identity', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-unused-switch-'));
+    const recorded = new Map<string, string>();
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexThreadStorage: async id => ({ historyHome: root, sqliteHome: root, rolloutPath: recorded.get(id) }),
+      prepareCodexResumeSession: async () => undefined,
+      recordCodexThreadLocation: async (id, _home, rollout) => { if (rollout) recorded.set(id, rollout); },
+    }));
+    let seq = 0;
+    const host = installFakeHost(agent, (method, params) => {
+      if (method === 'thread/read') throw Object.assign(new Error(
+        `codex app-server thread/read error -32600: thread not loaded: ${(params as { threadId: string }).threadId}`,
+      ), { code: -32600, data: undefined });
+      if (method === Method.TurnStart) return { turn: { id: 'first-user-turn' } };
+      if (method === Method.ThreadResume) throw exactNoRolloutError((params as { threadId: string }).threadId);
+      if (method === Method.ThreadStart) {
+        const id = `123e4567-e89b-12d3-a456-${String(++seq).padStart(12, '0')}`;
+        return { thread: { id, path: path.join(root, 'sessions', `${id}.jsonl`) }, model: (params as { model: string }).model };
+      }
+      return undefined;
+    }, { codexHome: root, userAgent: 'mock-codex/0.153.4', localCompactionProviderId: 'cindy_summary' });
+    let handle: AgentSessionHandle | undefined;
+    try {
+      for (const model of ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-6-astra']) {
+        const previous = handle?.id;
+        await handle?.close();
+        handle = await agent.startSession({ sessionId: 'same-canonical-teammate', resumeSessionId: previous,
+          model, workingDir: root, botProfilePrompt: 'STABLE TEAMMATE SOUL', botRuntimeProfile: {
+            botId: 'same-bot', profileVersion: 1,
+            skillPolicy: { mode: 'allowlist', configured: [], catalog: [] },
+            mcpPolicy: { mode: 'allowlist', configured: [], catalog: [] },
+            toolsetPolicy: { mode: 'allowlist', configured: [], catalog: [] },
+          } });
+      }
+      expect(recorded.size).toBe(3);
+      const starts = host.request.mock.calls.filter(([method]) => method === Method.ThreadStart);
+      expect(starts.map(([, params]) => (params as { model: string }).model)).toEqual(['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-6-astra']);
+      for (const [, params] of starts) expect(params).toMatchObject({ cwd: root, developerInstructions: expect.stringContaining('STABLE TEAMMATE SOUL') });
+      expect(host.request.mock.calls.filter(([method]) => method === Method.ThreadResume)).toHaveLength(2);
+      // Verify missing native metadata in the original home before each resume fallback.
+      expect(host.request.mock.calls.filter(([method]) => method === 'thread/read')).toHaveLength(2);
+      expect(host.request.mock.calls.filter(([method]) => method === Method.TurnStart)).toHaveLength(0);
+      await handle!.send({ type: 'user', content: 'First user message' }, { throwOnStartFailure: true });
+      expect(host.request.mock.calls.filter(([method]) => method === Method.TurnStart)).toHaveLength(1);
+      expect(host.request.mock.calls.find(([method]) => method === Method.TurnStart)?.[1]).toMatchObject({ threadId: handle!.id, model: 'gpt-6-astra' });
+    } finally {
+      await handle?.close();
+      await agent.dispose();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers an unindexed unused thread when the summary metadata lookup reports it unloaded', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, method => {
+      if (method === 'thread/read') throw Object.assign(new Error(
+        `codex app-server thread/read error -32600: thread not loaded: ${resumeSessionId}`,
+      ), { code: -32600, data: undefined });
+      if (method === Method.ThreadResume) throw exactNoRolloutError();
+      return undefined;
+    }, { localCompactionProviderId: 'cindy_summary' });
+    const handle = await agent.startSession({ sessionId: 'unindexed-unused', resumeSessionId,
+      model: 'gpt-6-astra', workingDir: '/repo' });
+    expect(host.request.mock.calls.filter(([method]) => method === Method.ThreadStart)).toHaveLength(1);
+    await handle.close();
+    await agent.dispose();
+  });
+
+  it('resumes a still-loaded indexed thread without a file or losing its summary provider', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-loaded-index-'));
+    const rolloutPath = path.join(root, 'sessions', 'future.jsonl');
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexThreadStorage: async () => ({ historyHome: root, sqliteHome: root, rolloutPath }),
+      prepareCodexResumeSession: async () => undefined,
+    }));
+    const thread = { id: resumeSessionId, path: rolloutPath, modelProvider: 'cindy_summary' };
+    const host = installFakeHost(agent, (method, params) => {
+      if (method === 'thread/read') return { thread };
+      if (method === Method.ThreadResume) return { thread, modelProvider: (params as { modelProvider: string }).modelProvider };
+      return undefined;
+    }, { codexHome: root, localCompactionProviderId: 'cindy_summary' });
+    try {
+      const handle = await agent.startSession({ sessionId: 'loaded-canonical', resumeSessionId, model: 'gpt-6-astra', workingDir: root });
+      expect(handle.id).toBe(resumeSessionId);
+      expect(host.request.mock.calls.find(([method]) => method === Method.ThreadResume)?.[1]).toMatchObject({ modelProvider: 'cindy_summary' });
+      expect(host.request.mock.calls.filter(([method]) => method === Method.ThreadStart)).toHaveLength(0);
+      await handle.close();
+    } finally {
+      await agent.dispose();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps missing indexed history out of the fork path', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-missing-fork-'));
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexThreadStorage: async () => ({ historyHome: root, sqliteHome: root,
+        rolloutPath: path.join(root, 'sessions', 'missing.jsonl') }),
+      prepareCodexResumeSession: async () => undefined,
+    }));
+    const host = installFakeHost(agent);
+    try {
+      await expect(agent.forkSdkSession({ sourceSdkSessionId: resumeSessionId, workingDir: root })).rejects.toThrow();
+      expect(host.getHost).not.toHaveBeenCalled();
+      expect(host.request).not.toHaveBeenCalled();
+    } finally {
+      await agent.dispose();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['native-history', 'read-timeout', 'unreadable', 'older-copy', 'late-file'] as const)('does not discard indexed history on %s', async failure => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-indexed-recovery-'));
+    const rolloutPath = path.join(root, 'sessions', 'canonical.jsonl');
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexThreadStorage: async () => ({ historyHome: root, sqliteHome: root, rolloutPath }),
+      prepareCodexResumeSession: async () => undefined,
+    }));
+    const host = installFakeHost(agent, async method => {
+      if (method === 'thread/read') {
+        if (failure === 'native-history') return { thread: { id: resumeSessionId, path: rolloutPath } };
+        if (failure === 'read-timeout') throw new Error('metadata read timed out');
+        throw Object.assign(new Error(`codex app-server thread/read error -32600: thread not loaded: ${resumeSessionId}`), { code: -32600, data: undefined });
+      }
+      if (method !== Method.ThreadResume) return undefined;
+      if (failure === 'older-copy') return { thread: { id: resumeSessionId, path: path.join(root, 'older.jsonl') } };
+      if (failure === 'native-history') throw exactNoRolloutError();
+      if (failure === 'unreadable') throw new Error('failed to read existing rollout');
+      await fs.mkdir(path.dirname(rolloutPath), { recursive: true });
+      await fs.writeFile(rolloutPath, 'late native history');
+      throw exactNoRolloutError();
+    }, { codexHome: root });
+    try {
+      await expect(agent.startSession({ sessionId: 'preserve-canonical', resumeSessionId,
+        model: 'gpt-6-astra', workingDir: root })).rejects.toThrow();
+      expect(host.request.mock.calls.filter(([method]) => method === Method.ThreadStart)).toHaveLength(0);
+      expect(host.request.mock.calls.filter(([method]) => method === Method.TurnStart)).toHaveLength(0);
+      if (failure === 'late-file') expect(await fs.readFile(rolloutPath, 'utf8')).toBe('late native history');
+    } finally {
+      await agent.dispose();
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it('does not call thread/resume when the host identifies an unsafe rollout', async () => {
@@ -23593,6 +24441,119 @@ describe('CodexAgent rewind', () => {
       data: 'rollback-thread-id',
       source: 'codex',
     });
+    await handle.close();
+  });
+
+  // #4421: 0.153+ 的分页线程拒绝 thread/rollback(-32600)。原地回退要改走与
+  // forkSdkSession 相同的原生边界 fork,并把活动线程切到 fork 结果。
+  it('falls back to a native turn fork when the paginated thread rejects thread/rollback', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadRollback) {
+        throw Object.assign(
+          new Error('codex app-server thread/rollback error -32600: paginated threads do not support thread/rollback'),
+          { code: -32600 },
+        );
+      }
+      if (method === Method.ThreadTurnsList) return {
+        data: [
+          { id: 'dropped-turn', status: 'completed', startedAt: 200 },
+          { id: 'boundary-turn', status: 'completed', startedAt: 100 },
+        ], nextCursor: null,
+      };
+    }, { userAgent: 'mock-codex/0.153.4' });
+    const handle = await agent.startSession({
+      sessionId: 'session-rewind-paginated',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const iterator = handle.events()[Symbol.asyncIterator]();
+    const commitRewindFiles = handle.commitRewindFiles;
+    if (!commitRewindFiles) throw new Error('expected commitRewindFiles');
+
+    const commitResult = await commitRewindFiles('', '', { tailTurnsToDrop: 1, forkAtTimestampMs: 150_500 });
+
+    expect(host.request).toHaveBeenCalledWith(Method.ThreadRollback, {
+      threadId: 'start-thread-id',
+      numTurns: 1,
+    });
+    expect(host.request).toHaveBeenCalledWith(Method.ThreadFork, {
+      threadId: 'start-thread-id',
+      lastTurnId: 'boundary-turn',
+      excludeTurns: true,
+      cwd: '/repo',
+    });
+    expect(commitResult).toEqual({ sdkSessionId: 'fork-thread-id' });
+    expect(host.subscribeThread).toHaveBeenCalledTimes(2);
+    expect(host.subscribeThread).toHaveBeenLastCalledWith('fork-thread-id', expect.any(Object));
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: 'session_id',
+      data: 'fork-thread-id',
+      source: 'codex',
+    });
+    await handle.close();
+  });
+
+  it('uses the persisted native anchor for the paginated rewind fork without listing turns', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadRollback) throw new Error('paginated threads do not support thread/rollback');
+    }, { userAgent: 'mock-codex/0.153.4' });
+    const handle = await agent.startSession({
+      sessionId: 'session-rewind-paginated-anchor',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const commitRewindFiles = handle.commitRewindFiles;
+    if (!commitRewindFiles) throw new Error('expected commitRewindFiles');
+
+    await expect(commitRewindFiles('', '', { tailTurnsToDrop: 2, lastTurnId: 'persisted-boundary' }))
+      .resolves.toEqual({ sdkSessionId: 'fork-thread-id' });
+    expect(host.request).not.toHaveBeenCalledWith(Method.ThreadTurnsList, expect.anything());
+    expect(host.request).toHaveBeenCalledWith(Method.ThreadFork, expect.objectContaining({
+      threadId: 'start-thread-id', lastTurnId: 'persisted-boundary',
+    }));
+    await handle.close();
+  });
+
+  it('surfaces a clear error instead of forking when the paginated rewind has no native boundary', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadRollback) throw new Error('paginated threads do not support thread/rollback');
+    }, { userAgent: 'mock-codex/0.153.4' });
+    const handle = await agent.startSession({
+      sessionId: 'session-rewind-paginated-no-anchor',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const commitRewindFiles = handle.commitRewindFiles;
+    if (!commitRewindFiles) throw new Error('expected commitRewindFiles');
+
+    await expect(commitRewindFiles('', '', { tailTurnsToDrop: 1 }))
+      .rejects.toThrow(/unambiguous native anchor or event timestamp/);
+    expect(host.request).not.toHaveBeenCalledWith(Method.ThreadFork, expect.anything());
+    // 活动线程未被替换,后续仍订阅原线程。
+    expect(host.subscribeThread).toHaveBeenCalledTimes(1);
+    await handle.close();
+  });
+
+  it('does not fork for non-paginated rollback failures', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadRollback) throw new Error('codex app-server thread/rollback error -32000: thread not found');
+    }, { userAgent: 'mock-codex/0.153.4' });
+    const handle = await agent.startSession({
+      sessionId: 'session-rewind-other-failure',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const commitRewindFiles = handle.commitRewindFiles;
+    if (!commitRewindFiles) throw new Error('expected commitRewindFiles');
+
+    await expect(commitRewindFiles('', '', { tailTurnsToDrop: 1, forkAtTimestampMs: 150_500 }))
+      .rejects.toThrow(/thread not found/);
+    expect(host.request).not.toHaveBeenCalledWith(Method.ThreadFork, expect.anything());
+    expect(host.request).not.toHaveBeenCalledWith(Method.ThreadTurnsList, expect.anything());
     await handle.close();
   });
 
@@ -28738,6 +29699,95 @@ describe('CodexAgent upstream-response-idle watchdog', () => {
     }
   });
 
+  it('status 用量心跳不重置 idle:自动续跑后的 zombie running 能被收口', async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new CodexAgent(createDeps());
+      const host = installIdleHost(agent);
+      const handle = await startIdleSession(agent, 'session-idle-usage-heartbeat');
+      const seen = collectEvents(handle);
+      await handle.send({ type: 'user', content: 'go' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers) throw new Error('expected thread handlers');
+      handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+
+      for (let i = 1; i <= 5; i++) {
+        await vi.advanceTimersByTimeAsync(500);
+        handlers.tokenUsageUpdated?.({
+          threadId: 'start-thread-id',
+          turnId: 'turn-1',
+          tokenUsage: {
+            total: {
+              totalTokens: 100 * i,
+              inputTokens: 80 * i,
+              outputTokens: 20 * i,
+              cachedInputTokens: 0,
+            },
+            last: {
+              totalTokens: 100 * i,
+              inputTokens: 80 * i,
+              outputTokens: 20 * i,
+              cachedInputTokens: 0,
+            },
+          },
+        } as never);
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      expect(seen.filter((ev) => ev.type === 'status').length).toBeGreaterThan(1);
+
+      await vi.advanceTimersByTimeAsync(IDLE_MS + 1 - 5 * 500);
+
+      const terminal = seen.find(
+        (ev) =>
+          ev.type === 'error' &&
+          (ev.data as { reason?: string } | null)?.reason === 'upstream_response_idle_timeout',
+      );
+      expect(terminal).toBeDefined();
+      expect((terminal!.data as { isTerminal?: boolean }).isTerminal).toBe(true);
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['agentMessageDelta', 'reasoningTextDelta'] as const)(
+    '%s 的不可见内容不刷新 idle，真实内容仍刷新',
+    async (handlerName) => {
+      vi.useFakeTimers();
+      try {
+        const agent = new CodexAgent(createDeps());
+        const host = installIdleHost(agent);
+        const handle = await startIdleSession(agent, `session-idle-${handlerName}`);
+        const seen = collectEvents(handle);
+        await handle.send({ type: 'user', content: 'go' });
+        const handlers = host.getThreadHandlers();
+        if (!handlers) throw new Error('expected thread handlers');
+        handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+        const emitDelta = (delta: string) => handlers[handlerName]?.({
+          threadId: 'start-thread-id', turnId: 'turn-1', itemId: 'output-1', delta,
+        } as never);
+
+        await vi.advanceTimersByTimeAsync(IDLE_MS - 1_000);
+        emitDelta('real progress');
+        await vi.advanceTimersByTimeAsync(1_001);
+        expect(seen.some((event) => event.type === 'error')).toBe(false);
+
+        for (const delta of [' \t\n', '\u200B\u2060', '\x00\x1b']) {
+          await vi.advanceTimersByTimeAsync(10_000);
+          emitDelta(delta);
+        }
+        await vi.advanceTimersByTimeAsync(IDLE_MS - 31_000);
+        expect(seen).toContainEqual(expect.objectContaining({
+          type: 'error', data: expect.objectContaining({ reason: 'upstream_response_idle_timeout' }),
+        }));
+        await handle.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('graceful stop interrupt 被拒绝后重新武装同一 turn 的 idle watchdog', async () => {
     vi.useFakeTimers();
     try {
@@ -29067,7 +30117,49 @@ describe('CodexAgent upstream-response-idle watchdog', () => {
             (ev.data as { reason?: string } | null)?.reason === 'upstream_response_idle_timeout',
         ),
       ).toBe(true);
-      // 关键:本地 turn 状态必须已收干净,不等 interrupt 的结果
+      // 自动续跑可能已经排期：ACK 前必须保持 busy，避免新 turn 撞上旧 transport。
+      expect(handle.isTurnRunning?.()).toBe(true);
+      await vi.advanceTimersByTimeAsync(10_000 * 2 + 10);
+      expect(handle.isTurnRunning?.()).toBe(false);
+      await handle.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('普通 idle timeout 在 interrupt ACK 前保持 busy', async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new CodexAgent(createDeps());
+      let turnSeq = 0;
+      let resolveInterrupt: ((value: unknown) => void) | undefined;
+      const interruptPromise = new Promise((resolve) => {
+        resolveInterrupt = resolve;
+      });
+      const host = installFakeHost(agent, (method) => {
+        if (method === Method.TurnStart) return { turn: { id: `turn-${++turnSeq}` } };
+        if (method === Method.TurnInterrupt) return interruptPromise as never;
+        return undefined;
+      });
+      const handle = await startIdleSession(agent, 'session-idle-defer-busy');
+      const seen = collectEvents(handle);
+      await handle.send({ type: 'user', content: 'go' });
+      const handlers = host.getThreadHandlers();
+      if (!handlers) throw new Error('expected thread handlers');
+      handlers.turnStarted?.({ threadId: 'start-thread-id', turn: { id: 'turn-1' } } as never);
+
+      await vi.advanceTimersByTimeAsync(IDLE_MS + 1);
+      expect(
+        seen.some(
+          (ev) =>
+            ev.type === 'error' &&
+            (ev.data as { reason?: string } | null)?.reason === 'upstream_response_idle_timeout',
+        ),
+      ).toBe(true);
+      expect(handle.isTurnRunning?.()).toBe(true);
+
+      resolveInterrupt?.({});
+      await vi.advanceTimersByTimeAsync(0);
       expect(handle.isTurnRunning?.()).toBe(false);
       await handle.close();
     } finally {
@@ -29076,11 +30168,10 @@ describe('CodexAgent upstream-response-idle watchdog', () => {
   });
 
   it('interrupt 始终不 ack → 作废 host(否则坏 daemon 会被下一条 send 复用)', async () => {
-    // watchdog 会先合成一次本地 turn 收口好让会话立刻可发,代价是 isTurnRunning() 变
-    // false —— Session 层的 recoverIfTurnStillRunning 正以它为判据,于是会认为"中断
-    // 生效了、会话仍可用"而放过这个 host。若中断其实从未被确认,这个已经哑火整个阈值
-    // 周期的 app-server 就留给下一条 send 复用:要么再超时,要么撞上服务端那个还在跑
-    // 的 turn(review #944 第五轮 P1)。确诊不可用就自己 close,让上层重建。
+    // watchdog 先推终态 error 但延后本地收口,直到两次 interrupt ACK 都超时才 close /
+    // 退役 host。ACK 前保持 isTurnRunning()=true,自动续跑不会撞上还在 interrupt 的
+    // 旧 transport;ACK 失败后 close 让上层重建,避免把已经哑火整个阈值周期的
+    // app-server 留给下一条 send(review #944 第五轮 P1)。
     vi.useFakeTimers();
     try {
       const agent = new CodexAgent(createDeps());
@@ -29455,6 +30546,57 @@ describe('CodexAgent reconnect-stall watchdog', () => {
     } as never);
   }
 
+  it.each([true, false])('lets native compaction finish before applying reconnect timeout (reconnect first: %s)', async (reconnectFirst) => {
+    vi.useFakeTimers();
+    vi.stubEnv('XDT_CODEX_IDLE_TIMEOUT_MS', '600000');
+    try {
+      const { host, handle, handlers, seen } = await startReconnectTurn(new CodexAgent(createDeps()), 'compacting');
+      if (reconnectFirst) emitReconnect(handlers, 1);
+      handlers.itemStarted?.({
+        threadId: 'start-thread-id', turnId: 'turn-1',
+        item: { id: 'compact-1', type: 'contextCompaction' },
+      } as never);
+      emitReconnect(handlers, reconnectFirst ? 2 : 1);
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+      expect(host.request.mock.calls.some(([method]) => method === Method.TurnInterrupt)).toBe(false);
+      emitReconnect(handlers, 3);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handle.isTurnRunning?.()).toBe(true);
+      expect(host.request.mock.calls.some(([method]) => method === Method.TurnInterrupt)).toBe(false);
+      handlers.itemCompleted?.({
+        threadId: 'start-thread-id', turnId: 'turn-1',
+        item: { id: 'compact-1', type: 'contextCompaction' },
+      } as never);
+      emitReconnect(handlers, 1);
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+      expect(seen).toContainEqual(expect.objectContaining({
+        type: 'error', data: expect.objectContaining({ reason: 'codex_reconnect_stalled' }),
+      }));
+      await handle.close();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps a bounded upstream-idle timeout during native compaction', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('XDT_CODEX_IDLE_TIMEOUT_MS', '180000');
+    try {
+      const { handle, handlers, seen } = await startReconnectTurn(new CodexAgent(createDeps()), 'compaction-idle');
+      emitReconnect(handlers, 1);
+      handlers.itemStarted?.({
+        threadId: 'start-thread-id', turnId: 'turn-1',
+        item: { id: 'compact-1', type: 'contextCompaction' },
+      } as never);
+      await vi.advanceTimersByTimeAsync(180001);
+      expect(seen).toContainEqual(expect.objectContaining({
+        type: 'error', data: expect.objectContaining({ reason: 'upstream_response_idle_timeout' }),
+      }));
+      expect(seen).not.toContainEqual(expect.objectContaining({
+        type: 'error', data: expect.objectContaining({ reason: 'codex_history_oversized' }),
+      }));
+      await handle.close();
+    } finally { vi.useRealTimers(); }
+  });
+
   it('首次重连提示后 120s 无进展 → 收口为 codex_reconnect_stalled', async () => {
     vi.useFakeTimers();
     try {
@@ -29495,7 +30637,7 @@ describe('CodexAgent reconnect-stall watchdog', () => {
   ].flatMap((scenario) => [
     { ...scenario, releaseFailure: undefined as boolean | undefined },
     ...(scenario.rejectAck ? [false, true].map((releaseFailure) => ({ ...scenario, releaseFailure })) : []),
-  ]))('settles oversized recovery without a global account home: %j', async ({ cancelled, completion, rejectAck, releaseFailure }) => {
+  ]))('settles reconnect cleanup without reclassifying image-heavy history: %j', async ({ cancelled, completion, rejectAck, releaseFailure }) => {
     vi.useFakeTimers();
     const agent = new CodexAgent(createDeps());
     const proto = Object.getPrototypeOf(agent) as {
@@ -29534,17 +30676,18 @@ describe('CodexAgent reconnect-stall watchdog', () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(handle.isTurnRunning?.()).toBe(true);
+      expect(measure).not.toHaveBeenCalled();
       expect(seen).toContainEqual(expect.objectContaining({
-        type: 'status', data: expect.objectContaining({ status: 'Compacting...', isRunning: true }),
+        type: 'status', data: expect.objectContaining({ status: 'Reconnecting...', isRunning: true }),
       }));
       expect(seen.some((event) => event.type === 'error' &&
-        (event.data as { reason?: string }).reason === 'codex_history_oversized')).toBe(false);
+        (event.data as { reason?: string }).reason === 'codex_reconnect_stalled')).toBe(false);
       if (releaseFailure !== undefined) {
         reject(new Error('interrupt unavailable'));
         await vi.advanceTimersByTimeAsync(1);
         expect(release).toHaveBeenCalledOnce();
         expect(seen.some((event) => event.type === 'error' &&
-          (event.data as { reason?: string }).reason === 'codex_history_oversized')).toBe(false);
+          (event.data as { reason?: string }).reason === 'codex_reconnect_stalled')).toBe(false);
       }
       if (cancelled) cancellation.abort();
       if (completion) {
@@ -29560,15 +30703,11 @@ describe('CodexAgent reconnect-stall watchdog', () => {
       else acknowledge({});
       await vi.advanceTimersByTimeAsync(1);
       if (completion || !rejectAck) expect(handle.isTurnRunning?.()).toBe(false);
-      const oversizedIndex = seen.findIndex((event) => event.type === 'error' &&
-        (event.data as { reason?: string }).reason === 'codex_history_oversized');
-      if (cancelled || completion === 'completed') expect(oversizedIndex).toBe(-1);
-      else {
-        expect(oversizedIndex).toBeGreaterThanOrEqual(0);
-        if (completion || !rejectAck) expect(seen[oversizedIndex + 1]).toMatchObject({
-          type: 'status', data: { isRunning: false },
-        });
-      }
+      expect(seen.some((event) => event.type === 'error' &&
+        (event.data as { reason?: string }).reason === 'codex_history_oversized')).toBe(false);
+      const timeoutErrors = seen.filter((event) => event.type === 'error' &&
+        (event.data as { reason?: string }).reason === 'codex_reconnect_stalled');
+      expect(timeoutErrors).toHaveLength(cancelled || completion === 'completed' ? 0 : 1);
       if (completion === 'completed') {
         const done = seen.filter((event) => event.type === 'done');
         expect(done).toHaveLength(1);
@@ -29626,6 +30765,34 @@ describe('CodexAgent reconnect-stall watchdog', () => {
       measure.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it('does not restore the short reconnect deadline when compaction starts during a rejected Stop', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('XDT_CODEX_IDLE_TIMEOUT_MS', '600000');
+    try {
+      const ack = deferred<unknown>();
+      const { host, handle, handlers, seen } = await startReconnectTurn(
+        new CodexAgent(createDeps()), 'stop-compacting', ack.promise,
+      );
+      emitReconnect(handlers, 1);
+      await vi.advanceTimersByTimeAsync(100000);
+      const stopping = expect(handle.requestGracefulStop?.()).rejects.toThrow('interrupt rejected');
+      await vi.advanceTimersByTimeAsync(0);
+      handlers.itemStarted?.({
+        threadId: 'start-thread-id', turnId: 'turn-1',
+        item: { id: 'compact-1', type: 'contextCompaction' },
+      } as never);
+      ack.reject(new Error('interrupt rejected'));
+      await stopping;
+      await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
+      expect(host.request.mock.calls.filter(([method]) => method === Method.TurnInterrupt)).toHaveLength(1);
+      expect(seen).not.toContainEqual(expect.objectContaining({
+        type: 'error', data: expect.objectContaining({ reason: 'codex_reconnect_stalled' }),
+      }));
+      expect(handle.isTurnRunning?.()).toBe(true);
+      await handle.close();
+    } finally { vi.useRealTimers(); }
   });
 
   it('graceful stop interrupt 被拒绝后重新武装同一 turn 的 reconnect watchdog', async () => {
@@ -29993,12 +31160,8 @@ describe('CodexAgent reconnect-stall watchdog', () => {
 
       await vi.advanceTimersByTimeAsync(RECONNECT_STALL_MS + 1);
 
-      expect(seen).toContainEqual(expect.objectContaining({
-        type: 'error',
-        data: expect.objectContaining({
-          reason: 'codex_reconnect_stalled',
-          isTerminal: true,
-        }),
+      expect(seen).not.toContainEqual(expect.objectContaining({
+        type: 'error', data: expect.objectContaining({ reason: 'codex_reconnect_stalled' }),
       }));
       expect(handle.isTurnRunning?.()).toBe(true);
 
@@ -30013,6 +31176,9 @@ describe('CodexAgent reconnect-stall watchdog', () => {
       interruptAck.resolve({});
       await vi.advanceTimersByTimeAsync(0);
       expect(handle.isTurnRunning?.()).toBe(false);
+      expect(seen).toContainEqual(expect.objectContaining({
+        type: 'error', data: expect.objectContaining({ reason: 'codex_reconnect_stalled', isTerminal: true }),
+      }));
       await handle.close();
     } finally {
       vi.useRealTimers();

@@ -1,4 +1,5 @@
 import { LocalSkillControls } from './components/LocalSkillControls';
+import { OfficialSkillBadge } from './components/OfficialSkillBadge';
 /**
  * SkillhubDetailView — route for /skillhub/{kind}/{global|project}/[hash]/:name.
  *
@@ -38,6 +39,7 @@ import { getDataOwnerGeneration, isDataOwnerIdCurrent } from '@/contexts/dataOwn
 import { cn } from '@/lib/utils';
 import { getDraft, getFastModeForModel } from '@/state/newMakerDraft';
 import { useMetaColumnResize } from './hooks/useMetaColumnResize';
+import { useSkillhubHomeNavigation } from './hooks/useSkillhubHomeNavigation';
 import { invalidateHash, useSkillFolderHash } from './hooks/useSkillFolderHash';
 import {
   clearHistory,
@@ -49,10 +51,10 @@ import {
 import { triggerIncrementalSync } from './hooks/useSkillSync';
 import { type DetailState, deriveDetailActionState, deriveDetailState } from './lib/detailButtons';
 import {
-  buildLocalSkillRoute,
   findLocalSkillByPath,
   findLocalSkillRouteEntry,
 } from './lib/localRoutes';
+import { builtInSkillDescriptionKey } from './lib/builtInSkillPresentation';
 import { isMarketDeleted as checkMarketDeleted, getCachedInfo, invalidate as invalidateInfo, refreshInfo } from './lib/infoDedupe';
 import {
   activePublishedReviewFromVersions,
@@ -227,16 +229,22 @@ function FrontmatterPanel({ entry }: { entry: SkillhubSkill }) {
             // description gets the clamp-with-show-more treatment; every
             // other field is rendered inline since they're short enough
             // (name, version, category, ...).
-            const isLongTextField = k === 'description' && typeof v === 'string';
+            const descriptionKey = k === 'description'
+              ? builtInSkillDescriptionKey(entry)
+              : undefined;
+            const displayValue = descriptionKey ? t(descriptionKey) : v;
+            const isLongTextField = k === 'description' && typeof displayValue === 'string';
             return (
               <div key={k} className="flex flex-col gap-1">
                 <dt className="text-xs text-[var(--cmd-palette-item-meta)]">{k}</dt>
                 <dd>
                   {isLongTextField ? (
-                    <ClampedText value={v as string} />
+                    <ClampedText value={displayValue as string} />
                   ) : (
                     <span className="whitespace-pre-wrap break-words text-sm text-[var(--msg-assistant-text)]">
-                      {typeof v === 'string' ? v : JSON.stringify(v)}
+                      {typeof displayValue === 'string'
+                        ? displayValue
+                        : JSON.stringify(displayValue)}
                     </span>
                   )}
                 </dd>
@@ -978,6 +986,7 @@ export function SkillhubDetailView() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const { backToCatalog, replaceLocalSkill } = useSkillhubHomeNavigation();
   const { skills, bootstrapped, loading: skillsLoading } = useSkillhub();
   const commandPath = searchParams.get('path');
   useEffect(() => {
@@ -989,7 +998,6 @@ export function SkillhubDetailView() {
   // 而是退出到 SkillHub 一级页：market 来源回 market，其它入口回 local 欢迎页。
   const navState = location.state as { from?: string; resetHistory?: boolean } | null;
   const fromRoute = navState?.from ?? '/skillhub';
-  const backTargetRoute = fromRoute === '/skillhub/market' ? '/skillhub/market' : '/skillhub/local';
   // 兼容旧 sessionStorage 栈：从外部入口进入时先清掉，避免老版本留下的
   // detail 链影响后续返回语义。
   const shouldResetHistory = navState?.resetHistory === true;
@@ -1037,7 +1045,7 @@ export function SkillhubDetailView() {
     }
     clearLastEntryId();
     clearHistory();
-    navigate(backTargetRoute);
+    backToCatalog();
   };
 
   // ── v0.2.1: 4-state detection for kind === 'skill' ────────────────────────
@@ -1305,10 +1313,10 @@ export function SkillhubDetailView() {
       registryEntry,
       localFolderHash,
       publishedStatus,
-      identityPolicy.canWrite,
+      identityPolicy.canWrite && entry?.builtIn !== true,
       publishDetailState,
     ),
-    [detailState, registryEntry, localFolderHash, publishedStatus, identityPolicy.canWrite, publishDetailState],
+    [detailState, registryEntry, localFolderHash, publishedStatus, identityPolicy.canWrite, entry?.builtIn, publishDetailState],
   );
   const detailAction = detailActionState?.status ?? null;
   const isOutdated = detailActionState?.isOutdated ?? false;
@@ -1351,7 +1359,7 @@ export function SkillhubDetailView() {
   const { confirm } = useConfirmDialog();
 
   const openPublish = useCallback(async () => {
-    if (entry?.kind !== 'skill' || !identityPolicy.canWrite) return;
+    if (entry?.kind !== 'skill' || entry.builtIn || !identityPolicy.canWrite) return;
 
     if (isPublishedReviewing) {
       const shouldProceed = await confirm({
@@ -1701,6 +1709,9 @@ export function SkillhubDetailView() {
     if (entry.kind === 'agent') {
       return { hidden: true, disabled: true, tip: '' };
     }
+    if (entry.builtIn) {
+      return { hidden: true, disabled: true, tip: '' };
+    }
     // 装的别人技能不允许编辑
     if (detailState?.isMine === false && detailState.origin === 'installed') {
       return { hidden: true, disabled: true, tip: '' };
@@ -1800,7 +1811,7 @@ export function SkillhubDetailView() {
               onClick={() => {
                 clearLastEntryId();
                 clearHistory();
-                navigate('/skillhub');
+                backToCatalog();
               }}
               className="text-[var(--msg-assistant-text)] underline-offset-2 hover:underline"
             >
@@ -1870,6 +1881,7 @@ export function SkillhubDetailView() {
             <h2 className="min-w-0 truncate text-lg font-medium leading-none text-[var(--msg-assistant-text)]">
               {(entry.frontmatter?.displayName as string) || (entry.frontmatter?.name as string) || entry.name}
             </h2>
+            {entry.builtIn && <OfficialSkillBadge />}
             <KindChip kind={entry.kind} />
             <ScopeChip scope={entry.scope} />
             {entry.linkedEngines.map(le => {
@@ -2009,7 +2021,7 @@ export function SkillhubDetailView() {
               onUninstalled={() => {
                 clearLastEntryId();
                 clearHistory();
-                navigate('/skillhub/local');
+                backToCatalog();
               }} />}
             {/* 编辑入口 */}
             {!editButtonState.hidden && (
@@ -2562,7 +2574,7 @@ export function SkillhubDetailView() {
               const renamed = findLocalSkillByPath(scannedSkills, newAbsolutePath);
               if (!renamed) return;
               setLastEntryId(renamed.id);
-              navigate(buildLocalSkillRoute(renamed), { replace: true });
+              replaceLocalSkill(renamed);
             });
           }}
           onScanResult={setScanResult}

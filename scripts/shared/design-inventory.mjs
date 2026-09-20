@@ -39,6 +39,7 @@ const LAYOUT_ROUTE_COMPONENTS = new Set([
 
 /** 运行期跳转组件：与 <Navigate> 同类，不是 surface。 */
 const RUNTIME_REDIRECT_COMPONENTS = new Map([
+  ['MainEntryRedirect', '(runtime home entry redirect)'],
   ['CCAgentIndexRedirect', '(runtime session redirect)'],
 ]);
 
@@ -397,6 +398,8 @@ export function catalogSurfaces() {
       reachableComponents: [
         'MainLayout',
         'Sidebar',
+        'ProjectsSection',
+        'DeviceSectionHeader',
         'RightSidebar',
         'WindowControls',
         'ChromeActions',
@@ -412,6 +415,8 @@ export function catalogSurfaces() {
       styleRoots: [
         'apps/desktop/src/renderer/components/layout',
         'apps/desktop/src/renderer/components/sidebar',
+        'apps/desktop/src/renderer/features/cc-agent/sidebar/sections/ProjectsSection.tsx',
+        'apps/desktop/src/renderer/features/cc-agent/sidebar/DeviceSectionHeader.tsx',
         'apps/desktop/src/renderer/components/title-bar',
         'apps/desktop/src/renderer/layout',
         'apps/desktop/src/renderer/features/right-sidebar',
@@ -536,9 +541,10 @@ export function catalogSurfaces() {
       platform: 'desktop',
       title: '伙伴（列表 / 对话 / 设置 / 历史 / 伙伴私聊）',
       productionEntry:
-        'hash `/bots`、`/bots/:botId`、`/bots/roster` 及伙伴当前/历史任务、伙伴私聊路由（BotsFeatureLayout）',
+        'hash `/bots`、`/bots/list`、`/bots/:botId`、`/bots/roster` 及伙伴当前/历史任务、伙伴私聊路由（BotsFeatureLayout）',
       reachableComponents: [
         'BotsHomeView',
+        'BotsListView',
         'BotRosterView',
         'BotSessionView',
         'RemoteBotSessionView',
@@ -555,6 +561,7 @@ export function catalogSurfaces() {
       extraStyleRoots: ['desktop.chat.session'],
       routerPaths: [
         '/bots',
+        '/bots/list',
         '/bots/:botId',
         '/bots/:botId/direct/:threadId',
         '/bots/:botId/history/:sessionId',
@@ -564,6 +571,7 @@ export function catalogSurfaces() {
       ],
       routeEntryComponents: {
         '/bots': 'BotsHomeView',
+        '/bots/list': 'BotsListView',
         '/bots/:botId': 'BotsHomeView',
         '/bots/:botId/direct/:threadId': 'BotDirectMessageView',
         '/bots/:botId/history/:sessionId': 'BotHistorySessionView',
@@ -587,11 +595,13 @@ export function catalogSurfaces() {
       platform: 'desktop',
       title: 'SkillHub 本地技能',
       productionEntry:
-        'hash `/skillhub/local` 及详情 `/skillhub/local/:kind/global/:name`、`/skillhub/local/:kind/project/:projectHash/:name`',
-      // SkillhubHomeView 直接渲染 PluginManagementLayout（features/plugin 共享布局）、
-      // SkillhubMarketPreviewPanel 与 InstallTargetPicker——只扫三个路由组件文件
+        'hash `/skillhub/local`（SkillhubLocalLayout 保留列表）及详情 `/skillhub/local/:kind/global/:name`、`/skillhub/local/:kind/project/:projectHash/:name`、`/skillhub/local/by-path`',
+      // SkillhubLocalLayout 保留 SkillhubHomeView；首页直接渲染
+      // PluginManagementLayout（features/plugin 共享布局）、
+      // SkillhubMarketPreviewPanel 与 InstallTargetPicker——只扫路由入口文件
       // 会漏掉这些子组件的样式事实。
       reachableComponents: [
+        'SkillhubLocalLayout',
         'SkillhubHomeView',
         'SkillhubDetailView',
         'SkillhubFeatureLayout',
@@ -600,6 +610,7 @@ export function catalogSurfaces() {
         'InstallTargetPicker',
       ],
       styleRoots: [
+        'apps/desktop/src/renderer/features/skillhub/SkillhubLocalLayout.tsx',
         'apps/desktop/src/renderer/features/skillhub/SkillhubHomeView.tsx',
         'apps/desktop/src/renderer/features/skillhub/SkillhubDetailView.tsx',
         'apps/desktop/src/renderer/features/skillhub/SkillhubFeatureLayout.tsx',
@@ -613,7 +624,7 @@ export function catalogSurfaces() {
         '/skillhub/local/:kind/project/:projectHash/:name',
         '/skillhub/local/by-path',
       ],
-      routeEntryComponents: { '/skillhub/local': 'SkillhubHomeView', '/skillhub/local/:kind/global/:name': 'SkillhubDetailView', '/skillhub/local/:kind/project/:projectHash/:name': 'SkillhubDetailView', '/skillhub/local/by-path': 'SkillhubDetailView' },
+      routeEntryComponents: { '/skillhub/local': 'SkillhubLocalLayout', '/skillhub/local/:kind/global/:name': 'SkillhubDetailView', '/skillhub/local/:kind/project/:projectHash/:name': 'SkillhubDetailView', '/skillhub/local/by-path': 'SkillhubDetailView' },
     },
     {
       id: 'desktop.skillhub.market',
@@ -770,6 +781,30 @@ export function catalogSurfaces() {
       ],
       routerPaths: [],
       rendererEntryModules: { resourceUsageWindow: './resource-usage-entry' },
+    },
+    {
+      id: 'desktop.window.remote-desktop',
+      platform: 'desktop',
+      title: '远程桌面独立窗口',
+      productionEntry: '`?remoteDesktopViewer=1` → renderer/remote-desktop-viewer-entry.tsx',
+      reachableComponents: ['RemoteDesktopViewerWindow', 'Select', 'Button', 'FormField', 'ConfirmDialog', 'Switch', 'Popover', 'Tip'],
+      styleRoots: [
+        'apps/desktop/src/renderer/remote-desktop-viewer-entry.tsx',
+        'apps/desktop/src/renderer/features/remote-desktop/RemoteDesktopViewerWindow.tsx',
+        'apps/desktop/src/renderer/components/ui/popover.tsx',
+        'apps/desktop/src/renderer/components/ui/tooltip.tsx',
+        'apps/desktop/src/renderer/components/ui/switch.tsx',
+        'apps/desktop/src/renderer/components/ui/confirm-dialog.tsx',
+        'apps/desktop/src/renderer/components/ui/select.tsx',
+        'apps/desktop/src/renderer/components/ui/button.tsx',
+        'apps/desktop/src/renderer/components/ui/form-field.tsx',
+        'apps/desktop/src/renderer/features/remote-desktop/viewerWindow.css',
+        'apps/desktop/src/main/remote-desktop-viewer',
+        'apps/desktop/src/renderer/styles/globals.css',
+        'apps/desktop/src/renderer/styles/generated/tokens.css',
+      ],
+      routerPaths: [],
+      rendererEntryModules: { remoteDesktopViewer: './remote-desktop-viewer-entry' },
     },
     {
       id: 'desktop.window.voice-overlay',

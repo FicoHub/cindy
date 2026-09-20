@@ -58,7 +58,7 @@ test('DS-8: every desktop globals.css surface includes its generated token style
   const { surfaces } = buildGeneratedSurfaces(ROOT);
   const consumers = surfaces.filter(surface => surface.platform === 'desktop'
     && surface.styleSources.includes('apps/desktop/src/renderer/styles/globals.css'));
-  assert.equal(consumers.length, 5);
+  assert.equal(consumers.length, 6);
   for (const surface of consumers) {
     assert.ok(surface.styleSources.includes('apps/desktop/src/renderer/styles/generated/tokens.css'), surface.id);
   }
@@ -118,6 +118,7 @@ test('extractRouterFacts: 真实 router.tsx 的三类去向逐条钉死', () => 
     '/bots/:botId/direct/:threadId BotDirectMessageView',
     '/bots/:botId/history/:sessionId BotHistorySessionView',
     '/bots/:botId/session/:sessionId BotSessionView',
+    '/bots/list BotsListView',
     '/bots/remote/:deviceId/:botId RemoteBotSessionView',
     '/bots/roster BotRosterView',
     '/cc-agent/:sessionId CCAgentSessionView',
@@ -133,7 +134,7 @@ test('extractRouterFacts: 真实 router.tsx 的三类去向逐条钉死', () => 
     '/plugins GhostPluginPage',
     '/settings SettingsView',
     '/sidebar-window SidebarWindowLayout',
-    '/skillhub/local SkillhubHomeView',
+    '/skillhub/local SkillhubLocalLayout',
     '/skillhub/local/:kind/global/:name SkillhubDetailView',
     '/skillhub/local/:kind/project/:projectHash/:name SkillhubDetailView',
     '/skillhub/local/by-path SkillhubDetailView',
@@ -141,7 +142,7 @@ test('extractRouterFacts: 真实 router.tsx 的三类去向逐条钉死', () => 
   ]);
 
   assert.deepEqual(redirects.map((row) => `${row.path} -> ${row.to}`), [
-    '/ -> /cc-agent',
+    '/ -> (runtime home entry redirect)',
     '/billing -> /settings?tab=billing',
     '/cc-agent -> (runtime session redirect)',
     '/cc-agent/new-dialogue -> /cc-agent/new',
@@ -798,11 +799,11 @@ test('CSS 文件同样剥块注释后统计,globals.css 注释色值不进基线
   assert.ok(shell.bareColors > 0, '真实规则色值仍应计入');
 });
 
-test('skillhub.local 纳入直接渲染子组件的样式事实', () => {
+test('skillhub.local 纳入保留列表布局及直接渲染子组件的样式事实', () => {
   const catalog = catalogSurfaces();
   const local = catalog.find((surface) => surface.id === 'desktop.skillhub.local');
   assert.ok(local);
-  for (const component of ['PluginManagementLayout', 'SkillhubMarketPreviewPanel', 'InstallTargetPicker']) {
+  for (const component of ['SkillhubLocalLayout', 'SkillhubHomeView', 'PluginManagementLayout', 'SkillhubMarketPreviewPanel', 'InstallTargetPicker']) {
     assert.ok(
       local.reachableComponents.includes(component),
       `${component} 必须列入 skillhub.local 可达组件`,
@@ -813,6 +814,8 @@ test('skillhub.local 纳入直接渲染子组件的样式事实', () => {
   );
   const { surfaces } = buildGeneratedSurfaces(ROOT, {});
   const generated = surfaces.find((surface) => surface.id === 'desktop.skillhub.local');
+  assert.ok(generated.styleSources.some((file) => file.endsWith('SkillhubLocalLayout.tsx')));
+  assert.ok(generated.styleSources.some((file) => file.endsWith('SkillhubHomeView.tsx')));
   assert.ok(generated.styleSources.some((file) => file.endsWith('PluginManagementLayout.tsx')));
   assert.ok(generated.tokenCount > 33, `子组件并入后 token 数应高于只扫路由组件(实际 ${generated.tokenCount})`);
 });
@@ -1016,6 +1019,7 @@ test('renderer 模块图入口双向核对: index.tsx 的参数→入口模块�
   const actualEntries = extractRendererEntries(fs.readFileSync(RENDERER_INDEX_PATH, 'utf8'));
   // 与源码实况钉死:当前 3 个参数各自加载的入口模块。
   assert.deepEqual(Object.fromEntries(actualEntries), {
+    remoteDesktopViewer: './remote-desktop-viewer-entry',
     resourceUsageWindow: './resource-usage-entry',
     sidebarWindow: './sidebar-window-entry',
     ghostPanelWindow: './ghost-panel-window-entry',
@@ -1265,7 +1269,7 @@ test('Mobile actual route families and shared visible consumers are discoverable
   const coverage = mobileRouteCoverage(ROOT);
   assert.deepEqual(coverage.missing, []);
   assert.deepEqual(coverage.stale, []);
-  assert.equal(coverage.mapped.find(r=>r.path.endsWith('devices/desktop/[deviceId].tsx')).component, '@/remote-desktop/RemoteDesktopScreen');
+  assert.equal(coverage.mapped.find(r=>r.path.endsWith('devices/desktop/[deviceId].tsx')).component, 'RemoteDesktopRoute');
   const { surfaces } = buildGeneratedSurfaces(ROOT);
   for (const [id, ends] of [
     ['mobile.chat.session', ['MessageRenderer.tsx', 'CompanionMessageCard.tsx', 'AuthorizationMessageCard.tsx', 'FailedScheduleNotice.tsx']],
