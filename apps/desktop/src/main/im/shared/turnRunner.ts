@@ -214,6 +214,12 @@ interface TurnState {
    */
   streamingStartFailed: boolean;
   /**
+   * issue #1558: 渠道发出的逻辑 turn 归属令牌(ChannelIM.beginOutboundTurn)。派发时
+   * 领取, 终态 / 取消 / 清理时释放; 同 turn 的流式分段与交互后续流共享回挂目标。
+   * null = 渠道不支持 turn 级归属, 或本 turn 尚未派发 / 已释放。
+   */
+  outboundTurnToken: string | null;
+  /**
    * 呈现大脑(正文累积 / 过程区合成), 与官方 bot 共用 im/shared/turnPresenter。
    * buffer-replace 策略: 保留个人 IM 渠道现有行为 —— isFinal 用该条全文整体替换
    * 累积缓冲, 流式增量追加。过程区时间线状态经 presenter.activity 暴露。
@@ -851,6 +857,7 @@ export function createTurnRunner(
       streamingHandle: null,
       streamingHandlePromise: null,
       streamingStartFailed: false,
+      outboundTurnToken: null,
       presenter: createTurnPresenter({ mode: 'buffer-replace' }),
       mediaAbsPaths: [],
       allowedFileRoots,
@@ -1068,6 +1075,8 @@ export function createTurnRunner(
     // 等上一轮跑完, 排队等待不该计入"第 N 步 · 耗时"显示
     item.turn.presenter.activity.startedAt = Date.now();
     state.queue.push(item.turn);
+    // issue #1558: 逻辑 turn 从这里开始拥有回挂目标 —— 早于首段流式, 晚于排队提示。
+    beginOutboundTurnFor(item.turn);
     log.info(
       `enqueued turn for session=${rowId.slice(-8)} queueDepth=${state.queue.length} pendingSends=${state.sendQueue.length}`,
     );
@@ -1327,6 +1336,7 @@ export function createTurnRunner(
       if (isImAccountScopeClosedError(err)) {
         const index = state.queue.indexOf(item.turn);
         if (index >= 0) state.queue.splice(index, 1);
+        endOutboundTurnFor(item.turn);
         throw err;
       }
       const turnPolicyFailureReason = classifyTurnPermissionPolicySendFailure(err, item, state);
@@ -1345,6 +1355,8 @@ export function createTurnRunner(
         releaseTurnInteractionRoute(item.turn, 'session_running_race');
         const i = state.queue.indexOf(item.turn);
         if (i >= 0) state.queue.splice(i, 1);
+        // 回队等下一次派发时重新 begin; 本次领取的归属先释放, 否则槽位被锁住。
+        endOutboundTurnFor(item.turn);
         if (state.detachDrainPromise) {
           await completeTurnCallbackAfterAck(item.turn);
           if (
@@ -1531,6 +1543,9 @@ export function createTurnRunner(
     try {
       await im.sendMarkdownText(userId, ui.agent.queuedNotice(position), {
         threadTs: item.turn.scopeKey,
+        // issue #1558: 排队提示属于排队那条消息, 直接挂回它; 不得领取 / 改向当前
+        // 正在输出的 turn 的回挂目标。
+        ...(item.turn.userMessageId ? { replyToMessageId: item.turn.userMessageId } : {}),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -2662,7 +2677,42 @@ export function createTurnRunner(
     });
   }
 
+  /**
+   * issue #1558: 回挂目标的归属单位是逻辑 turn, 不是流式段。派发时向渠道领取 turn
+   * 令牌; 之后本 turn 的每段流式(含交互卡后的续流)都带着它, 渠道据此复用同一
+   * 目标, 期间别的消息的排队提示不得接管。不支持的渠道返回 undefined → 旧行为。
+   */
+  function beginOutboundTurnFor(turn: TurnState): void {
+    if (turn.outboundTurnToken !== null || !richIm?.beginOutboundTurn) return;
+    try {
+      turn.outboundTurnToken = richIm.beginOutboundTurn(turn.userId);
+    } catch (err) {
+      log.warn(
+        `beginOutboundTurn failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * 五个生命周期节点里凡是 turn 不再产出的地方都必须到这里: done / error 终态、
+   * 派发前取消或竞态回队、session 清理。漏一个 = 该 lane 的槽位被一个不存在的
+   * turn 永久锁住(排队提示再也挂不回、独立流式永远无引用)。幂等。
+   */
+  function endOutboundTurnFor(turn: TurnState): void {
+    const token = turn.outboundTurnToken;
+    if (token === null) return;
+    turn.outboundTurnToken = null;
+    try {
+      richIm?.endOutboundTurn?.(token);
+    } catch (err) {
+      log.warn(
+        `endOutboundTurn failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   function completeTurnCallback(turn: TurnState): void {
+    endOutboundTurnFor(turn);
     releaseTurnInteractionRoute(turn, 'turn_terminal');
     releaseAttachedImTurnHeadless(turn);
     // terminal done/error 的普通收口路径。撤 ack 是不等待的尽力清理，
@@ -2686,6 +2736,7 @@ export function createTurnRunner(
   }
 
   async function completeTurnCallbackAfterAck(turn: TurnState): Promise<void> {
+    endOutboundTurnFor(turn);
     releaseTurnInteractionRoute(turn, 'turn_not_dispatched');
     releaseAttachedImTurnHeadless(turn);
     await waitForAckCleanupBounded(cancelAckReaction(turn));
@@ -2936,6 +2987,8 @@ export function createTurnRunner(
               ? patchedCardHandle(turn.outputCardMessageId)
               : await output.im.startStreamingText(turn.userId, undefined, {
                   threadTs: turn.scopeKey,
+                  // issue #1558: 交互卡后的续流与首段属于同一逻辑 turn, 共享回挂目标。
+                  ...(turn.outboundTurnToken !== null ? { turn: turn.outboundTurnToken } : {}),
                 });
         turn.streamingHandle = handle;
         return handle;
@@ -3724,6 +3777,7 @@ export function createTurnRunner(
       }
     }
     for (const turn of state.queue) {
+      endOutboundTurnFor(turn);
       releaseTurnInteractionRoute(turn, 'session_cleanup');
       turn.terminalKind = 'aborted';
       turn.terminalErrorCode ??= 'session_cleanup';
