@@ -63,8 +63,14 @@ import { setRemoteReceiptDisplayReady } from '@/lib/sessionAttentionStore';
 import { shortSessionId } from '@/lib/sessionId';
 import { ChatInput } from '@/components/new-chat/ChatInput';
 import { CindyMakeComposerMask } from '@/components/cindy-make/CindyMakeComposerMask';
-import { getCindyMakeComposerPhase, getCindyMakePendingTest, getCindyMakePreparation } from '@/lib/cindyMakeComposer';
+import {
+  getCindyMakeTestRecovery,
+  getCindyMakeComposerPhase,
+  getCindyMakePendingTest,
+  getCindyMakePreparation,
+} from '@/lib/cindyMakeComposer';
 import { CindyMakeTestCard } from '@/components/cindy-make/CindyMakeTestCard';
+import { useCindyMakeEditing } from '@/components/cindy-make/useCindyMakeEditing';
 import { useCindyMakeState } from '@/lib/cindyMakeState';
 import { resolveLearnDesktopCommandFeedback } from '@/features/learn/desktopCommandFeedback';
 import { GoalIndicator } from '@/components/new-chat/GoalIndicator';
@@ -1807,6 +1813,23 @@ export function CCAgentSessionView({
       ? getCindyMakePendingTest({ session, messages, busy: isAgentBusy }) : null,
     [session, messages, isAgentBusy, remoteDeviceId, readOnly],
   );
+  const cindyMakeEditing = useCindyMakeEditing(sessionId, !remoteDeviceId && !readOnly);
+  const cindyMakeRecoveryId =
+    !remoteDeviceId &&
+    !readOnly &&
+    !pendingQueue.length &&
+    typeof window.electronAPI.cindyMakeTest === 'function'
+      ? getCindyMakeTestRecovery({
+          session,
+          messages,
+          busy: isAgentBusy,
+          historyLoaded,
+          dismissedId: cindyMakeEditing.dismissedId,
+        })
+      : null;
+  const cindyMakeInputLocked = Boolean(
+    cindyMakeComposerPhase || cindyMakePendingTest || cindyMakeRecoveryId,
+  );
   useEffect(() => {
     if (!sessionId || !isOrcaLeadSessionView || !historyLoaded) return;
     const recoveredAssignment = getRecoverableDeferredUiAssignment({
@@ -3406,10 +3429,16 @@ export function CCAgentSessionView({
         slashCommandRanges?: SlashCommandRange[];
         onRemoteOptimisticFailure?: (clientId: string, error?: unknown) => void;
         onDeferredAccepted?: () => void;
+        cindyMakeRecovery?: boolean;
       },
     ) => {
       if (readOnly) return false;
-      if (cindyMakeComposerPhase || cindyMakePendingTest) return false;
+      if (
+        cindyMakeComposerPhase ||
+        cindyMakePendingTest ||
+        (cindyMakeRecoveryId && !opts?.cindyMakeRecovery)
+      )
+        return false;
       const deliveryMode = opts?.deliveryMode ?? 'queue';
       const originalMessage = message;
       const navigationRequestVersion =
@@ -3694,6 +3723,7 @@ export function CCAgentSessionView({
       sessionHandoffPreparing,
       cindyMakeComposerPhase,
       cindyMakePendingTest,
+      cindyMakeRecoveryId,
     ],
   );
 
@@ -3863,10 +3893,10 @@ export function CCAgentSessionView({
   ]);
 
   const handleBeforeVoiceInputStart = useCallback(async () => {
-    if (cindyMakeComposerPhase || cindyMakePendingTest) return false;
+    if (cindyMakeInputLocked) return false;
     const { proceed } = await vendorAuthGate.checkAndConfirm('codex', { purpose: 'voice-input' });
     return proceed;
-  }, [vendorAuthGate, cindyMakeComposerPhase, cindyMakePendingTest]);
+  }, [vendorAuthGate, cindyMakeInputLocked]);
 
   // M32: Retry — ErrorBanner 的 retryText 现在只是兼容展示值。真正的
   // recovery target 由 main coordinator 持有，避免把已发出的文本重新走普通
@@ -4468,7 +4498,7 @@ export function CCAgentSessionView({
   const shareSelectionBlocked =
     Boolean(sessionBinding.attached) ||
     worktreePreparing ||
-    Boolean(cindyMakeComposerPhase || cindyMakePendingTest) ||
+    cindyMakeInputLocked ||
     Boolean(
       pendingPlanReview ||
       pendingPermission ||
@@ -4621,7 +4651,7 @@ export function CCAgentSessionView({
           if (hasSplitGroupSessionType(e.dataTransfer.types)) return;
           e.preventDefault();
           e.stopPropagation();
-          if (cindyMakeComposerPhase || cindyMakePendingTest) return;
+          if (cindyMakeInputLocked) return;
           dragCounterRef.current += 1;
           if (dragCounterRef.current === 1) setIsDragOver(true);
         }}
@@ -4629,7 +4659,7 @@ export function CCAgentSessionView({
           if (hasSplitGroupSessionType(e.dataTransfer.types)) return;
           e.preventDefault();
           e.stopPropagation();
-          e.dataTransfer.dropEffect = cindyMakeComposerPhase || cindyMakePendingTest ? 'none' : 'copy';
+          e.dataTransfer.dropEffect = cindyMakeInputLocked ? 'none' : 'copy';
         }}
         onDragLeave={(e) => {
           if (hasSplitGroupSessionType(e.dataTransfer.types)) return;
@@ -4644,7 +4674,7 @@ export function CCAgentSessionView({
           e.stopPropagation();
           dragCounterRef.current = 0;
           setIsDragOver(false);
-          if (cindyMakeComposerPhase || cindyMakePendingTest) return;
+          if (cindyMakeInputLocked) return;
           // .cindy / .cshare 已被窗口级 capture 接管(装入 / 导入链路),
           // 只清理拖拽 UI 状态,不当附件消费。
           if (isGlobalDropIntercepted(e.nativeEvent)) return;
@@ -5211,6 +5241,9 @@ export function CCAgentSessionView({
                   sessionId={sessionId}
                   completionId={cindyMakePendingTest.completionId}
                   meta={cindyMakePendingTest.meta}
+                  onContinue={() =>
+                    cindyMakeEditing.continueEditing(cindyMakePendingTest.completionId)
+                  }
                 />
               ) : worktreePreparing && smoothedBranchName ? (
                 <WorktreeCreatingOverlay branchName={smoothedBranchName} />
@@ -5219,6 +5252,25 @@ export function CCAgentSessionView({
                   sessionId={sessionId}
                   barWidth={inputWidth}
                   getContentWidth={getMessageWidth}
+                />
+              ) : cindyMakeRecoveryId && session ? (
+                <CindyMakeTestCard
+                  key={`${session.id}:${cindyMakeRecoveryId}`}
+                  sessionId={session.id}
+                  recovery={{
+                    onContinue: () =>
+                      cindyMakeEditing.continueEditing(cindyMakeRecoveryId),
+                    onCheck: () =>
+                      handleSend(
+                        t('cindyMake.test.resume.request'),
+                        session.model,
+                        session.effort as Effort,
+                        session.permissionMode as PermissionMode,
+                        undefined,
+                        undefined,
+                        { cindyMakeRecovery: true },
+                      ),
+                  }}
                 />
               ) : (
                 <ChatInput
