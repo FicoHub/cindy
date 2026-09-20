@@ -2065,6 +2065,13 @@ describe('PI durable subagent run store', () => {
         expect(piSubagentLaunchFenceArtifact('123e4567-e89b-42d3-a456-4266141740e0')).toBeNull();
         expect(piSubagentLaunchFenceArtifact('session-1')).toBeNull();
         expect(piSubagentLaunchFenceArtifact('.launch-fence-10596.json.bak')).toBeNull();
+        // Only a numeric pid sits between the prefix and the suffix.
+        expect(piSubagentLaunchFenceArtifact('.launch-fence-backup.json')).toBeNull();
+        expect(piSubagentLaunchFenceArtifact('.launch-fence-.json')).toBeNull();
+        expect(piSubagentLaunchFenceArtifact('.launch-fence-10596x.json')).toBeNull();
+        expect(piSubagentLaunchFenceArtifact(
+          '.launch-fence-backup.json.tmp-10596-89aea6ae-a2c7-4fa4-8856-82503af66389',
+        )).toBeNull();
         expect(piSubagentLaunchFenceArtifact('.launch-fence-10596.json.tmp-10596-not-a-uuid')).toBeNull();
         expect(piSubagentLaunchFenceArtifact('status.json.tmp-10596-89aea6ae-a2c7-4fa4-8856-82503af66389')).toBeNull();
       });

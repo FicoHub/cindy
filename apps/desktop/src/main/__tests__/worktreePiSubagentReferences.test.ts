@@ -145,11 +145,14 @@ describe('detached Pi Subagent worktree references', () => {
     expect(await livePaths()).toBeNull();
   });
 
-  it('preserves when a plain file it does not know sits in the run root', async () => {
-    await writeRun();
-    await fs.writeFile(path.join(path.dirname(runRoot()), 'notes.txt'), 'x');
-    expect(await livePaths()).toBeNull();
-  });
+  it.each(['notes.txt', '.launch-fence-backup.json', '.launch-fence-.json'])(
+    'preserves when a plain file it does not know (%s) sits in the run root',
+    async (name) => {
+      await writeRun();
+      await fs.writeFile(path.join(path.dirname(runRoot()), name), 'x');
+      expect(await livePaths()).toBeNull();
+    },
+  );
 
   it('does not filter out unfinished or malformed run directories', async () => {
     await fs.mkdir(path.join(runRoot(), 'not-a-uuid'), { recursive: true });

@@ -274,10 +274,19 @@ export type PiSubagentLaunchFenceArtifact =
   | { readonly kind: 'published' }
   | { readonly kind: 'staging'; readonly writerPid: number };
 
+/**
+ * Exactly the names `piSubagentLaunchFencePath` produces (a numeric pid between
+ * the prefix and the suffix) plus the legacy shared name. Anything looser —
+ * `.launch-fence-backup.json`, `.launch-fence-.json` — is not something the
+ * fence writer ever emits, so it must neither be swept as a fence nor skipped by
+ * the reference scan as one.
+ */
+const PUBLISHED_LAUNCH_FENCE_NAME_RE = new RegExp(
+  `^${PI_SUBAGENT_LAUNCH_FENCE_PREFIX.replace(/[.]/g, '\\.')}\\d{1,10}${PI_SUBAGENT_LAUNCH_FENCE_SUFFIX.replace(/[.]/g, '\\.')}$`,
+);
+
 function isPublishedLaunchFenceName(entry: string): boolean {
-  return entry === PI_SUBAGENT_LAUNCH_FENCE_FILENAME
-    || (entry.startsWith(PI_SUBAGENT_LAUNCH_FENCE_PREFIX)
-      && entry.endsWith(PI_SUBAGENT_LAUNCH_FENCE_SUFFIX));
+  return entry === PI_SUBAGENT_LAUNCH_FENCE_FILENAME || PUBLISHED_LAUNCH_FENCE_NAME_RE.test(entry);
 }
 
 /**
