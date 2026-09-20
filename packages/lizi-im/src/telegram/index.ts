@@ -361,7 +361,7 @@ export class TelegramIM extends BaseIM implements ChannelIM {
    * 同 turn 的续流复用已领取的目标, 无归属的独立流式不触碰它。
    * token → lane; lane → 活动 turn 数。
    */
-  private readonly outboundTurns = new Map<string, string>();
+  private readonly outboundTurns = new Map<string, { userId: string; replyTargetId: string | null }>();
   private readonly activeOutboundTurns = new Map<string, number>();
   /** 非 owner 礼貌回应的 per-user 冷却(userId → 上次回应 ts)。 */
   private readonly strangerNoticeAt = new Map<string, number>();
@@ -844,9 +844,12 @@ export class TelegramIM extends BaseIM implements ChannelIM {
   ): Promise<StreamingTextHandle> {
     // issue #1558: 带 turn token = 本段流式属于 Host 已 beginOutboundTurn 的逻辑 turn,
     // 目标在 begin 时已领取(交互卡后的续流不得再从队列领 —— 那会拿到别人的目标或空)。
-    if (opts?.turn !== undefined && this.outboundTurns.get(opts.turn) === userId) {
+    const turn = opts?.turn !== undefined ? this.outboundTurns.get(opts.turn) : undefined;
+    if (turn && turn.userId === userId) {
       this.beginStreamRound(userId);
-      return this.startTrackedStreaming(userId, initial);
+      // 回合身份用 turn 自己领取的目标, 不读 lane 槽位: 'first' 档首段流式的首条出站
+      // 已消耗槽位, 交互后的续流若从槽位读会拿到空, 终稿就挂不回原提问(Greptile P1)。
+      return this.startTrackedStreaming(userId, initial, turn.replyTargetId);
     }
     // 无归属、但 lane 正有活动 turn(如调度转播卡在用户 turn 期间开卡): 视为与该 turn
     // 无关的独立输出 —— 不领取队列、不占用也不改向活动 turn 的目标, 直接无引用发送。
@@ -869,9 +872,14 @@ export class TelegramIM extends BaseIM implements ChannelIM {
   private async startTrackedStreaming(
     userId: string,
     initial?: string,
+    turnReplyTargetId?: string | null,
   ): Promise<StreamingTextHandle> {
     try {
-      const handle = await this.createStreamingHandle(userId, initial);
+      const handle = await this.createStreamingHandle(
+        userId,
+        initial,
+        turnReplyTargetId === undefined ? undefined : { detached: false, turnReplyTargetId },
+      );
       return this.trackStreamRound(userId, handle);
     } catch (err) {
       // 建 handle 就失败 → 本回合没有 finalize/close 可依靠, 当场退归属, 否则槽位
@@ -884,9 +892,13 @@ export class TelegramIM extends BaseIM implements ChannelIM {
   private createStreamingHandle(
     userId: string,
     initial?: string,
-    mode?: { detached: boolean },
+    mode?: { detached: boolean; turnReplyTargetId?: string | null },
   ): Promise<StreamingTextHandle> {
     const detached = mode?.detached === true;
+    // 带 turn 令牌的回合: 终稿一律挂回 turn 领取的目标, 不依赖槽位是否还在 ——
+    // 'first' 档下槽位在首段流式的首条出站后即被消耗, 交互后的续流没有过程载体时
+    // (直接 finalize)走 lease 会拿到空, 终稿就脱离提问脉络(Greptile P1)。
+    const turnScoped = mode?.turnReplyTargetId !== undefined;
     // 建 handle 时拍下本轮身份。回挂目标此刻还没被任何出站消耗
     // (claimTurnReplyTarget 刚领完) —— 'first' 档下过程消息一发就把槽位耗掉了,
     // 补送若重新 lease 会拿到空目标, 那条答案在群里就脱离了提问脉络。
@@ -894,7 +906,11 @@ export class TelegramIM extends BaseIM implements ChannelIM {
       generation: this.configVersion,
       api: this.api,
       ownerUserId: this.ownerUserId,
-      replyTargetId: detached ? null : (this.turnReplyTargets.get(userId) ?? null),
+      replyTargetId: detached
+        ? null
+        : mode?.turnReplyTargetId !== undefined
+          ? mode.turnReplyTargetId
+          : (this.turnReplyTargets.get(userId) ?? null),
     };
     return startTelegramStreaming(
       {
@@ -953,7 +969,7 @@ export class TelegramIM extends BaseIM implements ChannelIM {
             userId,
             markdown,
             // 无归属的独立流(issue #1558)一律不租借活动 turn 的目标。
-            detached ? null : reuseReplyTarget ? round.replyTargetId : undefined,
+            detached ? null : turnScoped || reuseReplyTarget ? round.replyTargetId : undefined,
           );
         },
         deleteMessage: async (messageId) => {
@@ -1677,13 +1693,15 @@ export class TelegramIM extends BaseIM implements ChannelIM {
     // turn 边界), 之后整个 turn 内的流式分段/续流/交互卡都复用它。
     this.claimTurnReplyTarget(userId);
     const token = randomUUID();
-    this.outboundTurns.set(token, userId);
+    // 令牌记住本 turn 领取的目标: 'first' 档槽位在首条出站后即被消耗, 但同 turn 交互后
+    // 的续流终稿仍要挂回同一条提问。
+    this.outboundTurns.set(token, { userId, replyTargetId: this.turnReplyTargets.get(userId) ?? null });
     this.activeOutboundTurns.set(userId, (this.activeOutboundTurns.get(userId) ?? 0) + 1);
     return token;
   }
 
   endOutboundTurn(token: string): void {
-    const userId = this.outboundTurns.get(token);
+    const userId = this.outboundTurns.get(token)?.userId;
     if (userId === undefined) return;
     this.outboundTurns.delete(token);
     const next = (this.activeOutboundTurns.get(userId) ?? 0) - 1;

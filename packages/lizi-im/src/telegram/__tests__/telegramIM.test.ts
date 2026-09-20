@@ -2298,6 +2298,48 @@ describe('TelegramIM', () => {
     im.endOutboundTurn(turnB);
   });
 
+  it("issue #1558 私聊 'first' 档: 首段流式消耗槽位后, 同 turn 交互续流的终稿仍挂回原提问", async () => {
+    await im.dispose();
+    im = new TelegramIM(ctx.host, {
+      apiFactory: () => api,
+      behavior: () => ({ emojiReactions: 'off', replyQuoteGroup: 'first', replyQuoteDm: 'first' }),
+    });
+    im.registerIpc();
+    const events: IMMessageEvent[] = [];
+    im.onMessage((e) => events.push(e));
+    await connect();
+    api.pushUpdates([privateMessage('提问', 111, 500)]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    const dmQuotedSince = (from: number) =>
+      api.calls
+        .slice(from)
+        .filter((c) => (c.method === 'sendMessage' || c.method === 'sendRichMessage') && c.params.chat_id === OWNER_ID)
+        .map((c) => (c.params.reply_parameters as { message_id?: number } | undefined)?.message_id);
+
+    const turn = im.beginOutboundTurn(OWNER_ID);
+    const first = await im.startStreamingText(OWNER_ID, undefined, { turn });
+    await first.finalize('第一段(交互前)');
+    let mark = api.calls.length;
+    // 'first' 档: 槽位已被首段消耗; 交互后的续流终稿必须仍挂回 500(修复前为 undefined)
+    const resumed = await im.startStreamingText(OWNER_ID, undefined, { turn });
+    await resumed.finalize('交互后的续答');
+    const quoted = dmQuotedSince(mark);
+    expect(quoted.length).toBeGreaterThan(0);
+    expect(quoted[quoted.length - 1]).toBe(500);
+    im.endOutboundTurn(turn);
+
+    // 下一轮提问照常领到自己的目标
+    api.pushUpdates([privateMessage('再问', 111, 501)]);
+    await vi.waitFor(() => expect(events).toHaveLength(2));
+    mark = api.calls.length;
+    const turn2 = im.beginOutboundTurn(OWNER_ID);
+    const h2 = await im.startStreamingText(OWNER_ID, undefined, { turn: turn2 });
+    await h2.finalize('第二轮答案');
+    const quoted2 = dmQuotedSince(mark);
+    expect(quoted2[quoted2.length - 1]).toBe(501);
+    im.endOutboundTurn(turn2);
+  });
+
   it('issue #1558: 活动 turn 期间无归属的独立流式(调度转播)不领取队列、不改向 turn 目标', async () => {
     const { events } = await connectAllQuoteGroup();
     api.pushUpdates([groupMessage({ text: 'A 问', fromId: 222, messageId: 70, mentionBot: true })]);
