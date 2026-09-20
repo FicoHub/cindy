@@ -595,11 +595,13 @@ export function catalogSurfaces() {
       platform: 'desktop',
       title: 'SkillHub 本地技能',
       productionEntry:
-        'hash `/skillhub/local` 及详情 `/skillhub/local/:kind/global/:name`、`/skillhub/local/:kind/project/:projectHash/:name`',
-      // SkillhubHomeView 直接渲染 PluginManagementLayout（features/plugin 共享布局）、
-      // SkillhubMarketPreviewPanel 与 InstallTargetPicker——只扫三个路由组件文件
+        'hash `/skillhub/local`（SkillhubLocalLayout 保留列表）及详情 `/skillhub/local/:kind/global/:name`、`/skillhub/local/:kind/project/:projectHash/:name`、`/skillhub/local/by-path`',
+      // SkillhubLocalLayout 保留 SkillhubHomeView；首页直接渲染
+      // PluginManagementLayout（features/plugin 共享布局）、
+      // SkillhubMarketPreviewPanel 与 InstallTargetPicker——只扫路由入口文件
       // 会漏掉这些子组件的样式事实。
       reachableComponents: [
+        'SkillhubLocalLayout',
         'SkillhubHomeView',
         'SkillhubDetailView',
         'SkillhubFeatureLayout',
@@ -608,6 +610,7 @@ export function catalogSurfaces() {
         'InstallTargetPicker',
       ],
       styleRoots: [
+        'apps/desktop/src/renderer/features/skillhub/SkillhubLocalLayout.tsx',
         'apps/desktop/src/renderer/features/skillhub/SkillhubHomeView.tsx',
         'apps/desktop/src/renderer/features/skillhub/SkillhubDetailView.tsx',
         'apps/desktop/src/renderer/features/skillhub/SkillhubFeatureLayout.tsx',
@@ -621,7 +624,7 @@ export function catalogSurfaces() {
         '/skillhub/local/:kind/project/:projectHash/:name',
         '/skillhub/local/by-path',
       ],
-      routeEntryComponents: { '/skillhub/local': 'SkillhubHomeView', '/skillhub/local/:kind/global/:name': 'SkillhubDetailView', '/skillhub/local/:kind/project/:projectHash/:name': 'SkillhubDetailView', '/skillhub/local/by-path': 'SkillhubDetailView' },
+      routeEntryComponents: { '/skillhub/local': 'SkillhubLocalLayout', '/skillhub/local/:kind/global/:name': 'SkillhubDetailView', '/skillhub/local/:kind/project/:projectHash/:name': 'SkillhubDetailView', '/skillhub/local/by-path': 'SkillhubDetailView' },
     },
     {
       id: 'desktop.skillhub.market',
@@ -784,10 +787,13 @@ export function catalogSurfaces() {
       platform: 'desktop',
       title: '远程桌面独立窗口',
       productionEntry: '`?remoteDesktopViewer=1` → renderer/remote-desktop-viewer-entry.tsx',
-      reachableComponents: ['RemoteDesktopViewerWindow', 'Select', 'Button', 'FormField', 'ConfirmDialog'],
+      reachableComponents: ['RemoteDesktopViewerWindow', 'Select', 'Button', 'FormField', 'ConfirmDialog', 'Switch', 'Popover', 'Tip'],
       styleRoots: [
         'apps/desktop/src/renderer/remote-desktop-viewer-entry.tsx',
         'apps/desktop/src/renderer/features/remote-desktop/RemoteDesktopViewerWindow.tsx',
+        'apps/desktop/src/renderer/components/ui/popover.tsx',
+        'apps/desktop/src/renderer/components/ui/tooltip.tsx',
+        'apps/desktop/src/renderer/components/ui/switch.tsx',
         'apps/desktop/src/renderer/components/ui/confirm-dialog.tsx',
         'apps/desktop/src/renderer/components/ui/select.tsx',
         'apps/desktop/src/renderer/components/ui/button.tsx',

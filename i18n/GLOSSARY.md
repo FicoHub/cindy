@@ -187,6 +187,10 @@ Cindy 在 X 上发出的那条公开回复。zh-CN 取「回帖」以强调它�
 
 登录邮箱发码前的 CAPTCHA(Cloudflare Turnstile)挑战。中文用「安全验证」(腾讯/阿里系产品的通行叫法,2026-08-19 用户反馈弃用「人机验证」;与「验证码」= verification code 消歧——后者已被 login.codePlaceholder 占用指 6 位数字码);en 用 Security check 而非品牌词 Turnstile 或缩写 CAPTCHA。消费处:login.captcha.* 与 login.errors.CAPTCHA_*(desktop 五语 + mobile 影子 catalog)。
 
+### Chat workspace
+
+用户于 2026-09-18 明确指定的存储设置名称，表示未绑定项目的新任务工作目录的分配位置。单个任务的 working directory 仍称工作目录，不改其术语。
+
 ### China
 
 模型目录中由服务端显式 group:"china" 标记的来源分组。它描述模型或供应商来自中国，不表示相对于当前用户或发行区域的‘国内’；英文词条保持自然大小写 China，设置页分组头由统一 uppercase 样式显示为 CHINA。
@@ -427,6 +431,10 @@ dev 版登录页区域徽标上的标签值（DESIGN.md §16.3），四语同值
 
 远程桌面传输状态，桌面端沿用手机端现有用语。表示画面不经过中转服务器；直连也可能穿过公网 NAT，不能据此标成内网直连。
 
+### Display & Sound
+
+Remote desktop panel containing picture and audio settings; icon-only toolbar trigger.
+
 ### Lock screen control
 
 Windows 远程桌面设置中的系统服务授权能力；不表示支持开机前解密或无人登录。
@@ -492,6 +500,10 @@ macOS TCC 的 kTCCServiceListenEvent(系统设置里叫「输入监控」)在 Ci
 ### Smart routing
 
 Codex Subagent 的可选扩展调配开关。默认关闭以保留 Codex 原生 Sol/Terra 调配；开启后允许 Codex 从 Cindy 已连接的更多模型中按任务选择。
+
+### Tag
+
+任务列表的 Finder 式颜色标签；仅标识任务，不改变运行状态。用户已确认显示为重叠色球，整合现有任务菜单，当前不增加筛选入口。
 
 ### Teammate
 

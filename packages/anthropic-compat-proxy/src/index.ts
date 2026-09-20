@@ -14,6 +14,9 @@
  */
 
 export { createAnthropicCompatProxy } from './server.js';
+export { recoverInlineAttachments } from './oversized-attachments.js';
+export type { OversizedBody, RecoveredAttachment, AttachmentKeeper } from './oversized-attachments.js';
+export type { OversizedRequestRecovery } from './types.js';
 export {
   createEnvOutboundProxyResolver,
   hasProxyEnvConfig,
@@ -41,6 +44,7 @@ export {
   createEmptyThinkingRecoveryRule,
   createEncryptedContentRecoveryRule,
   createImageGenerationIdRecoveryRule,
+  createResponsesItemIdPrefixRecoveryRule,
   createToolExchangeAdjacencyRecoveryRule,
   compactOversizedImageHistory,
   createToolUseProviderSpecificFieldsRecoveryRule,
@@ -56,6 +60,7 @@ export {
   stripEncryptedContentFromBody,
   stripImageGenerationItemsWithoutIdFromBody,
   stripNonAnthropicFields,
+  stripNonCanonicalResponsesItemIdsFromBody,
   stripToolUseProviderSpecificFields,
   stripToolUseProviderSpecificFieldsFromBody,
 } from './transform.js';

@@ -15,6 +15,7 @@ import { DESKTOP_LOCAL, type RemoteDesktopApi } from '../shared/remoteDesktop';
 import { DEVICE_LINK_PUSH } from '../shared/deviceLinkIpc';
 import type { MobileCodexRateLimitsResult } from '@cindy/maker-shared/device-link-contract';
 import type { AppearanceSettings } from '../shared/appearanceSettings';
+import type { DialogueWorkspaceSettingsState } from '../shared/dialogueWorkspaceSettings';
 import type {
   CustomProviderUpdateOptions,
   CustomProviderUpdateResult,
@@ -3020,6 +3021,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       skills?: import('../main/skillhub/scanner').Skill[];
       sources?: import('../main/skillhub/scanner').SourceReport[];
       pendingCleanups?: Array<{ token: string; name: string }>;
+      learnSkillEnabled?: boolean;
     }> => ipcRenderer.invoke('skillhub:scan', params),
 
     readSkill: (params: {
@@ -3443,7 +3445,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     uninstall: (
       absolutePath: string,
       skillId?: string,
-    ): Promise<{ success: true; cleanupToken?: string } | { success: false; errorCode: string; message: string }> =>
+    ): Promise<
+      | { success: true; cleanupToken?: string } | { success: false; errorCode: string; message: string }> =>
       ipcRenderer.invoke('skillhub:uninstall', { absolutePath, skillId }),
 
     retryUninstallCleanup: (token: string): Promise<{ complete: boolean }> =>
@@ -4179,6 +4182,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 占用统计 / 清理预检(报数)/ 执行清理 / 对账体检。scan 与 cleanup 的
   // draftUrls 由 renderer 从 composerDraftStore 现场收集(main 读不到
   // renderer 内存,草稿附件是合法的零引用 blob,必须随参取证防误删)。
+  dialogueWorkspace: {
+    open: (): Promise<{ success: boolean }> => ipcRenderer.invoke('dialogue-workspace:open'),
+    get: (): Promise<DialogueWorkspaceSettingsState> => ipcRenderer.invoke('dialogue-workspace:get'),
+    choose: (): Promise<DialogueWorkspaceSettingsState> => ipcRenderer.invoke('dialogue-workspace:choose'),
+    reset: (): Promise<DialogueWorkspaceSettingsState> => ipcRenderer.invoke('dialogue-workspace:reset'),
+  },
+
   cindyMediaStorage: {
     /**
      * 本窗口草稿附件 URL 变化时上报(composerDraftStore mutator 尾部调用,
@@ -5423,6 +5433,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** Small invalidation push; consumers re-read through list/detail. */
       onChanged: createIpcFanOut('local-db:subagent-runs:changed'),
     },
+    taskTags: {
+      onChanged: createIpcFanOut('local-db:task-tags:changed'),
+      execute: (
+        request: import('@cindy/maker-shared').TaskTagRequest,
+      ): Promise<import('@cindy/maker-shared').TaskTagResult> =>
+        ipcRenderer.invoke('local-db:task-tags:execute', request),
+    },
     projectAliases: {
       list: (): Promise<unknown> => ipcRenderer.invoke('local-db:project-aliases:list'),
       set: (input: { projectKey: string; alias: string }): Promise<unknown> =>
@@ -6101,11 +6118,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Renderer 通过这四个调用合并三路数据 + 触发 desktop 命令 execute。
     // 老 scanSlashCommands 已下线 —— 数据等价于 listAgentSkills, 改名是为了和
     // listAgentCommands / listDesktopCommands 形成清晰的 "三源 + execute" 命名族。
-    listDesktopCommands: (): Promise<{
+    listDesktopCommands: (ctx?: { deviceId?: string }): Promise<{
       success: boolean;
       error?: string;
       commands?: Array<{ kind: 'desktop'; name: string; description: string }>;
-    }> => ipcRenderer.invoke('maker:list-desktop-commands'),
+    }> => ipcRenderer.invoke('maker:list-desktop-commands', ctx),
 
     executeDesktopCommand: (
       name: string,

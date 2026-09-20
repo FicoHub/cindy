@@ -56,6 +56,8 @@ describe('production credential recovery wiring', () => {
         isCindyVersionLaunchPending: vi.fn(() => versionLaunchPending),
         recordDesktopDevAuthStartupResult: recordStartupResult,
         noteAuthColdStartState: vi.fn(),
+        isCindyVersionLaunchPending: () => false,
+        recordDesktopDevAuthStartupResult: vi.fn(),
       };
       new Function(...Object.keys(deps), compiled)(...Object.values(deps));
       if (rejects) await expect(handler()).rejects.toBe(outcome);
