@@ -345,22 +345,18 @@ function nonCanonicalResponsesItemType(item: unknown): 'message' | 'reasoning' |
   return id.startsWith(RESPONSES_ITEM_ID_PREFIXES[type]) ? null : type;
 }
 
-function deepDeleteNonCanonicalResponsesItemIds(node: unknown, inResponsesInputArray = false): number {
+/**
+ * 只清洗顶层 `body.input`(Responses 协议历史容器)。嵌套的同名 `input` 数组(消息
+ * payload / 工具参数 / 扩展字段)是不透明业务数据, 其中的 `{type:'message', id}` 不是
+ * 协议 item, 不能被当成历史清洗(Greptile P2)。
+ */
+function deleteNonCanonicalResponsesInputIds(body: unknown): number {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return 0;
   let removed = 0;
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      if (inResponsesInputArray && nonCanonicalResponsesItemType(item) !== null) {
-        delete (item as Record<string, unknown>).id;
-        removed += 1;
-        continue;
-      }
-      removed += deepDeleteNonCanonicalResponsesItemIds(item);
-    }
-    return removed;
-  }
-  if (isPlainObject(node)) {
-    for (const key of Object.keys(node)) {
-      removed += deepDeleteNonCanonicalResponsesItemIds(node[key], key === 'input');
+  for (const item of body.input) {
+    if (nonCanonicalResponsesItemType(item) !== null) {
+      delete (item as Record<string, unknown>).id;
+      removed += 1;
     }
   }
   return removed;
@@ -378,7 +374,7 @@ function deepDeleteNonCanonicalResponsesItemIds(node: unknown, inResponsesInputA
  * 历史 message / reasoning item 的 id 对继续对话没有配对语义(Responses 接受不带 id 的
  * 输入 item), 因此直接删掉不合规 id 而不是改写 —— 改写成 `msg_` 前缀仍可能撞上上游对
  * 未知 id 的校验。function_call / function_call_output 的 id 与 call_id 配对一律不动。
- * 只扫 `input` 数组(含嵌套 input), 已是 `msg_` / `rs_` 前缀的不改; 没有可改的返回 null。
+ * 只扫顶层 `body.input` 数组, 已是 `msg_` / `rs_` 前缀的不改; 没有可改的返回 null。
  */
 export function stripNonCanonicalResponsesItemIdsFromBody(rawBody: Buffer): Buffer | null {
   let parsed: unknown;
@@ -387,7 +383,7 @@ export function stripNonCanonicalResponsesItemIdsFromBody(rawBody: Buffer): Buff
   } catch {
     return null;
   }
-  const removed = deepDeleteNonCanonicalResponsesItemIds(parsed);
+  const removed = deleteNonCanonicalResponsesInputIds(parsed);
   if (removed === 0) return null;
   try {
     return Buffer.from(JSON.stringify(parsed), 'utf8');

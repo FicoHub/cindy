@@ -543,12 +543,36 @@ describe('stripNonCanonicalResponsesItemIdsFromBody (issue #4738)', () => {
     expect(stripNonCanonicalResponsesItemIdsFromBody(Buffer.from('not json', 'utf8'))).toBeNull();
   });
 
-  it('does not touch ids outside Responses input arrays (tools / metadata)', () => {
+  it('does not touch ids outside the top-level Responses input array (tools / metadata / nested input payloads)', () => {
     expect(stripNonCanonicalResponsesItemIdsFromBody(buf({
       tools: [{ type: 'function', name: 'x', id: 'chatcmpl-not-input' }],
       metadata: { type: 'message', id: 'chatcmpl-meta' },
       input: [{ type: 'message', role: 'user', content: 'hi' }],
     }))).toBeNull();
+    // 嵌套同名 input 数组是业务 payload, 里面的 {type:'message', id} 不是协议历史 item
+    const nested = {
+      input: [
+        { type: 'message', role: 'user', content: 'hi' },
+        {
+          type: 'function_call_output',
+          call_id: 'call_1',
+          output: JSON.stringify({ input: [{ type: 'message', id: 'business-id' }] }),
+        },
+        { type: 'message', id: 'msg_ok', role: 'assistant', content: [] },
+      ],
+      metadata: { input: [{ type: 'message', id: 'business-id-2' }] },
+    };
+    expect(stripNonCanonicalResponsesItemIdsFromBody(buf(nested))).toBeNull();
+    // 顶层 input 命中时, 嵌套 payload 里的业务 id 仍原样保留
+    const out = stripNonCanonicalResponsesItemIdsFromBody(buf({
+      ...nested,
+      input: [...nested.input, { type: 'message', id: 'chatcmpl-x_msg_0', role: 'assistant', content: [] }],
+    }));
+    expect(out).not.toBeNull();
+    const parsed = JSON.parse(out!.toString('utf8'));
+    expect(parsed.metadata).toEqual({ input: [{ type: 'message', id: 'business-id-2' }] });
+    expect(parsed.input[1].output).toContain('business-id');
+    expect(parsed.input[3]).toEqual({ type: 'message', role: 'assistant', content: [] });
   });
 });
 
