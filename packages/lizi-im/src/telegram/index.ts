@@ -1691,7 +1691,12 @@ export class TelegramIM extends BaseIM implements ChannelIM {
   beginOutboundTurn(userId: string): string {
     // turn 开始即领取本轮目标(与旧"流式段开始时领取"同一 FIFO 语义, 只是提前到
     // turn 边界), 之后整个 turn 内的流式分段/续流/交互卡都复用它。
-    this.claimTurnReplyTarget(userId);
+    // FIFO 有货才领取。空队列时保留已有槽位(而不是像流式段那样清空): Host 在
+    // SESSION_RUNNING 竞态里会 end 后回队再 begin, 第一次 begin 已把 FIFO 抽空、槽位里
+    // 仍是本轮目标, 若第二次 begin 再 claim 就会把它清掉, 重试后的答案不再挂回原提问
+    // (MagicLizi P1)。
+    const queue = this.pendingReplyTargets.get(userId);
+    if (queue && queue.length > 0) this.claimTurnReplyTarget(userId);
     const token = randomUUID();
     // 令牌记住本 turn 领取的目标: 'first' 档槽位在首条出站后即被消耗, 但同 turn 交互后
     // 的续流终稿仍要挂回同一条提问。

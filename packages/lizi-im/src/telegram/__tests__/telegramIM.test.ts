@@ -2340,6 +2340,24 @@ describe('TelegramIM', () => {
     im.endOutboundTurn(turn2);
   });
 
+  it("issue #1558: begin → end → 无新入站再 begin(SESSION_RUNNING 回队重试), 流式仍挂回原提问", async () => {
+    const { events } = await connectAllQuoteGroup();
+    api.pushUpdates([groupMessage({ text: 'A 问', fromId: 222, messageId: 80, mentionBot: true })]);
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    const lane = events[0].senderId;
+
+    const first = im.beginOutboundTurn(lane); // 首次派发领取 80, FIFO 抽空
+    im.endOutboundTurn(first); // 竞态回队
+    const retry = im.beginOutboundTurn(lane); // 无新入站再 begin: 不得清掉槽位里的 80
+    const mark = api.calls.length;
+    const h = await im.startStreamingText(lane, undefined, { turn: retry });
+    await h.finalize('重试后的答案');
+    const quoted = groupQuotedSince(mark);
+    expect(quoted.length).toBeGreaterThan(0);
+    expect(quoted.every((id) => id === 80)).toBe(true);
+    im.endOutboundTurn(retry);
+  });
+
   it('issue #1558: 活动 turn 期间无归属的独立流式(调度转播)不领取队列、不改向 turn 目标', async () => {
     const { events } = await connectAllQuoteGroup();
     api.pushUpdates([groupMessage({ text: 'A 问', fromId: 222, messageId: 70, mentionBot: true })]);

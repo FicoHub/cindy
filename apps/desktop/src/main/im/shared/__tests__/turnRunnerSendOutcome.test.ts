@@ -3812,6 +3812,43 @@ describe('issue #1558: 回挂目标按逻辑 turn 归属(beginOutboundTurn / end
     expect(endOutboundTurn).toHaveBeenCalledWith('turn-token-1');
   });
 
+  it('SESSION_RUNNING 竞态回队重试沿用同一 turn 令牌: 不重复 begin, 终态前不 end', async () => {
+    vi.useFakeTimers();
+    try {
+      const err = new Error('SESSION_RUNNING: race') as Error & { code?: string };
+      err.code = 'SESSION_RUNNING';
+      const h = setupSession(async () => ({ accepted: true }));
+      h.send.mockRejectedValueOnce(err);
+      const onTurnComplete = vi.fn();
+      await runDefaultTurn(onTurnComplete);
+      await flushMicrotasks();
+      expect(h.send).toHaveBeenCalledTimes(1);
+      expect(beginOutboundTurn).toHaveBeenCalledTimes(1);
+      expect(endOutboundTurn).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(600);
+      expect(h.send).toHaveBeenCalledTimes(2);
+      // 重试派发没有再向渠道领取第二个令牌
+      expect(beginOutboundTurn).toHaveBeenCalledTimes(1);
+      expect(endOutboundTurn).not.toHaveBeenCalled();
+
+      h.emit({ type: 'text', data: { text: 'answer', isFinal: true } });
+      await flushMicrotasks();
+      expect(mocks.feishuIm.startStreamingText).toHaveBeenCalledWith(
+        'ou_user',
+        undefined,
+        expect.objectContaining({ turn: 'turn-token-1' }),
+      );
+      h.emit({ type: 'done', data: {} });
+      await vi.runOnlyPendingTimersAsync();
+      expect(onTurnComplete).toHaveBeenCalledTimes(1);
+      expect(endOutboundTurn).toHaveBeenCalledTimes(1);
+      expect(endOutboundTurn).toHaveBeenCalledWith('turn-token-1');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('渠道不支持 turn 归属时不传令牌, 保持旧行为', async () => {
     delete turnIm.beginOutboundTurn;
     delete turnIm.endOutboundTurn;

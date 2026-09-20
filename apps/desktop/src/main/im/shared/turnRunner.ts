@@ -1355,8 +1355,10 @@ export function createTurnRunner(
         releaseTurnInteractionRoute(item.turn, 'session_running_race');
         const i = state.queue.indexOf(item.turn);
         if (i >= 0) state.queue.splice(i, 1);
-        // 回队等下一次派发时重新 begin; 本次领取的归属先释放, 否则槽位被锁住。
-        endOutboundTurnFor(item.turn);
+        // 回队重试沿用同一 turn 令牌(beginOutboundTurnFor 对已持令牌的 turn 是 no-op):
+        // 这轮的回挂目标已在首次派发时领取, end 后再 begin 会让渠道二次领取——FIFO 已空
+        // 时清掉槽位, 重试后的答案就不再挂回原提问(review P1)。令牌由该 turn 的终态、
+        // 或回队条目被清理(clearPendingSends)时释放。
         if (state.detachDrainPromise) {
           await completeTurnCallbackAfterAck(item.turn);
           if (
@@ -3540,6 +3542,8 @@ export function createTurnRunner(
     const dropped = state.sendQueue.splice(0, state.sendQueue.length);
     log.warn(`dropping ${dropped.length} queued message(s) on cleanup/detach`);
     for (const item of dropped) {
+      // 回队条目可能已在首次派发时领取了 turn 令牌(SESSION_RUNNING 竞态沿用), 丢弃时释放。
+      endOutboundTurnFor(item.turn);
       releaseAttachedImTurnHeadless(item.turn);
       void cancelAckReaction(item.turn);
     }
