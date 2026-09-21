@@ -232,8 +232,9 @@ function isRepairableToolItemIdError(errorText: string): boolean {
   const match = /Invalid\s+["']input\[\d+\]\.id["']:\s*["'](fc|fco|ctc|ctco|call)_[^"']+["']\.?\s+Expected an ID that begins with ["'](fc|fco|ctc|ctco)_?["']/i.exec(text);
   if (!match) return false;
   // Legacy `call_…` item ids (issue #4023) are rewritten to whichever tool dialect the target
-  // asks for, so any of the four expected prefixes is repairable.
-  if (match[1]!.toLowerCase() === 'call') return true;
+  // asks for, so any of the four expected prefixes is repairable. Case-sensitive like the
+  // normalizer's `startsWith('call_')`: an upper-case prefix would not be rewritten on retry.
+  if (match[1] === 'call') return true;
   return ({ fc: 'ctc', fco: 'ctco', ctc: 'fc', ctco: 'fco' } as Record<string, string>)[match[1]!]
     === match[2]!;
 }
