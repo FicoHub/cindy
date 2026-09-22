@@ -28,7 +28,7 @@ const cold = between('        const createOpts = buildCreateOptsWithStderr({',
 // call. The stub stops execution there, before post-create hydration can hide a bug.
 const bootstrap = between('    if (o.id && o.workingDir',
   '    await markProjectContextIfNeeded(', source.indexOf('  async function bootstrapSession('));
-const compiled = transpileModule(`${reconcile}\nasync function bootstrapSession(o) { ${bootstrap} }\nreturn async () => { ${cold}\nawait bootstrapSession(createOpts); };`, {
+const compiled = transpileModule(`${reconcile}\nasync function bootstrapSession(o, assertAccess) { ${bootstrap} }\nreturn async () => { ${cold}\nawait bootstrapSession(createOpts); };`, {
   compilerOptions: { target: ScriptTarget.ES2022 },
 }).outputText;
 
