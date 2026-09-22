@@ -17,6 +17,7 @@ import { serverApiFetch, ServerApiError } from '../serverApiClient';
 import { requireString, throwIpcError } from '../utils/ipcValidate';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer';
 import type { IpcErrorCode } from '../../shared/ipc-errors';
+import { decodeRemoteHistory } from '../../shared/remoteHistoryCache';
 import {
   DEVICE_LINK_INVOKE,
   DEVICE_LINK_PUSH,
@@ -52,6 +53,8 @@ import {
 } from './index';
 import { getActiveControllers } from './dispatch';
 import { rewriteOutboundMedia } from './outboundMedia';
+import { parseSharedTaskPeer } from '@cindy/device-link';
+import { withSharedTaskMedia } from './sharedTaskMediaContext.js';
 import {
   outboundSessionReferencesRequested,
   rewriteOutboundSessionReferences,
@@ -140,7 +143,7 @@ export interface DeviceLinkIpcDeps {
    * 出方向附件改写:把消息里的本机附件上传 OSS、替换成引用串(仅 send/steer/enqueue 生效)。
    * 可选 —— 测试可不注入(跳过改写,行为同旧版纯透传)。
    */
-  rewriteOutboundMedia?(channel: string, args: unknown[]): Promise<unknown[]>;
+  rewriteOutboundMedia?(channel: string, args: unknown[], existing?: ReadonlySet<string>): Promise<unknown[]>;
   /** 控制端 main 在越过 device-link 前把相对引用解析为可信、预算化快照。 */
   rewriteOutboundSessionReferences?(channel: string, args: unknown[]): Promise<unknown[]>;
 }
@@ -647,7 +650,20 @@ export async function handleInvoke(
   // 上传失败 → MEDIA_TRANSFER_FAILED,整条消息不发(产品决策:不静默丢附件)。
   if (deps.rewriteOutboundMedia) {
     try {
-      callArgs = await deps.rewriteOutboundMedia(channel, callArgs);
+      const peer = parseSharedTaskPeer(normalizedDeviceId);
+      let existing: ReadonlySet<string> | undefined;
+      if (peer?.role === 'host' && channel === 'maker:input:update-content') {
+        const projection = await deps.invoke(normalizedDeviceId, 'maker:input:get-projection', [callArgs[0]]);
+        if (!projection.ok) throw new Error(projection.error.message);
+        const value = projection.result as { sessionId?: string; pendingQueue?: Array<{ clientId: string; files?: Array<{ path?: string; url?: string }> }> };
+        if (value?.sessionId !== callArgs[0] || !Array.isArray(value.pendingQueue)) throw new Error('Invalid shared input projection');
+        const item = value.pendingQueue.find((row) => row.clientId === callArgs[1]);
+        if (!item) throw new Error('Queued message is no longer pending');
+        existing = new Set((item.files ?? []).flatMap((file) => [file.path, file.url].filter((ref): ref is string => typeof ref === 'string')));
+        assertControlTargetEnabled(deps, normalizedDeviceId);
+      }
+      callArgs = await withSharedTaskMedia(peer?.role === 'host' ? peer.sharedTaskId : undefined,
+        () => existing ? deps.rewriteOutboundMedia!(channel, callArgs, existing) : deps.rewriteOutboundMedia!(channel, callArgs));
     } catch (err) {
       throwIpcError(
         'DEVICE_LINK_MEDIA_TRANSFER_FAILED',
@@ -934,16 +950,21 @@ function finalMirrorCacheReadOwnerToken(
  * 缓存 id 的长度上界。renderer 被 XSS 时可以塞进任意长的 deviceId / sessionId,而 store 随后
  * 会对**完整字符串**做 trim + 正则改写 + sha256(messageFileName / clearDevice),这些都是同步
  * 的 —— 一次调用就能拖住 main(数组与单条字节预算管不到标量字段)(review: codex P1)。
- * 真实 id 是 cuid / uuid 量级(≤ 64),给到 256 已经宽松得离谱。
+ * 普通 id 保持 256 上限;共享连接标识包含 JSON 转义后的物理设备 id,由其 parser 单独限长。
  */
 const MIRROR_CACHE_MAX_ID_LENGTH = 256;
 
 /** opaque owner token 是 32-byte digest 的 base64url(43 字符);宽松上限防异常 renderer。 */
 const MIRROR_CACHE_MAX_OWNER_TOKEN_LENGTH = 128;
 
-function requireCacheId(value: unknown, name: string): string {
+function isCacheIdWithinLimit(id: string, name: 'deviceId' | 'sessionId'): boolean {
+  return id.length <= MIRROR_CACHE_MAX_ID_LENGTH
+    || (name === 'deviceId' && parseSharedTaskPeer(id) !== null);
+}
+
+function requireCacheId(value: unknown, name: 'deviceId' | 'sessionId'): string {
   const id = requireString(value, name);
-  if (id.length > MIRROR_CACHE_MAX_ID_LENGTH) {
+  if (!isCacheIdWithinLimit(id, name)) {
     throwIpcError('INVALID_PARAMS', `${name} is too long`);
   }
   return id;
@@ -955,6 +976,7 @@ export async function handleMirrorCacheGetMessages(
   sessionId: unknown,
 ): Promise<{
   messages: Record<string, unknown>[];
+  historyView?: string;
   invalidation?: number;
   ownerToken?: string;
   accountCounter?: number;
@@ -990,6 +1012,7 @@ export async function handleMirrorCacheGetMessages(
   // 暴露给不可信 renderer(review: codex P2)。账号代际再区分同账号登出重登。
   return {
     messages,
+    ...(read.historyView !== undefined ? { historyView: read.historyView } : {}),
     invalidation: read.invalidation,
     ownerToken,
     accountCounter: read.accountCounter,
@@ -1010,10 +1033,12 @@ export async function handleMirrorCachePutMessages(
   expectedInvalidation?: unknown,
   expectedOwnerToken?: unknown,
   expectedAccountCounter?: unknown,
+  historyView?: unknown,
 ): Promise<{ ok: true; invalidation?: number }> {
   const device = requireCacheId(deviceId, 'deviceId');
   const session = requireCacheId(sessionId, 'sessionId');
   if (!Array.isArray(messages)) throwIpcError('INVALID_PARAMS', 'messages must be an array');
+  if (historyView !== undefined && !decodeRemoteHistory(historyView)) throwIpcError('INVALID_PARAMS', 'Invalid history view cache');
   const bounded = boundedItems(messages, MIRROR_CACHE_MAX_INBOUND_MESSAGES, 'messages');
   const expected =
     typeof expectedInvalidation === 'number'
@@ -1046,6 +1071,7 @@ export async function handleMirrorCachePutMessages(
       expected,
       expectedOwner,
       expectedAccount,
+      ...(historyView !== undefined ? [historyView as string] : []),
     );
     return { ok: true, invalidation: result.invalidation };
   } catch (err) {
@@ -1119,7 +1145,7 @@ export async function handleMirrorCachePutSessionList(
     }
     return {
       deviceId: typeof source.deviceId === 'string'
-        && source.deviceId.length <= MIRROR_CACHE_MAX_ID_LENGTH
+        && isCacheIdWithinLimit(source.deviceId, 'deviceId')
         ? source.deviceId
         : undefined,
       deviceName: typeof source.deviceName === 'string'
@@ -1368,6 +1394,7 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
       expectedInvalidation?: unknown;
       expectedOwnerToken?: unknown;
       expectedAccountCounter?: unknown;
+      historyView?: unknown;
     };
     return handleMirrorCachePutMessages(
       getMirrorCache(),
@@ -1378,6 +1405,7 @@ export function registerDeviceLinkIpc(deps: DeviceLinkIpcDeps = defaultDeps()): 
       p.expectedInvalidation,
       p.expectedOwnerToken,
       p.expectedAccountCounter,
+      p.historyView,
     );
   });
   ipcMain.handle(DEVICE_LINK_INVOKE.MIRROR_CACHE_GET_SESSION_LIST, (e) => {
