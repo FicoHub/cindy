@@ -5952,10 +5952,10 @@ export function ChatInput({
     setSendDispatchInFlight(true);
     try {
       const saved = await onQueueEditSubmit(queueEditingClientId, content, [...attachments]);
-      if (!saved) toast.error(t('errors.INTERNAL'));
+      if (!saved) toast.error(t('ipcError.INTERNAL'));
     } catch (error) {
       log.warn('queue edit rejected:', error instanceof Error ? error.message : String(error));
-      toast.error(t(mapIpcErrorToI18nKey(error, { fallback: 'errors.INTERNAL' })));
+      toast.error(t(mapIpcErrorToI18nKey(error, { fallback: 'ipcError.INTERNAL' })));
     } finally {
       setSendDispatchInFlight(false);
     }

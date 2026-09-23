@@ -583,6 +583,8 @@ interface AuthStateChangePayload {
   mode: 'signed-out' | 'local' | 'cloud';
   dataOwnerId: string | null;
   ownerGeneration: number;
+  /** Main marks the transient signed-out projection while an owner boundary is pending. */
+  ownerBoundaryPending?: boolean;
   canEnterApp: boolean;
   isAuthenticated: boolean;
   /** 当前账号是否加入 Canary 发布通道；由 main 的 feature-flags 同步结果驱动。 */
@@ -2140,6 +2142,7 @@ interface ElectronAPI {
     mode: 'signed-out' | 'local' | 'cloud';
     dataOwnerId: string | null;
     ownerGeneration: number;
+    ownerBoundaryPending?: boolean;
     canEnterApp: boolean;
     isAuthenticated: boolean;
     isCanary: boolean;
@@ -3020,6 +3023,10 @@ interface ElectronAPI {
   cindyMakeMerge: (
     input: import('../shared/cindyMakeMerge').CindyMakeMergeRequest,
   ) => Promise<import('../shared/cindyMakeMerge').CindyMakeMergeState | undefined>;
+  getCindyMakeSettings: () => Promise<import('../shared/cindyMakeSettings').CindyMakeSettings>;
+  setCindyMakeSyncLatestBeforeBuild: (
+    enabled: boolean,
+  ) => Promise<import('../shared/cindyMakeSettings').CindyMakeSettings>;
   getCindyMakeHistory: (
     selected?: string,
   ) => Promise<import('../shared/cindyMakeHistory').CindyMakeHistoryState>;
@@ -3049,6 +3056,10 @@ interface ElectronAPI {
   openCindyMakeSourceDir: () => Promise<{ success: boolean }>;
   onCindyMakeState: (
     listener: (state: import('../shared/cindyMakeDoctor').CindyMakeGlobalState) => void,
+  ) => () => void;
+  /** A local Cindy Make build finished; Settings should refresh history and versions. */
+  onCindyMakeHistoryChanged: (
+    listener: (ownerStamp?: import('../shared/dataOwnerPush').DataOwnerPushStamp) => void,
   ) => () => void;
   /** Live global source status (Settings and the workflow share one operation). */
   onCindyMakeSourceStatus: (
@@ -6001,6 +6012,11 @@ interface ElectronAPI {
       decision: Record<string, unknown>,
     ) => Promise<{ accepted: boolean }>;
 
+    assistPluginOauth: (request: import('../shared/pluginOauth').LocalPluginOauthRequest) => Promise<{ accepted: boolean }>;
+    submitRemotePluginSecret: (request: import('../shared/pluginOauth').LocalPluginSecretRequest) => Promise<{ accepted: boolean }>;
+    submitRemotePluginConnection: (request: import('../shared/pluginOauth').LocalPluginConnectionRequest) => Promise<{ accepted: boolean }>;
+    pluginOauthDeviceCode: (request: import('../shared/pluginOauthDeviceCode').PluginOauthDeviceCodeRequest) => Promise<import('../shared/pluginOauthDeviceCode').PluginOauthDeviceCodeView | null>;
+
     /** Submit one inline plugin Secret through the local trusted-frame-only IPC. */
     submitPluginSetupInline: (request: {
       requestId: string;
@@ -6543,6 +6559,11 @@ interface ElectronAPI {
           userCode?: string;
         }) => void,
       ) => () => void;
+    };
+
+    piKernel: {
+      getState: (check?: boolean) => Promise<import('../shared/piKernel').PiKernelState>;
+      install: (request: import('../shared/piKernel').PiKernelInstallRequest) => Promise<import('../shared/piKernel').PiKernelState>;
     };
 
     /* ── Agent 联合状态 (binary + auth, 取代老 codex.binary.getStatus) ── */

@@ -1,3 +1,5 @@
+import { remotePluginSetupErrorCode, type PluginSetupCommandError } from './pluginSetupCommandError';
+export type { PluginSetupCommandError } from './pluginSetupCommandError';
 import { emitTaskTagCatalog } from '@/features/task-tags/taskTagEvents';
 import { normalizeTaskTags } from '@cindy/maker-shared';
 import type { ImMessageSource } from '../../shared/imMessageSource';
@@ -6,6 +8,8 @@ import { readBotAuthorizationCard } from '../../shared/botAuthorization';
 import { applyCindyMakeCardAttention } from './cindyMakeAttention';
 import { confirmRemoteUsers, reserveRemoteUser } from './remoteUserHandoff';
 import { readRemoteHistoryCache, remoteHistoryCacheWriter } from './remoteHistoryCache';
+import { createPluginSecretPresentation, createPluginConnectionPresentation } from '../../shared/pluginOauth';
+import { parsePluginConnectionInput } from '@cindy/device-link';
 /**
  * makerChatStore — Module-level store for Maker chat (Claude / Codex), sharded by sessionId.
  * ---------------------------------------------------------------------------
@@ -112,6 +116,9 @@ import * as sessionService from '@/lib/sessionService';
 // device-link 透明传输:远程(被控设备)会话的操作/读取走隧道,本地会话零变化。
 import {
   makerApiFor,
+  assistRemotePluginOauth,
+  submitRemotePluginSecret,
+  submitRemotePluginConnection,
   makerApiForDevice,
   getSessionFor,
   listMessagesFor,
@@ -728,6 +735,9 @@ export type PluginSetupAction = GhostSetupAllowedAction;
 type PluginSetupInlineFormAction = Extract<GhostSetupAllowedAction, { kind: 'inline_form' }>;
 
 export interface PendingPluginSetup {
+  remoteOauth?: true;
+  remoteSecret?: true;
+  remoteConnection?: true;
   reopenActionId?: string;
   requestId: string;
   revision: number;
@@ -778,6 +788,7 @@ export interface PluginSetupCommandInFlight {
 
 export interface PluginSetupInlineFormValues {
   value: string;
+  host?: string;
 }
 
 /**
@@ -2021,8 +2032,16 @@ function clearRemoteOptimisticSendsForSession(sessionId: string): void {
  * 恢复尚未确认受理的正文/附件，再清账本与 UI；之后任何迟到 invoke / projection
  * 都会同时被 Map identity 与 data-owner generation 挡住，不能跨账号继续投递或恢复。
  */
-export function cancelRemoteOptimisticSendsForDataOwnerBoundary(): void {
+export function cancelRemoteOptimisticSendsForDataOwnerBoundary(
+  options: { finalizeSessions?: boolean } = {},
+): void {
   invalidateLiveIngressForDataOwnerBoundary();
+  // A committed account teardown intentionally stops the outgoing runtime. Its
+  // closed status push carries the old owner stamp and is therefore dropped by
+  // the owner fence; apply the same finalization used by the Stop/closed path.
+  // AuthContext passes finalizeSessions=false for the pre-commit invalidation
+  // so a failed switch can restore the still-running current owner.
+  if (options.finalizeSessions !== false) finalizeSessionsForDataOwnerBoundary();
   // Invalidate standalone projection reads/operations before restoring drafts
   // or publishing the next owner. Their promises may settle independently of
   // the optimistic outbox and must not write old-owner state into the new slice.
@@ -2114,6 +2133,61 @@ export function cancelRemoteOptimisticSendsForDataOwnerBoundary(): void {
       }));
     }
   }
+}
+
+/**
+ * Finalize every cached session when its data owner is being torn down.
+ * This is the owner-boundary equivalent of accepting `status=closed`: keep
+ * the session history in memory, but stop the turn clock, streaming flags,
+ * interactions, and running background tasks so a later owner re-entry
+ * cannot revive the outgoing task snapshot.
+ */
+function finalizeSessionsForDataOwnerBoundary(): void {
+  for (const sessionId of sessions.keys()) {
+    // The local Maker teardown cannot stop a device-link session; its runtime
+    // remains authoritative on the controlled Desktop. Keep the cached remote
+    // state intact until that device reports its own terminal event.
+    if (isRemoteSessionSticky(sessionId)) continue;
+    const state = sessions.get(sessionId);
+    if (!state || !hasActiveTurnStateForOwnerBoundary(state)) continue;
+    bumpInteractionReconcileEpoch(sessionId);
+    supersedeInputProjectionRequests(sessionId, { supersedeOperations: true });
+    flushPendingTextDelta(sessionId);
+    setState(sessionId, forceFinalizeOnSessionClosed);
+  }
+}
+
+function hasActiveTurnStateForOwnerBoundary(state: SessionChatState): boolean {
+  return (
+    state.agentStatus.isRunning ||
+    state.agentStatus.startedAt !== null ||
+    state.streamingClientId !== null ||
+    state.isStreaming ||
+    state.messages.some((message) => message.isStreaming) ||
+    state.pendingPermission !== null ||
+    state.pendingAskUser !== null ||
+    state.pendingPluginSetup !== null ||
+    state.pendingPluginSetupQueue.length > 0 ||
+    state.pendingPlanReview !== null ||
+    state.pendingIssueConfirm !== null ||
+    state.pendingRenameSessionsConfirm !== null ||
+    state.pendingGhostGrantConfirm !== null ||
+    state.pendingRemoteDesktopConfirmation !== null ||
+    state.pendingRemoteDesktopConfirmationQueue.length > 0 ||
+    state.queueAbortPending ||
+    state.steeringQueueClientIds.length > 0 ||
+    state.continuationInFlightClientId !== null ||
+    state.continuationTurnClientId !== null ||
+    state.pendingTaskWake > 0 ||
+    state.messages.some(
+      (message) =>
+        message.clientId === CODEX_RECONNECT_PENDING_CLIENT_ID ||
+        message.clientId === AUTO_RESUME_PENDING_CLIENT_ID,
+    ) ||
+    [...(state.taskUpdates?.values() ?? [])].some((task) => task.status === 'running')
+    || state.inputRecovery !== null
+    || hasSessionRecoveryPendingState(state)
+  );
 }
 
 /** Clear deferred live ingress work before AuthContext publishes a new owner. */
@@ -2545,6 +2619,7 @@ export interface SessionChatState {
   pluginSetupViewerState: PluginSetupViewerState;
   /** Prevents duplicate commands until Main publishes a newer snapshot/dismissal. */
   pluginSetupCommandInFlight: PluginSetupCommandInFlight | null;
+  pluginSetupCommandError: PluginSetupCommandError | null;
   /**
    * F-AUQ-MIN-1: AskUserQuestion viewer display state. Only meaningful while
    * pendingAskUser != null. Reset to 'expanded' every time a new
@@ -2770,6 +2845,7 @@ export type SessionChatLightState = Pick<
   | 'pendingPluginSetup'
   | 'pluginSetupViewerState'
   | 'pluginSetupCommandInFlight'
+  | 'pluginSetupCommandError'
   | 'askUserViewerState'
   | 'askUserDraft'
   | 'pendingPlanReview'
@@ -2841,6 +2917,7 @@ function createInitialState(): SessionChatState {
     pendingPluginSetupQueue: [],
     pluginSetupViewerState: 'expanded',
     pluginSetupCommandInFlight: null,
+    pluginSetupCommandError: null,
     askUserViewerState: 'expanded',
     askUserDraft: null,
     pendingPlanReview: null,
@@ -2923,6 +3000,7 @@ export const EMPTY_SESSION_STATE: SessionChatState = Object.freeze({
   pendingPluginSetupQueue: [],
   pluginSetupViewerState: 'expanded',
   pluginSetupCommandInFlight: null,
+  pluginSetupCommandError: null,
   askUserViewerState: 'expanded',
   askUserDraft: null,
   pendingPlanReview: null,
@@ -2964,6 +3042,12 @@ export const EMPTY_LIGHT_STATE: SessionChatLightState = Object.freeze({
 // ---------------------------------------------------------------------------
 
 const sessions = new Map<string, SessionChatState>();
+// Keep a stable token for each cached session incarnation. A rollback query
+// may outlive a purge/recreate of the same session id; comparing this token
+// prevents an old query from finalizing the replacement while still allowing
+// ordinary state updates to proceed.
+let nextSessionIncarnation = 1;
+const sessionIncarnations = new Map<string, number>();
 const listeners = new Map<string, Set<() => void>>();
 const lightSnapshotCache = new Map<string, SessionChatLightState>();
 
@@ -4146,6 +4230,7 @@ function getOrCreateState(sessionId: string): SessionChatState {
   let state = sessions.get(sessionId);
   if (!state) {
     state = createInitialState();
+    sessionIncarnations.set(sessionId, nextSessionIncarnation++);
     sessions.set(sessionId, state);
     _touchSession(sessionId);
     _evictLruIfNeeded();
@@ -5151,6 +5236,17 @@ function hasRunningWakeTask(state: SessionChatState): boolean {
 function hasBackgroundAgentWork(sessionId: string, state: SessionChatState): boolean {
   if (state.pendingTaskWake === 0 && !hasRunningWakeTask(state)) return false;
   return !isRemoteSessionSticky(sessionId) && !state.remoteHostId;
+}
+
+/**
+ * Any task that is still live while Main retains the session handle must
+ * survive a rejected owner transition. This is deliberately broader than
+ * hasBackgroundAgentWork: local_bash and other non-wake tasks do not keep the
+ * foreground turn running, but stopping their renderer projection during a
+ * rollback would still hide work that Main never stopped.
+ */
+function hasRunningBackgroundTask(state: SessionChatState): boolean {
+  return [...(state.taskUpdates?.values() ?? [])].some((task) => task.status === 'running');
 }
 
 /**
@@ -6301,6 +6397,7 @@ export function handleStreamEvent(
           pendingPluginSetupQueue: remainingSetups,
           pluginSetupViewerState: 'expanded',
           pluginSetupCommandInFlight: null,
+          pluginSetupCommandError: null,
         };
       }
       const queuedSetupIndex = state.pendingPluginSetupQueue.findIndex(
@@ -6664,6 +6761,7 @@ function forceFinalizeOnSessionClosed(state: SessionChatState): SessionChatState
     !state.messages.some((m) => m.isStreaming) &&
     !state.queueAbortPending &&
     state.steeringQueueClientIds.length === 0 &&
+    state.continuationInFlightClientId === null &&
     state.continuationTurnClientId === null &&
     state.pendingTaskWake === 0 &&
     !state.messages.some(
@@ -6671,6 +6769,8 @@ function forceFinalizeOnSessionClosed(state: SessionChatState): SessionChatState
         message.clientId === CODEX_RECONNECT_PENDING_CLIENT_ID ||
         message.clientId === AUTO_RESUME_PENDING_CLIENT_ID,
     ) &&
+    state.inputRecovery === null &&
+    !state.pendingQueue.some((item) => item.autoResume === true) &&
     stoppedTasks === state.taskUpdates
   ) {
     return state;
@@ -6704,12 +6804,18 @@ function forceFinalizeOnSessionClosed(state: SessionChatState): SessionChatState
     activeTurnRetryText: null,
     errorRetryText: null,
     errorPersistId: null,
+    inputRecovery: null,
+    // A successful owner commit closes the outgoing session. Automatic
+    // continuation entries belong to that owner and must not survive the
+    // boundary; user queued input remains available for the next owner.
+    pendingQueue: finalized.pendingQueue.filter((item) => item.autoResume !== true),
     pendingPermission: null,
     pendingAskUser: null,
     pendingPluginSetup: null,
     pendingPluginSetupQueue: [],
     pluginSetupViewerState: 'expanded',
     pluginSetupCommandInFlight: null,
+    pluginSetupCommandError: null,
     askUserViewerState: 'expanded',
     askUserDraft: null,
     pendingPlanReview: null,
@@ -6720,7 +6826,9 @@ function forceFinalizeOnSessionClosed(state: SessionChatState): SessionChatState
     pendingRemoteDesktopConfirmationQueue: [],
     queueAbortPending: false,
     steeringQueueClientIds: [],
+    continuationInFlightClientId: null,
     continuationTurnClientId: null,
+    continuationInFlightProjectionCapability: 'unknown',
     // session 都关了,后台任务事件流已断:running 残留任务标 stopped、唤醒桥接
     // 清零,否则 running 快照(折算了后台任务)会让 spinner 永久转下去。
     taskUpdates: stoppedTasks,
@@ -7434,6 +7542,9 @@ function parsePluginSetupInlineFormAction(
 
 /** Strict renderer boundary parser: unknown push data never reaches the card. */
 export function parsePendingPluginSetup(request: {
+  remoteOauth?: unknown;
+  remoteSecret?: unknown;
+  remoteConnection?: unknown;
   requestId?: unknown;
   revision?: unknown;
   terminal?: unknown;
@@ -7549,6 +7660,9 @@ export function parsePendingPluginSetup(request: {
   return {
     requestId: request.requestId,
     revision: request.revision,
+    ...(request.remoteOauth === true ? { remoteOauth: true as const } : {}),
+    ...(request.remoteSecret === true ? { remoteSecret: true as const } : {}),
+    ...(request.remoteConnection === true ? { remoteConnection: true as const } : {}),
     ...(request.terminal === true ? { terminal: true as const } : {}),
     ghost: {
       id: ghost.id,
@@ -8126,6 +8240,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
             pendingPluginSetup: parsed,
             pluginSetupViewerState: 'expanded',
             pluginSetupCommandInFlight: null,
+            pluginSetupCommandError: null,
           };
         }
         if (current.requestId === parsed.requestId) {
@@ -8135,6 +8250,7 @@ function initGlobalListeners(options: GlobalListenerOptions = {}): void {
             ...s,
             pendingPluginSetup: parsed,
             pluginSetupCommandInFlight: advanced ? null : s.pluginSetupCommandInFlight,
+            pluginSetupCommandError: advanced ? null : s.pluginSetupCommandError,
           };
         }
 
@@ -9344,6 +9460,7 @@ function selectLightState(state: SessionChatState): SessionChatLightState {
     pendingPluginSetup: state.pendingPluginSetup,
     pluginSetupViewerState: state.pluginSetupViewerState,
     pluginSetupCommandInFlight: state.pluginSetupCommandInFlight,
+    pluginSetupCommandError: state.pluginSetupCommandError,
     askUserViewerState: state.askUserViewerState,
     askUserDraft: state.askUserDraft,
     pendingPlanReview: state.pendingPlanReview,
@@ -9392,6 +9509,7 @@ function lightStateEquals(a: SessionChatLightState, b: SessionChatLightState): b
     a.pendingPluginSetup === b.pendingPluginSetup &&
     a.pluginSetupViewerState === b.pluginSetupViewerState &&
     a.pluginSetupCommandInFlight === b.pluginSetupCommandInFlight &&
+    a.pluginSetupCommandError === b.pluginSetupCommandError &&
     a.askUserViewerState === b.askUserViewerState &&
     a.askUserDraft === b.askUserDraft &&
     a.pendingPlanReview === b.pendingPlanReview &&
@@ -9706,12 +9824,23 @@ function hasSessionTerminalError(sessionId: string): boolean {
 /** Non-creating read: recovery can outlive the one-generation stop snapshot. */
 function hasSessionRecoveryPending(sessionId: string): boolean {
   const state = sessions.get(sessionId);
-  return !!state && (
+  return !!state && hasSessionRecoveryPendingState(state);
+}
+
+/**
+ * Automatic continuation can be in its retry backoff after the foreground
+ * turn has gone idle. In that window Main keeps the session handle alive, but
+ * the renderer may only have the typed recovery marker (or a queued auto-resume
+ * item), rather than a running task snapshot.
+ */
+function hasSessionRecoveryPendingState(state: SessionChatState): boolean {
+  return (
     state.messages.some((message) =>
       message.clientId === AUTO_RESUME_PENDING_CLIENT_ID ||
       message.clientId === CODEX_RECONNECT_PENDING_CLIENT_ID,
     ) ||
-    (!state.queuePaused && state.pendingQueue.some((item) => item.autoResume === true))
+    (!state.queuePaused && state.pendingQueue.some((item) => item.autoResume === true)) ||
+    (state.inputRecovery?.kind === 'active-turn' && state.inputRecovery.item.autoResume === true)
   );
 }
 
@@ -9725,6 +9854,47 @@ interface ActiveSessionSnapshot {
   isTurnRunning: boolean;
 }
 
+interface ActiveTurnBoundaryMarker {
+  sessionIncarnation: number;
+  sdkSessionId: string | null;
+  startedAt: number | null;
+  streamingClientId: string | null;
+  continuationTurnClientId: string | null;
+  pendingTaskWakeGen: number;
+  isStreaming: boolean;
+}
+
+function captureActiveTurnBoundaryMarker(
+  sessionId: string,
+  state: SessionChatState,
+): ActiveTurnBoundaryMarker {
+  return {
+    sessionIncarnation: sessionIncarnations.get(sessionId) ?? 0,
+    sdkSessionId: state.sdkSessionId,
+    startedAt: state.agentStatus.startedAt,
+    streamingClientId: state.streamingClientId,
+    continuationTurnClientId: state.continuationTurnClientId,
+    pendingTaskWakeGen: state.pendingTaskWakeGen,
+    isStreaming: state.isStreaming,
+  };
+}
+
+function sameActiveTurnBoundaryMarker(
+  sessionId: string,
+  state: SessionChatState,
+  marker: ActiveTurnBoundaryMarker,
+): boolean {
+  return (
+    (sessionIncarnations.get(sessionId) ?? 0) === marker.sessionIncarnation &&
+    state.sdkSessionId === marker.sdkSessionId &&
+    state.agentStatus.startedAt === marker.startedAt &&
+    state.streamingClientId === marker.streamingClientId &&
+    state.continuationTurnClientId === marker.continuationTurnClientId &&
+    state.pendingTaskWakeGen === marker.pendingTaskWakeGen &&
+    state.isStreaming === marker.isStreaming
+  );
+}
+
 function isActiveSessionSnapshot(value: unknown): value is ActiveSessionSnapshot {
   if (!value || typeof value !== 'object') return false;
   const item = value as Record<string, unknown>;
@@ -9733,6 +9903,78 @@ function isActiveSessionSnapshot(value: unknown): value is ActiveSessionSnapshot
     (item.agentKind === 'claude-code' || item.agentKind === 'codex' || item.agentKind === 'pi') &&
     typeof item.isTurnRunning === 'boolean'
   );
+}
+
+/** A rejected account change can leave the old owner with already-closed SDK sessions. */
+export async function reconcileSessionsAfterDataOwnerRollback(): Promise<void> {
+  const listActive = typeof window === 'undefined' ? undefined : window.electronAPI?.maker?.listActive;
+  if (typeof listActive !== 'function') return;
+  const owner = getDataOwnerGeneration();
+  if (owner.dataOwnerId === null) return;
+  const candidates = [...sessions].flatMap(([id, state]) => {
+    if (isRemoteSessionSticky(id) || !hasActiveTurnStateForOwnerBoundary(state)) return [];
+    return [[id, captureActiveTurnBoundaryMarker(id, state)] as const];
+  });
+  if (candidates.length === 0) return;
+  try {
+    const active = await listActive();
+    // Compare the publication object too: A -> null -> A may reuse the same
+    // main generation on rollback, but must invalidate the older read.
+    if (getDataOwnerGeneration() !== owner) return;
+    if (!Array.isArray(active) || !active.every(isActiveSessionSnapshot)) return;
+    const liveTurns = new Map(active.map((item) => [item.sessionId, item.isTurnRunning]));
+    for (const [id, marker] of candidates) {
+      // Keep a turn that Main still reports running, and never apply a delayed
+      // absence to a new turn or changed session. Ignore unrelated renderer
+      // updates while retaining the marker for the turn we actually queried.
+      // A live-but-idle handle has already stopped its turn and must take the
+      // same finalizer path.
+      let current = sessions.get(id);
+      const initialMainTurnRunning = liveTurns.get(id);
+      if (
+        initialMainTurnRunning === true ||
+        !current ||
+        !sameActiveTurnBoundaryMarker(id, current, marker)
+      )
+        continue;
+      let mainTurnRunning: boolean | undefined = initialMainTurnRunning;
+      // The first query can legitimately race a replacement turn created by
+      // another renderer. Re-read every non-running snapshot immediately
+      // before finalization so a stale idle/absence result cannot close that
+      // new turn.
+      if (initialMainTurnRunning === false || initialMainTurnRunning === undefined) {
+        const latest = await listActive();
+        if (getDataOwnerGeneration() !== owner) return;
+        if (!Array.isArray(latest) || !latest.every(isActiveSessionSnapshot)) return;
+        const latestSession = latest.find((item) => item.sessionId === id);
+        if (latestSession) {
+          mainTurnRunning = latestSession.isTurnRunning;
+        }
+        if (latestSession?.isTurnRunning === true) {
+          continue;
+        }
+        const refreshed = sessions.get(id);
+        if (!refreshed || !sameActiveTurnBoundaryMarker(id, refreshed, marker)) {
+          continue;
+        }
+        current = refreshed;
+      }
+      // listActive keeps idle session handles that still own background work.
+      // isTurnRunning=false only says the foreground turn ended; do not close
+      // any task Main may still be running while rolling back a rejected owner
+      // transition (wake and non-wake tasks alike).
+      if (
+        mainTurnRunning === false &&
+        (hasRunningBackgroundTask(current) || hasSessionRecoveryPendingState(current))
+      ) continue;
+      bumpInteractionReconcileEpoch(id);
+      supersedeInputProjectionRequests(id, { supersedeOperations: true });
+      flushPendingTextDelta(id);
+      setState(id, forceFinalizeOnSessionClosed);
+    }
+  } catch (error) {
+    log.warn('Failed to reconcile maker sessions after auth rollback:', error);
+  }
 }
 
 /**
@@ -9943,6 +10185,7 @@ function reconcilePendingInteractions(
           pendingPluginSetupQueue: survivingQueue,
           pluginSetupViewerState: currentChanged ? 'expanded' : state.pluginSetupViewerState,
           pluginSetupCommandInFlight: nextCommand,
+          pluginSetupCommandError: currentChanged ? null : state.pluginSetupCommandError,
           pendingRemoteDesktopConfirmation: promotedRemoteDesktopConfirmation,
           pendingRemoteDesktopConfirmationQueue: remainingRemoteConfirmations,
         };
@@ -15166,6 +15409,7 @@ async function clearSessionAfterGuardImpl(sessionId: string, clearedAt: string):
       pendingPluginSetupQueue: [],
       pluginSetupViewerState: 'expanded',
       pluginSetupCommandInFlight: null,
+      pluginSetupCommandError: null,
       // F-AUQ-MIN-5: Clear session — wipe viewer state too.
       askUserViewerState: 'expanded',
       // F-AUQ-DRAFT: Clear session also wipes any in-progress draft.
@@ -15465,16 +15709,52 @@ function respondToPluginSetup(
   if (!sessionId) return;
   const state = getOrCreateState(sessionId);
   const pending = state.pendingPluginSetup;
-  if (!pending || pending.requestId !== requestId || state.pluginSetupCommandInFlight) return;
+  if (!pending || pending.requestId !== requestId) return;
+  if (state.pluginSetupCommandInFlight && !(action === 'cancel' && isRemoteSession(sessionId) &&
+    ((pending.remoteOauth && state.pluginSetupCommandInFlight.action === 'run_action') ||
+      ((pending.remoteSecret || pending.remoteConnection) && state.pluginSetupCommandInFlight.action === 'submit_form')))) return;
+
+  const owner = getDataOwnerGeneration();
+  const recordRemoteFailure = (command: PluginSetupCommandInFlight, error: unknown) => {
+    if (!isDataOwnerGenerationCurrent(owner)) return;
+    setState(sessionId, (current) => {
+      if (current.pluginSetupCommandInFlight !== command ||
+          current.pendingPluginSetup?.requestId !== requestId ||
+          current.pendingPluginSetup.revision !== pending.revision) return current;
+      return {
+        ...current,
+        pluginSetupCommandInFlight: null,
+        pluginSetupCommandError: { requestId, revision: pending.revision, code: remotePluginSetupErrorCode(error) },
+      };
+    });
+  };
 
   const selectedAction = actionId
     ? pending.steps.find((step) => step.action?.id === actionId)?.action
     : undefined;
   if (action === 'run_action') {
     if (!selectedAction || selectedAction.kind === 'inline_form') return;
+    if (isRemoteSession(sessionId) && (!pending.remoteOauth || selectedAction.kind !== 'oauth_connect')) return;
   } else if (action === 'submit_form') {
+    if (selectedAction?.kind === 'manage_connection' && isRemoteSession(sessionId) && pending.remoteConnection) {
+      let value: import('@cindy/device-link').PluginConnectionInput;
+      try { value = parsePluginConnectionInput({ host: values?.host, token: values?.value }); }
+      catch { return; }
+      const step = pending.steps.find(s => s.action?.id === selectedAction.id)!;
+      if (pending.terminal || !['pending', 'failed'].includes(step.phase)) return;
+      bumpInteractionReconcileEpoch(sessionId);
+      const command: PluginSetupCommandInFlight = { requestId, action, actionId: selectedAction.id };
+      setState(sessionId, s => ({ ...s, pluginSetupCommandInFlight: command, pluginSetupCommandError: null }));
+      void submitRemotePluginConnection(sessionId, { requestId, actionId: selectedAction.id,
+        expectedRevision: pending.revision, ghostId: pending.ghost.id, value,
+        presentation: createPluginConnectionPresentation(pending, step) }).catch((error) => {
+          // Never log the request, provider reply or IPC details from credential input.
+          recordRemoteFailure(command, error);
+        });
+      return;
+    }
     if (
-      isRemoteSession(sessionId) ||
+      (isRemoteSession(sessionId) && !pending.remoteSecret) ||
       !selectedAction ||
       selectedAction.kind !== 'inline_form' ||
       typeof values?.value !== 'string'
@@ -15491,17 +15771,28 @@ function respondToPluginSetup(
       action,
       actionId: selectedAction.id,
     };
-    setState(sessionId, (s) => ({ ...s, pluginSetupCommandInFlight: command }));
-    window.electronAPI.maker
-      .submitPluginSetupInline({
-        requestId,
-        actionId: selectedAction.id,
-        expectedRevision: pending.revision,
-        value,
-      })
-      .catch(() => {
+    setState(sessionId, (s) => ({ ...s, pluginSetupCommandInFlight: command, pluginSetupCommandError: null }));
+    const step = pending.steps.find((s) => s.action?.id === selectedAction.id)!;
+    const submission = {
+      requestId,
+      actionId: selectedAction.id,
+      expectedRevision: pending.revision,
+      value,
+    };
+    const operation = isRemoteSession(sessionId)
+      ? submitRemotePluginSecret(sessionId, {
+          ...submission,
+          ghostId: pending.ghost.id,
+          presentation: createPluginSecretPresentation(pending, step, field),
+        })
+      : window.electronAPI.maker.submitPluginSetupInline(submission);
+    operation
+      .catch((error) => {
+        if (isRemoteSession(sessionId)) { recordRemoteFailure(command, error); return; }
         // Do not attach IPC error details here: this path carries a secret.
         log.error('Failed to submit plugin setup form');
+        if (sessions.get(sessionId)?.pluginSetupCommandInFlight !== command) return;
+        toast.warning(i18n.t('newChat.pluginSetup.error.ACTION_FAILED'));
         setState(sessionId, (s) =>
           s.pluginSetupCommandInFlight === command ? { ...s, pluginSetupCommandInFlight: null } : s,
         );
@@ -15515,16 +15806,20 @@ function respondToPluginSetup(
     action,
     ...(actionId ? { actionId } : {}),
   };
-  setState(sessionId, (s) => ({ ...s, pluginSetupCommandInFlight: command }));
+  setState(sessionId, (s) => ({ ...s, pluginSetupCommandInFlight: command, pluginSetupCommandError: null }));
 
-  makerApiFor(sessionId)
-    .resolveInteraction(requestId, {
+  const remoteOauth = isRemoteSession(sessionId) && action === 'run_action' && actionId;
+  const operation = remoteOauth
+    ? assistRemotePluginOauth(sessionId, { ghostId: pending.ghost.id, requestId, actionId, expectedRevision: pending.revision })
+    : makerApiFor(sessionId).resolveInteraction(requestId, {
       kind: 'plugin_setup',
       action,
       ...(actionId ? { actionId } : {}),
       expectedRevision: pending.revision,
-    })
+    });
+  operation
     .catch((err) => {
+      if (remoteOauth) { recordRemoteFailure(command, err); return; }
       log.error('Failed to respond to plugin setup:', err);
       setState(sessionId, (s) =>
         s.pluginSetupCommandInFlight === command ? { ...s, pluginSetupCommandInFlight: null } : s,
@@ -16869,6 +17164,10 @@ export const makerChatStore = {
     }
     setState(sessionId, (s) => handleStatusUpdate(s, update));
     scheduleWakeBridgeReconciliation(sessionId);
+  },
+  /** Exposed for tests only: apply a main input projection without IPC wiring. */
+  __applyInputProjectionForTest: (projection: AgentInputProjection): void => {
+    applyInputProjection(projection);
   },
   /** Exposed for tests only. */
   __hydratePersistedMessageForTest: hydratePersistedMessage,
