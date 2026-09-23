@@ -17,6 +17,7 @@ import { createMediaDownloadContext } from '../cindy-media/mediaDownloadApproval
 import { isCodexAccountProvider, codexAccountHome, setCodexAccountRetirement } from './codex-account-auth.js';
 import { CodexThreadLocations } from './codex-thread-locations.js';
 import { getActiveAppSession } from '../appSessionState.js';
+import { getActiveAuthRealm } from '../authManager.js';
 import { getCustomProvider, updateCustomProviderIfUnchanged } from './custom-provider-store.js';
 import { refreshCustomProvidersIntoCatalog } from './createDesktopProviderService.js';
 import { acquireWorktreeRuntimeLease, releaseWorktreeRuntimeLease, type WorktreeRuntimeLease } from '../worktree/runtimeLeases';
@@ -134,7 +135,7 @@ import { createToolResultImageDescriptor } from '../vision-bridge/tool-result-im
 import * as blobStore from '../cindy-media/blobStore.js';
 import { buildPiVisionBridgeEnv } from '../vision-bridge/pi-vision-bridge-env.js';
 import { resolveVisionBackendRoute, setVisionGatewayKeyReader } from './provider-route.js';
-import { resolveSessionCcDebugFile } from '../logger.js';
+import { resolveSessionCcDebugFile, trackSessionCcDebugFile } from '../logger.js';
 import { resetProviderModelAutoRefreshCooldowns } from './provider-model-auto-refresh.js';
 import { getThinkingEnabledFromMemory } from './newMakerDefaultsCache.js';
 import { getSessionFastMode } from './session-effort-store.js';
@@ -801,6 +802,10 @@ export function listBotCreationCapabilities(input: Parameters<ReturnType<typeof 
   return createDesktopBotCapabilityService().forCreation(input);
 }
 
+export function listBotSettingsCapabilities(input: Parameters<ReturnType<typeof createBotCapabilityService>['forSettings']>[0]) {
+  return createDesktopBotCapabilityService().forSettings(input);
+}
+
 /** Settings IPC reuses the model-side catalog at its save boundary. */
 export async function validateBotCapabilityAdditions(update: BotCapabilityUpdate): Promise<void> {
   await createDesktopBotCapabilityService().validateAdditions(update);
@@ -945,6 +950,11 @@ export function getMaker(): Maker {
           && session.instanceId === sessionInstanceId
           && session.getStatus() === 'active'
           && !session.remoteHostId);
+      },
+      isCurrentGrokLoginCaller: (sessionId: string, sessionInstanceId: string) => {
+        const session = _maker?.getSession(sessionId);
+        return Boolean(session && session.instanceId === sessionInstanceId
+          && session.getStatus() === 'active' && !isAppSessionBoundaryPending());
       },
       // 只读活跃 Session 的运行时真相。权限切换是 runtime-first、DB-second，
       // 因此插件过户自动放行不得回退 sessions.permission_mode；会话不再 active
@@ -1167,6 +1177,7 @@ export function getMaker(): Maker {
       // 每个 session 的 cc 子进程 debug 写到 sessions/<id>/cc-debug.raw.log (logger 拼路径
       // + mkdir), tailer 再归一化汇入该 session 的 <date>.ndjson。
       resolveCcDebugFile: resolveSessionCcDebugFile,
+      trackCcDebugFile: trackSessionCcDebugFile,
       mcpProviders: claudeMcpProviders,
       capabilityRouting: DESKTOP_CAPABILITY_ROUTING_POLICY,
       makerMemory: makerMemoryManager,
@@ -1931,7 +1942,7 @@ export function getMaker(): Maker {
       prepareCodexResumeSession: async (threadId) => {
         if (!getActiveAppSession().dataOwnerId) return prepareExternalCodexSessionForResume(threadId);
         const locations = new CodexThreadLocations(path.join(codexAccountHome('thread-index'), 'locations'));
-        return await locations.read(threadId) ?? await prepareExternalCodexSessionForResume(threadId);
+        return locations.prepareResume(threadId, prepareExternalCodexSessionForResume);
       },
       resolveCodexThreadStorage: async (threadId) => {
         if (!getActiveAppSession().dataOwnerId) return;
@@ -1944,11 +1955,25 @@ export function getMaker(): Maker {
         return storage;
       },
       createCodexAuthTokenReader: (providerId) => {
-        const ownerScope = activeOwnerScopeKey();
+        const owner = getActiveAppSession();
+        const authRealm = getActiveAuthRealm();
+        const assertOwner = () => {
+          const current = getActiveAppSession();
+          if (isAppSessionBoundaryPending() || _codexAgent !== codexAgent ||
+              getActiveAuthRealm() !== authRealm ||
+              current.mode !== owner.mode || current.dataOwnerId !== owner.dataOwnerId) {
+            throw new Error('Codex authentication owner changed');
+          }
+        };
         return async () => {
-          if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== ownerScope) throw new Error('Codex authentication owner changed');
+          // Same-owner Ghost repair advances the scope generation while retaining
+          // this Maker and its live tasks. Fence each read, not the reader's lifetime.
+          // The agent identity also rejects old readers after logout/login to the same owner.
+          assertOwner();
+          const ownerScope = activeOwnerScopeKey();
           const state = await desktopCodexAuthAdapter.getState({ credentialMode: 'oauth-bearer', providerId });
-          if (isAppSessionBoundaryPending() || activeOwnerScopeKey() !== ownerScope) throw new Error('Codex authentication owner changed');
+          assertOwner();
+          if (activeOwnerScopeKey() !== ownerScope) throw new Error('Codex authentication owner changed');
           const credentials = state.authenticated ? desktopCodexAuthAdapter.readOneShotCreds(providerId) : null;
           if (!credentials) throw new Error('Codex account credentials are unavailable');
           return { accessToken: credentials.accessToken, chatgptAccountId: credentials.accountId };

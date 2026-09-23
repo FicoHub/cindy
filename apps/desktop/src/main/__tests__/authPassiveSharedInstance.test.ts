@@ -238,7 +238,7 @@ describe('passive shared-userData instance auth isolation', () => {
     expect(bootstrapSource).not.toContain('await prepareSharedGlobalSkillLinks();');
     expect(bootstrapSource).not.toContain('refreshBuiltInSharedSkillLinks');
 
-    const start = authAdapterSource.indexOf('private async runEnsureSharedGlobalSkills():');
+    const start = authAdapterSource.indexOf('private async runEnsureSharedGlobalSkills(ownerId:');
     const end = authAdapterSource.indexOf('\n  async getState(', start);
     const body = authAdapterSource.slice(start, end);
     const ownerBoundary = body.indexOf('withSharedGlobalSkillProjectionMutation(ownerId');
@@ -422,5 +422,18 @@ describe('passive shared-userData instance auth isolation', () => {
     // 但这条分支里不得出现任何删除或 marker 消费。
     expect(passiveBranch).not.toContain('removeSafe(');
     expect(passiveBranch).not.toContain('clearReloginFlag();');
+  });
+
+  it('keeps a renderer fail-closed when it initializes during an owner boundary', () => {
+    const initializeStart = authSource.indexOf(
+      'export async function initialize(options: AuthInitializeOptions = {}): Promise<AuthState> {',
+    );
+    const localModeStart = authSource.indexOf(
+      "if (getActiveAppSession().mode === 'local') {",
+      initializeStart,
+    );
+    const initializePrefix = authSource.slice(initializeStart, localModeStart);
+    expect(initializePrefix).toContain('if (isOwnerChangeShellPending())');
+    expect(initializePrefix).toContain('return snapshotLoggedOutAuthState(true);');
   });
 });
