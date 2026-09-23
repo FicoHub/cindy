@@ -435,6 +435,34 @@ describe('renderer input queue facade', () => {
     );
   });
 
+  it('uses the editor mentions when visible text is unchanged', async () => {
+    const sid = 'same-text-mentions-' + Math.random().toString(36).slice(2, 8);
+    const item = queued('q-same-text-mentions', 'keep @src/app.ts');
+    item.mentions = [{ type: 'file', name: 'app.ts', path: 'src/app.ts' }];
+
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [],
+    });
+
+    expect(saved).toBe(true);
+    expect(input.updateContent).toHaveBeenCalledWith(
+      sid,
+      item.clientId,
+      expect.objectContaining({ mentions: [] }),
+    );
+  });
+
   it('falls back to update-text when an old device-link target lacks update-content', async () => {
     const sid = `legacy-content-${Math.random().toString(36).slice(2, 8)}`;
     const item = queued('q-legacy-content', 'old text');

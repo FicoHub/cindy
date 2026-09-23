@@ -13760,7 +13760,7 @@ async function updateQueueItemContent(
     queued.permissionMode,
     queued.workingDir,
     preparedFiles,
-    textUnchanged ? queued.mentions : content.mentions,
+    content.mentions,
     {
       ...(queued.vendorOptions ? { vendorOptions: queued.vendorOptions } : {}),
       ...((textUnchanged ? queued.chatMessage.quotesEncoded === true : content.hasQuotes)

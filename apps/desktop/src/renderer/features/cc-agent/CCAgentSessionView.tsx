@@ -1450,6 +1450,10 @@ export function CCAgentSessionView({
   const currentSessionIdRef = useRef(sessionId);
   currentSessionIdRef.current = sessionId;
   const queueComposerEditSavingRef = useRef(false);
+  const queueComposerEditCleanupRef = useRef<{
+    edit: QueueComposerEditState;
+    files: readonly AttachedFile[];
+  } | null>(null);
   const composerDraftKey = activeQueueComposerEdit?.draftKey ?? sessionId;
   const attachmentState = useAttachments(sessionId, composerDraftKey);
   const queueComposerEditAttachmentsRef = useRef<readonly AttachedFile[]>([]);
@@ -1820,6 +1824,16 @@ export function CCAgentSessionView({
     },
     [],
   );
+  const clearQueueComposerEditDraftWithFiles = useCallback(
+    (edit: QueueComposerEditState, files: readonly AttachedFile[]) => {
+      const filesById = new Map(files.map((file) => [file.id, file]));
+      for (const file of getComposerDraft(edit.draftKey)?.attachments ?? []) {
+        filesById.set(file.id, file);
+      }
+      clearQueueComposerEditDraft(edit, [...filesById.values()]);
+    },
+    [clearQueueComposerEditDraft],
+  );
 
   const beginQueueComposerEdit = useCallback(
     (entry: QueuedMessage) => {
@@ -1859,6 +1873,7 @@ export function CCAgentSessionView({
       if (!edit || edit.clientId !== clientId || queueComposerEditSavingRef.current) return false;
       queueComposerEditSavingRef.current = true;
       let rowDisappeared = false;
+      let updateSucceeded = false;
       try {
         const updated = await updateQueueItemContent(clientId, { content, files });
         if (!updated) {
@@ -1867,6 +1882,7 @@ export function CCAgentSessionView({
             .pendingQueue.some((entry) => entry.clientId === clientId);
           return false;
         }
+        updateSucceeded = true;
         clearComposerDraftAndNotify(edit.draftKey);
         if (!isCurrentQueueComposerEdit(edit)) return true;
         attachmentState.clearFiles();
@@ -1875,15 +1891,22 @@ export function CCAgentSessionView({
         return true;
       } finally {
         queueComposerEditSavingRef.current = false;
-        if (rowDisappeared) {
+        const pendingCleanup =
+          queueComposerEditCleanupRef.current?.edit.draftKey === edit.draftKey
+            ? queueComposerEditCleanupRef.current
+            : null;
+        if (pendingCleanup) queueComposerEditCleanupRef.current = null;
+        if (!updateSucceeded && pendingCleanup) {
+          queueMicrotask(() =>
+            clearQueueComposerEditDraftWithFiles(edit, [...pendingCleanup.files, ...files]),
+          );
+        } else if (rowDisappeared && !pendingCleanup) {
           queueMicrotask(() => {
             if (isCurrentQueueComposerEdit(edit)) {
               cancelQueueComposerEdit();
               return;
             }
-            const draftFiles = getComposerDraft(edit.draftKey)?.attachments ?? [];
-            const filesById = new Map([...draftFiles, ...files].map((file) => [file.id, file]));
-            clearQueueComposerEditDraft(edit, [...filesById.values()]);
+            clearQueueComposerEditDraftWithFiles(edit, files);
           });
         }
       }
@@ -1893,6 +1916,7 @@ export function CCAgentSessionView({
       attachmentState,
       cancelQueueComposerEdit,
       clearQueueComposerEditDraft,
+      clearQueueComposerEditDraftWithFiles,
       isCurrentQueueComposerEdit,
       updateQueueItemContent,
     ],
@@ -1900,19 +1924,17 @@ export function CCAgentSessionView({
 
   useEffect(() => {
     return () => {
-      if (queueComposerEditSavingRef.current) return;
       const edit = queueComposerEditRef.current;
       if (!edit || edit.sessionId !== sessionId) return;
-      const filesById = new Map(
-        queueComposerEditAttachmentsRef.current.map((file) => [file.id, file]),
-      );
-      for (const file of getComposerDraft(edit.draftKey)?.attachments ?? []) {
-        filesById.set(file.id, file);
+      const files = [...queueComposerEditAttachmentsRef.current];
+      if (queueComposerEditSavingRef.current) {
+        queueComposerEditCleanupRef.current = { edit, files };
+        return;
       }
-      clearQueueComposerEditDraft(edit, [...filesById.values()]);
+      clearQueueComposerEditDraftWithFiles(edit, files);
       queueComposerEditRef.current = null;
     };
-  }, [clearQueueComposerEditDraft, sessionId]);
+  }, [clearQueueComposerEditDraftWithFiles, sessionId]);
 
   useEffect(() => {
     if (queueComposerEdit && queueComposerEdit.sessionId !== sessionId) {
