@@ -463,6 +463,32 @@ describe('renderer input queue facade', () => {
     );
   });
 
+  it('rejects a queue edit when the projection keeps stale mentions', async () => {
+    const sid = 'stale-mentions-' + Math.random().toString(36).slice(2, 8);
+    const item = queued('q-stale-mentions', 'keep @src/app.ts');
+    item.mentions = [{ type: 'file', name: 'app.ts', path: 'src/app.ts' }];
+
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+    input.updateContent.mockImplementationOnce(async () =>
+      projection(sid, { pendingQueue: [item] }),
+    );
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [],
+    });
+
+    expect(saved).toBe(false);
+  });
+
   it('falls back to update-text when an old device-link target lacks update-content', async () => {
     const sid = `legacy-content-${Math.random().toString(36).slice(2, 8)}`;
     const item = queued('q-legacy-content', 'old text');

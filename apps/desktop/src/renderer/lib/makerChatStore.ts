@@ -13629,7 +13629,6 @@ function queuedContentProjectionMatches(
   replacement: QueuedMessage,
 ): boolean {
   if (!accepted || accepted.text !== replacement.text) return false;
-  if (accepted.persistedContent === replacement.persistedContent) return true;
   const stableFiles = (files: QueuedMessage['files']) =>
     (files ?? []).map(({ path: _, url: __, pathOrigin: ___, ...file }) => file);
   return (
