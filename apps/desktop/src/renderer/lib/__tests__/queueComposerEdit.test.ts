@@ -70,4 +70,66 @@ describe('queueMessageToComposerEditDraft', () => {
     expect(prepared.draft.text).toBeNull();
     expect(prepared.draft.attachments).toHaveLength(1);
   });
+
+  it('restores structured references, file mentions and pasted text chips', () => {
+    const entry = queuedMessage();
+    const messageHref = 'cindy://session/source?message=message-1';
+    const projectHref = 'cindy://project/C%3A%2Fworkspace';
+    const text =
+      `See ${messageHref} and [Workspace](${projectHref}) with @src/app.ts and pasted selection`;
+    const messageStart = text.indexOf(messageHref);
+    const projectText = `[Workspace](${projectHref})`;
+    const projectStart = text.indexOf(projectText);
+    const pastedText = 'pasted selection';
+    const pastedStart = text.indexOf(pastedText);
+    entry.text = text;
+    entry.chatMessage.content = text;
+    entry.mentions = [{ type: 'file', name: 'app.ts', path: 'src/app.ts' }];
+    entry.chatMessage.agentReferences = [
+      {
+        kind: 'message',
+        start: messageStart,
+        end: messageStart + messageHref.length,
+        href: messageHref,
+        sessionId: 'source',
+        messageClientId: 'message-1',
+        text: 'Referenced message',
+      },
+      {
+        kind: 'project',
+        start: projectStart,
+        end: projectStart + projectText.length,
+        href: projectHref,
+        name: 'Workspace',
+        workingDir: 'C:\\workspace',
+      },
+    ];
+    entry.chatMessage.pastedTextRanges = [
+      { start: pastedStart, end: pastedStart + pastedText.length, display: 'selection' },
+    ];
+
+    const prepared = queueMessageToComposerEditDraft('session-1', entry);
+    const inline = prepared.draft.text?.content?.[0]?.content ?? [];
+
+    expect(inline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'mentionChip',
+          attrs: expect.objectContaining({ kind: 'session', path: messageHref }),
+        }),
+        expect.objectContaining({
+          type: 'mentionChip',
+          attrs: expect.objectContaining({ kind: 'project', path: projectHref, label: 'Workspace', titled: true }),
+        }),
+        expect.objectContaining({
+          type: 'mentionChip',
+          attrs: expect.objectContaining({ kind: 'file', path: 'src/app.ts', label: 'app.ts' }),
+        }),
+        expect.objectContaining({
+          type: 'pastedTextChip',
+          attrs: expect.objectContaining({ text: pastedText, display: 'selection' }),
+        }),
+      ]),
+    );
+  });
 });

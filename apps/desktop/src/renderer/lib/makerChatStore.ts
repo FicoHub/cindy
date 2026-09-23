@@ -13682,6 +13682,50 @@ function cleanupUnacceptedQueueEditMaterialization(
   });
 }
 
+function queueEditFilesMatch(
+  left: readonly AttachedFile[] | undefined,
+  right: readonly AttachedFile[] | undefined,
+): boolean {
+  const stable = (files: readonly AttachedFile[] | undefined) =>
+    (files ?? []).map((file) => ({
+      id: file.id,
+      name: file.name,
+      path: file.path,
+      ext: file.ext,
+      size: file.size,
+      category: file.category,
+      mimeType: file.mimeType,
+      url: file.url,
+      originalName: file.originalName ?? file.name,
+      base64: file.base64,
+      textContent: file.textContent,
+      truncated: file.truncated,
+      annotated: file.annotated,
+      annotationSourceUrl: file.annotationSourceUrl,
+      annotationStrokes: file.annotationStrokes,
+    }));
+  return JSON.stringify(stable(left)) === JSON.stringify(stable(right));
+}
+
+function canFallbackQueueEditToText(
+  queued: QueuedMessage,
+  replacement: QueuedMessage,
+  content: QueueItemContentUpdate['content'],
+  files: readonly AttachedFile[],
+): boolean {
+  if (!content.text.trim() || !queueEditFilesMatch(queued.files, files)) return false;
+  if (JSON.stringify(queued.mentions ?? []) !== JSON.stringify(content.mentions ?? [])) return false;
+  if ((queued.chatMessage.quotesEncoded === true) !== content.hasQuotes) return false;
+  if ((queued.chatMessage.agentReferences?.length ?? 0) > 0) return false;
+  if ((queued.agentReferences?.length ?? 0) > 0) return false;
+  if ((queued.chatMessage.pastedTextRanges?.length ?? 0) > 0) return false;
+  if ((queued.chatMessage.slashCommandRanges?.length ?? 0) > 0) return false;
+  if (replacement.chatMessage.agentReferences?.length) return false;
+  if (replacement.chatMessage.pastedTextRanges?.length) return false;
+  if (replacement.chatMessage.slashCommandRanges?.length) return false;
+  return true;
+}
+
 async function updateQueueItemContent(
   sessionId: string,
   clientId: string,
@@ -13753,8 +13797,31 @@ async function updateQueueItemContent(
         : input.updateContent(sessionId, clientId, replacement),
     ));
   } catch (error) {
-    cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
-    throw error;
+    if (
+      extractIpcError(error)?.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED' &&
+      canFallbackQueueEditToText(queued, replacement, content, preparedFiles)
+    ) {
+      try {
+        ({ projection } = await runInputProjectionOperation(sessionId, (input) =>
+          boundaryOpts
+            ? input.updateText(
+                sessionId,
+                clientId,
+                content.text,
+                replacement.sessionRefs,
+                undefined,
+                boundaryOpts,
+              )
+            : input.updateText(sessionId, clientId, content.text, replacement.sessionRefs),
+        ));
+      } catch (fallbackError) {
+        cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
+        throw fallbackError;
+      }
+    } else {
+      cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
+      throw error;
+    }
   }
   const accepted = projection.pendingQueue.find((item) => item.clientId === clientId);
   const updated = queuedContentProjectionMatches(accepted, replacement);

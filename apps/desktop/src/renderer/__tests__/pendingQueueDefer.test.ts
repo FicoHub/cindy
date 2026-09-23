@@ -435,6 +435,84 @@ describe('renderer input queue facade', () => {
     );
   });
 
+  it('falls back to update-text when an old device-link target lacks update-content', async () => {
+    const sid = `legacy-content-${Math.random().toString(36).slice(2, 8)}`;
+    const item = queued('q-legacy-content', 'old text');
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+    input.updateContent.mockRejectedValueOnce(
+      new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] update-content unavailable'),
+    );
+    input.updateText.mockImplementationOnce(async (sessionId: string) =>
+      projection(sessionId, {
+        pendingQueue: [{
+          ...item,
+          text: 'edited text',
+          persistedContent: item.persistedContent,
+          chatMessage: { ...item.chatMessage, content: 'edited text' },
+        }],
+      }),
+    );
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: 'edited text',
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [],
+    });
+
+    expect(saved).toBe(true);
+    expect(input.updateText).toHaveBeenCalledWith(sid, item.clientId, 'edited text', undefined);
+  });
+
+  it('does not fall back to update-text when queue edit attachments change', async () => {
+    const sid = `legacy-attachment-${Math.random().toString(36).slice(2, 8)}`;
+    const item = queued('q-legacy-attachment', 'keep text');
+    item.files = [{
+      id: 'old-file',
+      name: 'old.png',
+      path: 'C:\\images\\old.png',
+      ext: 'png',
+      size: 1,
+      category: 'image',
+      mimeType: 'image/png',
+    }];
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+    input.updateContent.mockRejectedValueOnce(
+      new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] update-content unavailable'),
+    );
+    input.updateText.mockClear();
+
+    await expect(
+      makerChatStore.updateQueueItemContent(sid, item.clientId, {
+        content: {
+          text: 'edited text',
+          mentions: [],
+          hasQuotes: false,
+          agentReferences: [],
+          pastedTextRanges: [],
+          slashCommandRanges: [],
+        },
+        files: [{
+          id: 'new-file',
+          name: 'new.png',
+          path: 'C:\\images\\new.png',
+          ext: 'png',
+          size: 1,
+          category: 'image',
+          mimeType: 'image/png',
+        }],
+      }),
+    ).rejects.toThrow('update-content unavailable');
+    expect(input.updateText).not.toHaveBeenCalled();
+  });
+
   it('supports attachment-only queue edits and rejects a fully empty replacement', async () => {
     const sid = `attachment-only-${Math.random().toString(36).slice(2, 8)}`;
     const item = queued('q-attachment-only', '');
