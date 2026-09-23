@@ -5960,6 +5960,12 @@ interface ElectronAPI {
         trustedContexts?: import('../shared/agentInputQueue').AgentInputSessionReferenceContext[],
         opts?: { expectedClearBoundaryMs?: number | null },
       ) => Promise<import('../shared/agentInputQueue').AgentInputProjection>;
+      updateContent: (
+        sessionId: string,
+        clientId: string,
+        item: import('../shared/agentInputQueue').AgentInputQueuedMessage,
+        opts?: { expectedClearBoundaryMs?: number | null },
+      ) => Promise<import('../shared/agentInputQueue').AgentInputProjection>;
       move: (
         sessionId: string,
         clientId: string,

@@ -81,6 +81,13 @@ let remoteInvoke = vi.fn();
 const legacySend = vi.fn(async () => {});
 const legacySteer = vi.fn(async () => {});
 const generateTitle = vi.fn(async () => ({ title: 't' }));
+const cacheMediaForSession = vi.fn(async () => ({
+  url: 'xdt-image://session/copied.png',
+  name: 'copied.png',
+  ext: 'png',
+  mimeType: 'image/png',
+  size: 10,
+}));
 
 const input = {
   getProjection: vi.fn(async (sessionId: string) => projection(sessionId)),
@@ -104,6 +111,10 @@ const input = {
   clearError: vi.fn(async (sessionId: string) => projection(sessionId)),
   remove: vi.fn(async (sessionId: string) => projection(sessionId)),
   updateText: vi.fn(async (sessionId: string) => projection(sessionId)),
+  updateContent: vi.fn(
+    async (sessionId: string, _clientId: string, item: AgentInputQueuedMessage) =>
+      projection(sessionId, { pendingQueue: [item] }),
+  ),
   move: vi.fn(async (sessionId: string) => projection(sessionId)),
   setExpanded: vi.fn(async (sessionId: string, expanded: boolean) =>
     projection(sessionId, { queueExpanded: expanded }),
@@ -196,6 +207,7 @@ function installElectronBridge(): void {
       },
     },
     deviceLink: { invoke: remoteInvoke },
+    cacheMediaForSession,
   };
 }
 
@@ -374,6 +386,133 @@ describe('renderer input queue facade', () => {
     expect(input.setInteractionLock).toHaveBeenCalledWith(sid, 'drag', true);
     expect(input.setEditLock).toHaveBeenCalledWith(sid, item.clientId, true);
     expect(legacySteer).not.toHaveBeenCalled();
+  });
+
+  it('replaces queued text and attachments through update-content', async () => {
+    const sid = `content-${Math.random().toString(36).slice(2, 8)}`;
+    const item = queued('q-content', 'keep metadata');
+    item.chatMessage.quotesEncoded = true;
+    item.chatMessage.slashCommandRanges = [{ start: 0, end: 4 }];
+
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [
+        {
+          id: 'new-image',
+          name: 'new.png',
+          path: 'C:\\images\\new.png',
+          ext: 'png',
+          size: 123,
+          category: 'image',
+          mimeType: 'image/png',
+          url: 'xdt-image://session/new.png',
+        },
+      ],
+    });
+
+    expect(saved).toBe(true);
+    expect(input.updateContent).toHaveBeenCalledWith(
+      sid,
+      item.clientId,
+      expect.objectContaining({
+        clientId: item.clientId,
+        files: [expect.objectContaining({ id: 'new-image' })],
+        chatMessage: expect.objectContaining({
+          quotesEncoded: true,
+          slashCommandRanges: [{ start: 0, end: 4 }],
+        }),
+      }),
+    );
+  });
+
+  it('supports attachment-only queue edits and rejects a fully empty replacement', async () => {
+    const sid = `attachment-only-${Math.random().toString(36).slice(2, 8)}`;
+    const item = queued('q-attachment-only', '');
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+
+    const content = {
+      text: '',
+      mentions: [],
+      hasQuotes: false,
+      agentReferences: [],
+      pastedTextRanges: [],
+      slashCommandRanges: [],
+    };
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content,
+      files: [
+        {
+          id: 'only-image',
+          name: 'only.png',
+          path: 'C:\\images\\only.png',
+          ext: 'png',
+          size: 1,
+          category: 'image',
+          mimeType: 'image/png',
+          url: 'xdt-image://session/only.png',
+        },
+      ],
+    });
+    expect(saved).toBe(true);
+
+    input.updateContent.mockClear();
+    const rejected = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content,
+      files: [],
+    });
+    expect(rejected).toBe(false);
+    expect(input.updateContent).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unchanged queued image in place instead of copying its shared draft view', async () => {
+    const sid = `existing-image-${Math.random().toString(36).slice(2, 8)}`;
+    const item = queued('q-existing-image', 'keep image');
+    const existingImage = {
+      id: 'existing-image',
+      name: 'existing.png',
+      path: 'C:\\images\\existing.png',
+      ext: 'png',
+      size: 10,
+      category: 'image' as const,
+      mimeType: 'image/png',
+      url: 'xdt-image://session/existing.png',
+    };
+    item.files = [{ ...existingImage, pathOrigin: 'desktop-host' }];
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [{ ...existingImage, cacheUrlShared: true, stagedPathShared: true }],
+    });
+
+    expect(saved).toBe(true);
+    expect(cacheMediaForSession).not.toHaveBeenCalled();
+    expect(input.updateContent).toHaveBeenCalledWith(
+      sid,
+      item.clientId,
+      expect.objectContaining({
+        files: [expect.objectContaining({ url: existingImage.url })],
+      }),
+    );
   });
 
   it('keeps queue controls on the sticky remote device while the live mirror is rebuilding', async () => {
