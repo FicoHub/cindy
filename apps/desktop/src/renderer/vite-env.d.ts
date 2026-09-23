@@ -2128,6 +2128,8 @@ interface ElectronAPI {
   ccSetDebugNet: (enabled: boolean) => Promise<{ ok: true }>;
   /** 网关凭据自动下发(model-access,类型见 shared/modelAccess.ts)。 */
   modelAccess: {
+    getByokStatus: () => Promise<import('../shared/modelAccess').ByokStatus>;
+    retryByok: () => Promise<import('../shared/modelAccess').ByokStatus>;
     getStatus: () => Promise<ModelAccessStatusPayload>;
     retry: () => Promise<ModelAccessStatusPayload>;
     /** 轮换密钥;失败 reject(IPC 错误经 extractIpcError 解码)。 */
@@ -3815,6 +3817,8 @@ interface ElectronAPI {
   }>;
   /** 用户主动重启,让 beta 通道切换在下次冷启动前生效。 */
   relaunchForChannelChange: () => Promise<void>;
+  /** 用户确认后重启，下一次启动只更新所确认的受管 Harness（Pi 由内核管理单独处理）。 */
+  relaunchForHarnessUpdate: (kind: 'claude-code' | 'codex') => Promise<{ accepted: true }>;
   /** 打开 beta 前预检:探测 beta manifest 是否可达(HTTP 200)。 */
   probeBetaChannel: () => Promise<{ available: boolean }>;
   onUpdateChannelSettings: (
@@ -4127,6 +4131,7 @@ interface ElectronAPI {
     }>;
     ccMgrDismissPendingUpgrade: (hostId: string, agent?: 'cc' | 'pi') => Promise<{ ok: true }>;
     // Codex credential sync
+    listCodexModels: (id: string) => Promise<import('@cindy/model-providers').ProviderView[]>;
     checkCodexAuth: (id: string) => Promise<{
       localExists: boolean;
       remoteExists: boolean;
@@ -4754,6 +4759,20 @@ interface ElectronAPI {
         session: import('@/lib/ccAgent.types').Session;
       }>;
       history: (botId: string) => Promise<unknown[]>;
+      memory: {
+        list: (
+          botId: string,
+          query?: string,
+        ) => Promise<import('../shared/botMemory').BotMemorySummary[]>;
+        read: (
+          botId: string,
+          filename: string,
+        ) => Promise<import('../shared/botMemory').BotMemoryDetail>;
+        update: (
+          body: import('../shared/botMemory').BotMemoryUpdateInput,
+        ) => Promise<import('../shared/botMemory').BotMemoryDetail>;
+        delete: (body: import('../shared/botMemory').BotMemoryDeleteInput) => Promise<void>;
+      };
     };
     conversations: {
       search: (
@@ -5409,7 +5428,7 @@ interface ElectronAPI {
     /** 通用 OAuth 供应商（目录 auth.oauth 描述符驱动）登录 / 登出 / 取消。 */
     providerOAuthLogin: (
       providerId: string,
-      options?: { ownerId?: string },
+      options?: { ownerId?: string; method?: 'browser' | 'device' },
     ) => Promise<{ ok: boolean; reason?: string }>;
     providerOAuthLogout: (
       providerId: string,
@@ -6404,8 +6423,8 @@ interface ElectronAPI {
     }) => Promise<{ authorized: boolean }>;
     /** 取消对应登录尝试。 */
     claudeOAuthCancel: (loginKey?: string) => Promise<{ authorized: boolean }>;
-    /** 拉起浏览器 OAuth 登录 xAI(SuperGrok 订阅);成功写 safeStorage。reason 在失败时给出 */
-    xaiOAuthLogin: () => Promise<{ ok: boolean; authorized: boolean; reason?: string }>;
+    /** 启动 xAI 浏览器或设备码 OAuth 登录；成功写 safeStorage。 */
+    xaiOAuthLogin: (method?: 'browser' | 'device') => Promise<{ ok: boolean; authorized: boolean; reason?: string }>;
     /** 登出 xAI(清本机 safeStorage 的 xai 凭证) */
     xaiOAuthLogout: (ownerScope?: {
       dataOwnerId: string | null;
@@ -6575,10 +6594,17 @@ interface ElectronAPI {
         identity?: string;
       }>;
       /** spawn 当前应用使用的 binary `--version`, 进程内缓存。About 面板用。 */
-      getBinaryVersion: (agentKind: 'claude-code' | 'codex' | 'pi') => Promise<{
+      /** checkLatest 额外比较当前通道的线上版本；不传只读本地版本，离线也不等待。 */
+      getBinaryVersion: (
+        agentKind: 'claude-code' | 'codex' | 'pi',
+        options?: { checkLatest?: boolean },
+      ) => Promise<{
         kind: 'claude-code' | 'codex' | 'pi';
         binaryPath: string | null;
         version: string | null;
+        latestVersion: string | null;
+        /** 线上版本严格高于本地版本时为 true（与启动安装的保留策略同口径）。 */
+        updateAvailable: boolean;
         error?: string;
       }>;
     };
