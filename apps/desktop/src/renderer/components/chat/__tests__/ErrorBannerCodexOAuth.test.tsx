@@ -56,7 +56,11 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-vi.mock('@/lib/makerChatStore', () => ({ decodeRemoteErrorMessage: (message: string) => message }));
+vi.mock('@/lib/makerChatStore', () => ({
+  decodeRemoteErrorMessage: (message: string) => message,
+  remoteErrorI18nKey: () => undefined,
+  remoteErrorMessageForBanner: (message: string) => message,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
