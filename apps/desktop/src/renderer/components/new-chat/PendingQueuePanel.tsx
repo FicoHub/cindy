@@ -29,7 +29,6 @@ import {
   GripVertical,
   Pencil,
   Trash2,
-  X,
 } from 'lucide-react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -68,12 +67,8 @@ interface PendingQueuePanelProps {
   onRemove: (clientId: string) => void;
   /** Queue row currently loaded into the shared composer. */
   editingClientId?: string | null;
-  /** Complete-content replacement is in flight; keep the row lock until it settles. */
-  editSubmitting?: boolean;
   /** Load a queued message into the shared composer. */
   onEditBegin?: (entry: QueuedMessage) => void;
-  /** Leave composer-backed queue editing and restore the normal draft. */
-  onEditCancel?: () => void;
   onSteer?: (clientId: string) => Promise<boolean>;
   steeringClientIds?: string[];
   /** True after Stop pauses queued messages. */
@@ -153,9 +148,7 @@ export function PendingQueuePanel({
   onToggle,
   onRemove,
   editingClientId = null,
-  editSubmitting = false,
   onEditBegin,
-  onEditCancel,
   onSteer,
   steeringClientIds = [],
   paused = false,
@@ -254,11 +247,6 @@ export function PendingQueuePanel({
     },
     [acquireEditLock, onEditBegin, steeringClientIds],
   );
-
-  const cancelEdit = useCallback(() => {
-    releaseEditLock(editingClientId);
-    onEditCancel?.();
-  }, [editingClientId, onEditCancel, releaseEditLock]);
 
   const handleSortableReorder = useCallback(
     (nextVisibleIds: string[]) => {
@@ -531,17 +519,7 @@ export function PendingQueuePanel({
                   <Spinner size={12} strokeWidth={2.25} />
                 </span>
               ) : isRowEditing ? (
-                <div className="flex shrink-0 items-center">
-                  <button
-                    type="button"
-                    onClick={cancelEdit}
-                    disabled={editSubmitting}
-                    aria-label={t('newChat.pendingQueue.editCancelAria')}
-                    className={cn(iconButtonClassName, 'disabled:cursor-wait disabled:opacity-40')}
-                  >
-                    <X size={12} strokeWidth={2.25} aria-hidden />
-                  </button>
-                </div>
+                <span aria-hidden className="h-5 w-5 shrink-0" />
               ) : showActions ? (
                 <div
                   className={cn('flex shrink-0 items-center justify-end gap-1', actionSlotWidth)}

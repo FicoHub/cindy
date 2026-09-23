@@ -8340,9 +8340,7 @@ export function ChatInput({
               onToggle={() => queuePanelState.onExpandedChange(!queueExpanded)}
               onRemove={queuePanelState.onRemove}
               editingClientId={queueEditingClientId}
-              editSubmitting={sendDispatchInFlight}
               onEditBegin={onQueueEditBegin}
-              onEditCancel={onQueueEditCancel}
               onSteer={onQueueSteer ? handleQueueSteer : undefined}
               steeringClientIds={steeringQueueClientIds}
               paused={queuePaused}
