@@ -16,7 +16,7 @@ import { useProviders } from '@/hooks/useProviders';
 
 import { useEffect, useState } from 'react';
 import { isCodexResumeNotReadyProjectionError } from '@cindy/maker-shared/agent-input-projection';
-import { isCindyGatewayProxyTokenInvalidError } from '@cindy/maker-shared/error-redaction';
+import { isCindyGatewayProxyTokenInvalidError, isResponsesLiteParallelToolCallsError, parseAgentErrorCode, redactSensitiveText } from '@cindy/maker-shared/error-redaction';
 import {
   AlertCircle,
   Check,
@@ -47,7 +47,6 @@ import { isNetworkishErrorMessage, parseReconnectAttemptMessage } from '@/utils/
 import { isOverloadErrorMessage, parseOverloadRetryProgress } from '@/utils/overloadError';
 import {
   isStreamInterruptedErrorMessage,
-  unwrapProviderErrorDisplay,
 } from '@/utils/streamInterruptError';
 import { isQuotaExhaustedErrorMessage } from '@/utils/quotaError';
 import { parseTerminalRateLimitRetryProgress } from '@/utils/rateLimitRetry';
@@ -284,7 +283,6 @@ export function ErrorBanner({
   // (老 daemon / Anthropic 侧 / 历史持久化错误行 —— 后者只有文案可用)。
   const isOverloadError = isOverloadErrorMessage(error, undefined, errorReason);
   const isStreamInterrupted = isStreamInterruptedErrorMessage(error, errorReason);
-  const unwrappedDisplay = unwrapProviderErrorDisplay(error);
   const overloadRetryProgress = parseOverloadRetryProgress(error);
   const errorReasonI18nKey = errorReason ? ERROR_REASON_I18N_KEYS[errorReason] : undefined;
   const toolLoopI18nKey =
@@ -295,6 +293,9 @@ export function ErrorBanner({
       : errorReasonI18nKey
         ? t(errorReasonI18nKey)
         : undefined;
+  const remoteErrorCode = parseAgentErrorCode(error)?.code;
+  const remoteErrorKey = remoteErrorCode ? `chat.remoteError.${remoteErrorCode}` : undefined;
+  const remoteGuidance = remoteErrorKey && i18n.exists(remoteErrorKey) ? t(remoteErrorKey) : undefined;
   const terminalRateLimitRetryProgress = parseTerminalRateLimitRetryProgress(error, errorReason);
   const isCodexUsageLimitError =
     agentKind === 'codex' && usageLimitRecovery?.isAccountUsageLimit === true;
@@ -350,7 +351,14 @@ export function ErrorBanner({
   // else 兜底里翻转的标志, 而不是另写一遍条件取反，保证原始错误只在通用回退时展开。
   let displayError: string;
   let hasSpecialGuidance = true;
-  if (isCodexResumeNotReadyProjectionError(error)) {
+  if (isResponsesLiteParallelToolCallsError(error)) {
+    displayError = t('chat.errorBanner.requestFormatError');
+  } else if (remoteGuidance && !localizedReasonError) {
+    // The bracketed code is more specific than status words in its upstream
+    // fallback (for example, a transfer error can mention HTTP 502).
+    displayError = remoteGuidance;
+    hasSpecialGuidance = false;
+  } else if (isCodexResumeNotReadyProjectionError(error)) {
     displayError = t('chat.errorBanner.codexResumeNotReady');
   } else if (isPiImageInputUnsupportedError(error)) {
     displayError = t('ipcError.PI_IMAGE_INPUT_UNSUPPORTED');
@@ -466,10 +474,10 @@ export function ErrorBanner({
     // the final fallback uses the stable reason map, so auth/network/overload
     // recovery behavior keeps its existing priority while generic maker-core
     // English fallbacks are localized in both the live and tail banner.
-    displayError = localizedReasonError ?? unwrappedDisplay;
+    displayError = localizedReasonError ?? t('chat.errorBanner.replyFailed');
     hasSpecialGuidance = false;
   }
-  const showUnwrappedRaw = !hasSpecialGuidance && !errorReasonI18nKey && unwrappedDisplay !== error;
+  const showUnwrappedRaw = !hasSpecialGuidance || isResponsesLiteParallelToolCallsError(error);
 
   const handleSwitchToClaudeSubscription = async (): Promise<void> => {
     if (!onSwitchToClaudeSubscription || switchingClaudeSubscription) return;
@@ -578,7 +586,7 @@ export function ErrorBanner({
         'mx-auto flex items-start gap-2 border px-3 py-2',
         isOpenAiConnectionExpired
           ? 'rounded-xl bg-[var(--surface-elevated)] border-[var(--border-default)]'
-          : 'rounded-md bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800',
+          : 'rounded-lg bg-[var(--error-bg)] border-[var(--error-border)]',
         className,
       )}
       style={style}
@@ -592,7 +600,7 @@ export function ErrorBanner({
             'mt-[2px] shrink-0',
             isOpenAiConnectionExpired
               ? 'text-[var(--settings-integration-warning)]'
-              : 'text-red-500',
+              : 'text-[var(--error-fg)]',
           )}
         />
       )}
@@ -602,7 +610,7 @@ export function ErrorBanner({
             'block break-all text-xs',
             isOpenAiConnectionExpired
               ? 'text-[var(--text-secondary)]'
-              : 'text-red-600 dark:text-red-400',
+              : 'text-[var(--error-fg)]',
           )}
         >
           {displayError}
@@ -618,7 +626,7 @@ export function ErrorBanner({
           isGatewayProxyTokenInvalid) && (
           // 网络类与过载类的原始错误折叠可查:友好文案替换了原文,但排障(端口/URL/
           // errno/上游原话)仍需要原文,点击展开。新增控件走 --error-fg token(规则 16;
-          // 本组件其余 red-600/400 为历史存量,error 属语义豁免色但新代码仍走 token)。
+          // 普通错误表面同样消费 error 语义色)。
           <>
             <button
               type="button"
@@ -631,7 +639,7 @@ export function ErrorBanner({
             </button>
             {showRawNetworkError && (
               <span className="mt-0.5 block text-xs break-all opacity-70 text-[var(--error-fg)]">
-                {error}
+                {redactSensitiveText(error)}
               </span>
             )}
           </>
@@ -708,7 +716,7 @@ export function ErrorBanner({
           disabled={syncing}
           className={cn(
             'shrink-0 flex items-center gap-1 text-xs font-medium',
-            'text-red-600 dark:text-red-400',
+            'text-[var(--error-fg)]',
             'hover:opacity-70 transition-opacity',
             'disabled:opacity-50 disabled:cursor-not-allowed',
           )}
@@ -724,7 +732,7 @@ export function ErrorBanner({
           onClick={onSilentStopContinue}
           className={cn(
             'shrink-0 flex items-center gap-1 text-xs font-medium',
-            'text-red-600 dark:text-red-400',
+            'text-[var(--error-fg)]',
             'hover:opacity-70 transition-opacity',
           )}
           title={t('chat.errorBanner.silentStopContinueTitle')}
@@ -757,7 +765,7 @@ export function ErrorBanner({
             'shrink-0 flex items-center gap-1 text-xs font-medium',
             isOpenAiConnectionExpired
               ? 'text-[var(--text-primary)]'
-              : 'text-red-600 dark:text-red-400',
+              : 'text-[var(--error-fg)]',
             'hover:opacity-70 transition-opacity',
           )}
           title={t('chat.errorBanner.retryTitle')}
@@ -774,7 +782,7 @@ export function ErrorBanner({
           disabled={forkStripEncryptedRunning}
           className={cn(
             'shrink-0 flex items-center gap-1 text-xs font-medium',
-            'text-red-600 dark:text-red-400',
+            'text-[var(--error-fg)]',
             'hover:opacity-70 transition-opacity',
             'disabled:opacity-50 disabled:cursor-not-allowed',
           )}

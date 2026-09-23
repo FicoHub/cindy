@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/button';
 import { REMOTE_RESOURCE_GET_CHANNEL, type RemoteResourceGetRequest } from '@cindy/device-link';
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
@@ -16,7 +17,7 @@ export function RemoteBotSessionView() {
   const { t } = useTranslation();
   const bots = useRemoteBots();
   const bot = bots.find((row) => row.id === botId && row.deviceId === deviceId);
-  const [ready, setReady] = useState<RemoteBot | null>(null);
+  const [ready, setReady] = useState<(RemoteBot & { sessionId: string }) | null>(null);
   const [validatedSessionId, setValidatedSessionId] = useState<string | null | undefined>(null);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -48,15 +49,24 @@ export function RemoteBotSessionView() {
         throw new Error('Conflicting remote session owner');
       // Origin must precede every read/write in the shared conversation view.
       remoteProjectsStore.pinSessionOrigin(deviceId, canonicalId);
+      const isSessionReadCurrent = remoteProjectsStore.captureSessionRead(deviceId, canonicalId);
       const value = await window.electronAPI.deviceLink.invoke(deviceId, 'local-db:sessions:get', [
         canonicalId,
       ]);
       if (disposed) return;
-      const session = value as Session | null;
-      if (!session || session.id !== canonicalId || session.source !== 'bot')
+      // A settings change or reconnect may finish while this GET is in flight.
+      // Use the newer mirror when available; never publish the late response.
+      const readIsCurrent = isSessionReadCurrent();
+      const currentMirror = remoteProjectsStore.getDeviceSessions(deviceId).find((row) => row.id === canonicalId);
+      const session = readIsCurrent ? value as Session | null : currentMirror;
+      if (!session || session.id !== canonicalId || session.source !== 'bot' ||
+        session.status !== 'active' ||
+        (!readIsCurrent && session.deviceLinkConnectionStatus !== 'connected'))
         throw new Error('Invalid remote companion session');
-      remoteProjectsStore.mergeDeviceSessions(deviceId, bot.deviceName, [session]);
-      setReady(resolved);
+      if (readIsCurrent) remoteProjectsStore.mergeDeviceSessions(deviceId, currentMirror?.deviceLinkDeviceName ?? bot.deviceName, [
+        isSessionReadCurrent.mergeActivity(session),
+      ]);
+      setReady({ ...resolved, sessionId: canonicalId });
       setValidatedSessionId(sessionId);
     })().catch(() => {
       if (!disposed) setFailed(true);
@@ -100,13 +110,15 @@ export function RemoteBotSessionView() {
       </p>
       {sessionId && bot?.online && !failed ? <Spinner size={18} /> : null}
       {failed ? (
-        <button
+        <Button
+          variant="secondary"
+          size="md"
+          compact
           type="button"
-          className="rounded-lg border border-[var(--border-default)] px-3 py-2 text-13 text-[var(--text-primary)] hover:bg-[var(--surface-hover)]"
           onClick={() => setRetry((n) => n + 1)}
         >
           {t('bots.retry')}
-        </button>
+        </Button>
       ) : null}
     </main>
   );
