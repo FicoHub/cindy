@@ -105,9 +105,11 @@ const queuedMessage = {
 function QueueEditHarness({
   onCancel,
   onRemove,
+  onSubmit = async () => true,
 }: {
   onCancel: () => void;
   onRemove: () => void;
+  onSubmit?: NonNullable<ComponentProps<typeof ChatInput>['onQueueEditSubmit']>;
 }) {
   const [editingClientId, setEditingClientId] = useState<string | null>(queuedMessage.clientId);
 
@@ -121,7 +123,7 @@ function QueueEditHarness({
       onQueueRemove={onRemove}
       queueEditingClientId={editingClientId}
       onQueueEditBegin={vi.fn()}
-      onQueueEditSubmit={async () => true}
+      onQueueEditSubmit={onSubmit}
       onQueueEditCancel={() => {
         onCancel();
         setEditingClientId(null);
@@ -207,6 +209,20 @@ it('hides queue removal while editing and exits editing from the composer cancel
   fireEvent.mouseEnter(screen.getByRole('listitem'));
   expect(screen.getByRole('button', { name: 'newChat.pendingQueue.removeAria' })).toBeTruthy();
   expect(onRemove).not.toHaveBeenCalled();
+});
+
+it('blocks queue edit saves while voice capture is active', async () => {
+  h.listening = true;
+  const onSubmit = vi.fn().mockResolvedValue(true);
+  render(<QueueEditHarness onCancel={vi.fn()} onRemove={vi.fn()} onSubmit={onSubmit} />);
+
+  const save = (await screen.findByRole('button', {
+    name: 'newChat.pendingQueue.editSaveAria',
+  })) as HTMLButtonElement;
+  expect(save.disabled).toBe(true);
+
+  fireEvent.click(save);
+  expect(onSubmit).not.toHaveBeenCalled();
 });
 
 // The slot survives missing metadata; only the model control is withheld.

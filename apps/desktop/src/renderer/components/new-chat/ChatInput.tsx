@@ -5942,7 +5942,8 @@ export function ChatInput({
       !queueEditingClientId ||
       !onQueueEditSubmit ||
       disabled ||
-      sendDispatchInFlight
+      sendDispatchInFlight ||
+      voiceBusyOnCurrentComposer
     ) {
       return;
     }
@@ -5967,6 +5968,7 @@ export function ChatInput({
     queueEditingClientId,
     sendDispatchInFlight,
     t,
+    voiceBusyOnCurrentComposer,
   ]);
 
   const acceptPromptRecommendation = useCallback((): boolean => {
@@ -8186,7 +8188,12 @@ export function ChatInput({
     ).kind === 'start';
   const [voiceReleaseToSendActive, setVoiceReleaseToSendActive] = useState(false);
   const sendButtonDisabled = queueEditActive
-    ? Boolean(disabled || sendDispatchInFlight || (!hasMessage && !hasAttachments))
+    ? Boolean(
+        disabled ||
+          sendDispatchInFlight ||
+          voiceBusyOnCurrentComposer ||
+          (!hasMessage && !hasAttachments),
+      )
     : Boolean(
     disabled || sessionModelLoading ||
     // 空態:当前 agent 无已连接来源 → Send 禁用(设计 Q7NYAD「send 置灰」),引导用户先去连接来源。
