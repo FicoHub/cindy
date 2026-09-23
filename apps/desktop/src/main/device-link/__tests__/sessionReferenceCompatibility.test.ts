@@ -228,7 +228,7 @@ describe('device-link target session-reference capability gate', () => {
         'client-1',
         { files: [{ path: '/controller/new.png' }] },
       ]),
-    ).rejects.toThrow('[DEVICE_LINK_CHANNEL_NOT_ALLOWED]');
+    ).rejects.toMatchObject({ code: 'DEVICE_LINK_CHANNEL_NOT_ALLOWED' });
     expect(rewriteMedia).not.toHaveBeenCalled();
     expect(invoke).toHaveBeenCalledTimes(1);
   });
