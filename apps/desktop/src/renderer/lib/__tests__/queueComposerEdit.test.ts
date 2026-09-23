@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { QueuedMessage } from '@/lib/makerChatStore';
 import {
+  isQueueComposerEditCurrent,
   queueComposerEditDraftKey,
   queueMessageToComposerEditDraft,
 } from '@/lib/queueComposerEdit';
@@ -131,5 +132,26 @@ describe('queueMessageToComposerEditDraft', () => {
         }),
       ]),
     );
+  });
+});
+
+describe('isQueueComposerEditCurrent', () => {
+  const edit = {
+    sessionId: 'session-1',
+    clientId: 'queue-1',
+    draftKey: 'queue-edit:session-1:queue-1',
+    originalAttachmentIds: [],
+  };
+
+  it('rejects a stale save after switching sessions or replacing the edit', () => {
+    expect(isQueueComposerEditCurrent(edit, 'session-2', edit)).toBe(false);
+    expect(
+      isQueueComposerEditCurrent(
+        { ...edit, clientId: 'queue-2', draftKey: 'queue-edit:session-1:queue-2' },
+        'session-1',
+        edit,
+      ),
+    ).toBe(false);
+    expect(isQueueComposerEditCurrent(edit, 'session-1', edit)).toBe(true);
   });
 });

@@ -242,7 +242,11 @@ import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 import type { AttachedFile, ComposerBotMention, MentionedResource } from '@/lib/fileTypes';
 import { serializeAttachedFiles } from '@/lib/messageAttachmentPayload';
 import { cleanupStagedChatAttachmentFiles } from '@/lib/chatAttachmentStageCleanup';
-import { queueMessageToComposerEditDraft } from '@/lib/queueComposerEdit';
+import {
+  isQueueComposerEditCurrent,
+  queueMessageToComposerEditDraft,
+  type QueueComposerEditState,
+} from '@/lib/queueComposerEdit';
 import type { SerializedComposerContent } from '@/components/new-chat/composerContentSerialization';
 import type { PastedTextRange, SlashCommandRange } from '@/lib/imageRef';
 import { createLogger } from '@/lib/logger';
@@ -1438,21 +1442,23 @@ export function CCAgentSessionView({
   // Attachments are managed here so the entire content area can act as a drop zone.
   // image-local-cache: pass sessionId so addFiles/addClipboardImage can cache
   // images into userData/cc-agent/images/{sessionId}/ via IPC.
-  const [queueComposerEdit, setQueueComposerEdit] = useState<{
-    sessionId: string;
-    clientId: string;
-    draftKey: string;
-    originalAttachmentIds: string[];
-  } | null>(null);
+  const [queueComposerEdit, setQueueComposerEdit] = useState<QueueComposerEditState | null>(null);
   const activeQueueComposerEdit =
     queueComposerEdit?.sessionId === sessionId ? queueComposerEdit : null;
   const queueComposerEditRef = useRef(queueComposerEdit);
   queueComposerEditRef.current = queueComposerEdit;
+  const currentSessionIdRef = useRef(sessionId);
+  currentSessionIdRef.current = sessionId;
   const queueComposerEditSavingRef = useRef(false);
   const composerDraftKey = activeQueueComposerEdit?.draftKey ?? sessionId;
   const attachmentState = useAttachments(sessionId, composerDraftKey);
   const queueComposerEditAttachmentsRef = useRef<readonly AttachedFile[]>([]);
   queueComposerEditAttachmentsRef.current = attachmentState.attachments;
+  const isCurrentQueueComposerEdit = useCallback(
+    (edit: QueueComposerEditState) =>
+      isQueueComposerEditCurrent(queueComposerEditRef.current, currentSessionIdRef.current, edit),
+    [],
+  );
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
   const resetFullAreaDragState = useCallback(() => {
@@ -1835,12 +1841,17 @@ export function CCAgentSessionView({
   const cancelQueueComposerEdit = useCallback(() => {
     if (queueComposerEditSavingRef.current) return;
     const edit = activeQueueComposerEdit;
-    if (!edit) return;
+    if (!edit || !isCurrentQueueComposerEdit(edit)) return;
     clearQueueComposerEditDraft(edit, attachmentState.attachments);
     attachmentState.clearFiles();
     queueComposerEditRef.current = null;
     setQueueComposerEdit(null);
-  }, [activeQueueComposerEdit, attachmentState, clearQueueComposerEditDraft]);
+  }, [
+    activeQueueComposerEdit,
+    attachmentState,
+    clearQueueComposerEditDraft,
+    isCurrentQueueComposerEdit,
+  ]);
 
   const submitQueueComposerEdit = useCallback(
     async (clientId: string, content: SerializedComposerContent, files: AttachedFile[]) => {
@@ -1856,20 +1867,33 @@ export function CCAgentSessionView({
             .pendingQueue.some((entry) => entry.clientId === clientId);
           return false;
         }
-        attachmentState.clearFiles();
         clearComposerDraftAndNotify(edit.draftKey);
+        if (!isCurrentQueueComposerEdit(edit)) return true;
+        attachmentState.clearFiles();
         queueComposerEditRef.current = null;
         setQueueComposerEdit(null);
         return true;
       } finally {
         queueComposerEditSavingRef.current = false;
-        if (rowDisappeared) queueMicrotask(cancelQueueComposerEdit);
+        if (rowDisappeared) {
+          queueMicrotask(() => {
+            if (isCurrentQueueComposerEdit(edit)) {
+              cancelQueueComposerEdit();
+              return;
+            }
+            const draftFiles = getComposerDraft(edit.draftKey)?.attachments ?? [];
+            const filesById = new Map([...draftFiles, ...files].map((file) => [file.id, file]));
+            clearQueueComposerEditDraft(edit, [...filesById.values()]);
+          });
+        }
       }
     },
     [
       activeQueueComposerEdit,
       attachmentState,
       cancelQueueComposerEdit,
+      clearQueueComposerEditDraft,
+      isCurrentQueueComposerEdit,
       updateQueueItemContent,
     ],
   );

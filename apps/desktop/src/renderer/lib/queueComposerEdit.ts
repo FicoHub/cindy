@@ -16,6 +16,26 @@ export interface QueueComposerEditDraft {
   originalAttachmentIds: string[];
 }
 
+export interface QueueComposerEditState {
+  sessionId: string;
+  clientId: string;
+  draftKey: string;
+  originalAttachmentIds: string[];
+}
+
+export function isQueueComposerEditCurrent(
+  current: QueueComposerEditState | null,
+  sessionId: string | undefined,
+  candidate: QueueComposerEditState,
+): boolean {
+  return (
+    sessionId === candidate.sessionId &&
+    current?.sessionId === candidate.sessionId &&
+    current.clientId === candidate.clientId &&
+    current.draftKey === candidate.draftKey
+  );
+}
+
 export function queueComposerEditDraftKey(sessionId: string, clientId: string): string {
   return `queue-edit:${sessionId}:${clientId}`;
 }
