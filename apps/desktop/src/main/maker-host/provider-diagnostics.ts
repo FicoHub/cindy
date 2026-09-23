@@ -320,7 +320,17 @@ export async function runProviderProbe(
   // 默认吃系统代理:探测必须与真实会话同口径,否则代理用户会被误判成「连不通」。
   fetchImpl: typeof fetch = outboundFetch,
 ): Promise<ProviderTestResult> {
-  return logProbeFailure(spec, await runProviderProbeUnlogged(spec, fetchImpl));
+  const start = Date.now();
+  try {
+    return logProbeFailure(spec, await runProviderProbeUnlogged(spec, fetchImpl));
+  } catch (err) {
+    // 拿到响应头后读首帧时连接中断(readFirstSsePayload 抛错)、请求装配抛错等异常路径
+    // 同样要留痕,否则仍是「未知错误、日志无迹」;异常本身原样抛给 IPC,不改变错误语义。
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    logProbeFailure(spec, { ok: false, code: 'UNKNOWN', latencyMs: Date.now() - start,
+      detail: `probe threw before classification: ${message}` });
+    throw err;
+  }
 }
 
 async function runProviderProbeUnlogged(
