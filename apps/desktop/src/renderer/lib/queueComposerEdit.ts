@@ -195,7 +195,7 @@ function collectInlineReplacements(entry: QueuedMessage, text: string): InlineRe
   }
 
   replacements.sort((left, right) =>
-    left.start - right.start || left.priority - right.priority || left.end - right.end,
+    left.start - right.start || left.priority - right.priority || right.end - left.end,
   );
   const accepted: InlineReplacement[] = [];
   let previousEnd = 0;

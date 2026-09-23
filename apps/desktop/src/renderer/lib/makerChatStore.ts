@@ -172,6 +172,7 @@ import {
   resetRemoteDataOwnerPushFence,
 } from '@/lib/remoteDataOwnerPushFence';
 import { buildUserMessageAttachmentPayload } from '@/lib/messageAttachmentPayload';
+import { cleanupStagedChatAttachmentFiles } from '@/lib/chatAttachmentStageCleanup';
 import {
   parseIssueEnvHarness,
   parseIssueEnvModelId,
@@ -13659,6 +13660,29 @@ function cleanupUnacceptedQueueEditMaterialization(
   });
 }
 
+function cleanupAcceptedQueueEditReplacements(
+  originalFiles: readonly AttachedFile[],
+  acceptedFiles: readonly AttachedFile[],
+): void {
+  const acceptedUrls = new Set(acceptedFiles.map((file) => file.url).filter(Boolean));
+  const removedUrls = originalFiles
+    .map((file) => file.url)
+    .filter(
+      (url): url is string =>
+        Boolean(url?.startsWith('xdt-image://')) && !acceptedUrls.has(url),
+    );
+  if (removedUrls.length > 0) {
+    void window.electronAPI.cleanupCachedImages(removedUrls).catch((error: unknown) => {
+      log.warn('cleanup replaced queue edit images failed:', error);
+    });
+  }
+
+  const acceptedPaths = new Set(acceptedFiles.map((file) => file.path));
+  cleanupStagedChatAttachmentFiles(
+    originalFiles.filter((file) => !acceptedPaths.has(file.path)),
+  );
+}
+
 function queueEditFilesMatch(
   left: readonly AttachedFile[] | undefined,
   right: readonly AttachedFile[] | undefined,
@@ -13802,7 +13826,11 @@ async function updateQueueItemContent(
   }
   const accepted = projection.pendingQueue.find((item) => item.clientId === clientId);
   const updated = queuedContentProjectionMatches(accepted, replacement);
-  if (!updated) cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
+  if (updated && accepted) {
+    cleanupAcceptedQueueEditReplacements(queued.files ?? [], accepted.files ?? []);
+  } else {
+    cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
+  }
   return updated;
 }
 

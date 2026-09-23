@@ -88,6 +88,8 @@ const cacheMediaForSession = vi.fn(async () => ({
   mimeType: 'image/png',
   size: 10,
 }));
+const cleanupCachedImages = vi.fn(async () => undefined);
+const cleanupStagedChatAttachments = vi.fn(async () => undefined);
 
 const input = {
   getProjection: vi.fn(async (sessionId: string) => projection(sessionId)),
@@ -208,6 +210,8 @@ function installElectronBridge(): void {
     },
     deviceLink: { invoke: remoteInvoke },
     cacheMediaForSession,
+    cleanupCachedImages,
+    cleanupStagedChatAttachments,
   };
 }
 
@@ -433,6 +437,51 @@ describe('renderer input queue facade', () => {
         }),
       }),
     );
+  });
+
+  it('cleans original queue attachment artifacts only after an accepted replacement', async () => {
+    const sid = `cleanup-content-${Math.random().toString(36).slice(2, 8)}`;
+    const item = queued('q-cleanup-content', 'keep text');
+    item.files = [
+      {
+        id: 'old-image',
+        name: 'old.png',
+        path: 'C:\\images\\old.png',
+        ext: 'png',
+        size: 1,
+        category: 'image',
+        mimeType: 'image/png',
+        url: 'xdt-image://session/old.png',
+      },
+      {
+        id: 'old-staged-file',
+        name: 'old.exe',
+        path: 'C:\\cache\\old.bin',
+        ext: 'exe',
+        size: 1,
+        category: 'file',
+        mimeType: 'application/octet-stream',
+      },
+    ];
+
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [],
+    });
+
+    expect(saved).toBe(true);
+    expect(cleanupCachedImages).toHaveBeenCalledWith(['xdt-image://session/old.png']);
+    expect(cleanupStagedChatAttachments).toHaveBeenCalledWith(['C:\\cache\\old.bin']);
   });
 
   it('uses the editor mentions when visible text is unchanged', async () => {

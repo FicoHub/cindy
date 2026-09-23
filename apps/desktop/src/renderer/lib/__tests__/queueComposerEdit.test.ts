@@ -133,6 +133,26 @@ describe('queueMessageToComposerEditDraft', () => {
       ]),
     );
   });
+
+  it('prefers the longest mention when directory and file references start together', () => {
+    const entry = queuedMessage();
+    entry.text = '@src/app.ts';
+    entry.chatMessage.content = entry.text;
+    entry.mentions = [
+      { type: 'dir', name: 'src', path: 'src' },
+      { type: 'file', name: 'app.ts', path: 'src/app.ts' },
+    ];
+
+    const prepared = queueMessageToComposerEditDraft('session-1', entry);
+    const inline = prepared.draft.text?.content?.[0]?.content ?? [];
+
+    expect(inline).toEqual([
+      expect.objectContaining({
+        type: 'mentionChip',
+        attrs: expect.objectContaining({ kind: 'file', path: 'src/app.ts', label: 'app.ts' }),
+      }),
+    ]);
+  });
 });
 
 describe('isQueueComposerEditCurrent', () => {
