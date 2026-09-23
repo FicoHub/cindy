@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { ComponentProps } from 'react';
+import { useState, type ComponentProps, type ReactNode } from 'react';
 import type { Editor } from '@tiptap/react';
 import { ChatInput } from '../ChatInput';
 
@@ -9,6 +9,27 @@ const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor:
 vi.mock('react-i18next', async (original) => ({ ...await original<typeof import('react-i18next')>(), useTranslation: () => ({ t: h.t }) }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
 vi.mock('@/components/ui/confirm-dialog-provider', () => ({ useConfirmDialog: () => ({ confirm: h.confirm }) }));
+vi.mock('@/components/sidebar/SortableList', () => ({
+  SortableList: ({
+    items,
+    renderItem,
+    role,
+    ariaLabel,
+    className,
+  }: {
+    items: readonly unknown[];
+    renderItem: (item: unknown, index: number) => ReactNode;
+    role?: string;
+    ariaLabel?: string;
+    className?: string;
+  }) => (
+    <div role={role} aria-label={ariaLabel} className={className}>
+      {items.map((item, index) => (
+        <div key={index}>{renderItem(item, index)}</div>
+      ))}
+    </div>
+  ),
+}));
 vi.mock('../ModelSelector', async (original) => ({ ...await original<typeof import('../ModelSelector')>(), ModelSelector: ({ modelId }: { modelId: string }) => <span data-testid="model-selector">{modelId}</span> }));
 vi.mock('../ExtraDirsButton', () => ({ ExtraDirsButton: () => null }));
 vi.mock('../PermissionSelector', () => ({ PermissionSelector: () => <span data-testid="permission-selector" /> }));
@@ -63,6 +84,52 @@ const props = {
   hideRuntimeControls: true, showFolderPicker: false, disableAutofocus: true,
 };
 
+const queuedMessage = {
+  clientId: 'queue-edit-test',
+  text: 'Queued message',
+  persistedContent: 'Queued message',
+  model: 'gpt-6-astra',
+  effort: 'medium',
+  permissionMode: 'default',
+  workingDir: '/workspace',
+  chatMessage: { clientId: 'queue-edit-test', role: 'user' as const, content: 'Queued message' },
+  createOpts: {
+    agentKind: 'codex' as const,
+    model: 'gpt-6-astra',
+    effort: 'medium',
+    permissionMode: 'default',
+    workingDir: '/workspace',
+  },
+} as NonNullable<ComponentProps<typeof ChatInput>['pendingQueue']>[number];
+
+function QueueEditHarness({
+  onCancel,
+  onRemove,
+}: {
+  onCancel: () => void;
+  onRemove: () => void;
+}) {
+  const [editingClientId, setEditingClientId] = useState<string | null>(queuedMessage.clientId);
+
+  return (
+    <ChatInput
+      {...props}
+      onSend={() => undefined}
+      pendingQueue={[queuedMessage]}
+      queueExpanded={false}
+      onQueueExpandedChange={vi.fn()}
+      onQueueRemove={onRemove}
+      queueEditingClientId={editingClientId}
+      onQueueEditBegin={vi.fn()}
+      onQueueEditSubmit={async () => true}
+      onQueueEditCancel={() => {
+        onCancel();
+        setEditingClientId(null);
+      }}
+    />
+  );
+}
+
 it.each(['button', 'Enter', 'voice'] as const)(
   'blocks %s while metadata is absent, retains input, and sends Astra when metadata arrives', async (entry) => {
     const onSend = vi.fn().mockResolvedValue(true);
@@ -114,6 +181,32 @@ it('hides a missing existing model, recovers from the effective runtime, and pre
   expect(screen.getByTestId('model-selector').textContent).toBe('claude-fable-5-1');
   await act(async () => {});
   expect(onSend).not.toHaveBeenCalled();
+});
+
+it('hides queue removal while editing and exits editing from the composer cancel button', async () => {
+  const onCancel = vi.fn();
+  const onRemove = vi.fn();
+  render(<QueueEditHarness onCancel={onCancel} onRemove={onRemove} />);
+
+  const cancel = await screen.findByRole('button', {
+    name: 'newChat.pendingQueue.editCancelAria',
+  });
+  expect(screen.getByRole('listitem')).toBeTruthy();
+  expect(
+    screen.queryByRole('button', { name: 'newChat.pendingQueue.removeAria' }),
+  ).toBeNull();
+
+  fireEvent.click(cancel);
+
+  await waitFor(() => {
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole('button', { name: 'newChat.pendingQueue.editCancelAria' }),
+    ).toBeNull();
+  });
+  fireEvent.mouseEnter(screen.getByRole('listitem'));
+  expect(screen.getByRole('button', { name: 'newChat.pendingQueue.removeAria' })).toBeTruthy();
+  expect(onRemove).not.toHaveBeenCalled();
 });
 
 // The slot survives missing metadata; only the model control is withheld.
