@@ -12,12 +12,25 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type {
-  AgentInputProjection,
-  AgentInputQueuedMessage,
-} from '../../shared/agentInputQueue';
+import type { AgentInputProjection, AgentInputQueuedMessage } from '../../shared/agentInputQueue';
+import type { AttachedFile } from '@/lib/fileTypes';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
-import { __resetStickySessionOriginForTest, getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
+import {
+  __resetStickySessionOriginForTest,
+  getStickySessionDeviceId,
+} from '@/features/device-link/stickySessionOrigin';
+
+const annotationBurnInMocks = vi.hoisted(() => ({
+  materialize: vi.fn(
+    async (files: readonly AttachedFile[] | undefined): Promise<AttachedFile[] | undefined> =>
+      files ? [...files] : undefined,
+  ),
+}));
+
+vi.mock('@/lib/annotationBurnIn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/annotationBurnIn')>()),
+  materializeAnnotatedAttachmentsForSend: annotationBurnInMocks.materialize,
+}));
 
 vi.mock('@/lib/messageService', () => ({
   list: vi.fn(async () => ({ items: [], hasMore: false, oldestId: null })),
@@ -223,6 +236,9 @@ const flushPromises = async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  annotationBurnInMocks.materialize.mockImplementation(async (files) =>
+    files ? [...files] : undefined,
+  );
   remoteProjectsStore.clear();
   __resetStickySessionOriginForTest();
   makerChatStore.__teardownGlobalListeners();
@@ -437,6 +453,154 @@ describe('renderer input queue facade', () => {
         }),
       }),
     );
+  });
+
+  it('accepts queue attachment projections with transport-only field changes', async () => {
+    const sid = `transport-fields-${Math.random().toString(36).slice(2, 8)}`;
+    const item = queued('q-transport-fields', 'keep transport fields out of intent');
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+    input.updateContent.mockImplementationOnce(
+      async (sessionId: string, _clientId: string, replacement: AgentInputQueuedMessage) =>
+        projection(sessionId, {
+          pendingQueue: [
+            {
+              ...replacement,
+              files: (replacement.files ?? []).map((file) => ({
+                ...file,
+                path: 'C:\\remote-cache\\materialized.png',
+                url: 'xdt-image://remote/materialized.png',
+                size: 87,
+                sha256: 'a'.repeat(64),
+              })),
+            },
+          ],
+        }),
+    );
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [
+        {
+          id: 'transport-image',
+          name: 'transport.png',
+          path: 'C:\\images\\transport.png',
+          ext: 'png',
+          size: 123,
+          category: 'image',
+          mimeType: 'image/png',
+          url: 'xdt-image://session/transport.png',
+        },
+      ],
+    });
+
+    expect(saved).toBe(true);
+  });
+
+  it('recycles a newly annotated remote queue edit source only after acceptance', async () => {
+    const sid = `remote-annotation-${Math.random().toString(36).slice(2, 8)}`;
+    const deviceId = 'dev-remote-annotation';
+    const item = queued('q-remote-annotation', 'annotated remote edit');
+    const sourceUrl = 'xdt-image://session/annotation-source.png';
+    const burnedUrl = 'xdt-image://session/annotation-burned.png';
+    const source: AttachedFile = {
+      id: 'remote-annotation',
+      name: 'annotation-source.png',
+      path: 'C:\\images\\annotation-source.png',
+      ext: 'png',
+      size: 123,
+      category: 'image',
+      mimeType: 'image/png',
+      url: sourceUrl,
+      annotationStrokes: [{ points: [{ x: 0.1, y: 0.2 }] }],
+    };
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+    remoteProjectsStore.setDeviceSessions(deviceId, 'Remote Mac', [{ id: sid } as never]);
+    annotationBurnInMocks.materialize.mockResolvedValueOnce([
+      {
+        ...source,
+        url: burnedUrl,
+        annotated: true,
+        annotationStrokes: undefined,
+        annotationSourceUrl: undefined,
+      },
+    ]);
+    remoteInvoke.mockImplementation(async (_deviceId, channel, args) => {
+      expect(channel).toBe('maker:input:update-content');
+      const replacement = args[2] as AgentInputQueuedMessage;
+      return projection(sid, { pendingQueue: [replacement] });
+    });
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [source],
+    });
+
+    expect(saved).toBe(true);
+    expect(cleanupCachedImages).toHaveBeenCalledWith([sourceUrl]);
+  });
+
+  it('keeps an annotated remote queue edit source when the replacement is rejected', async () => {
+    const sid = `remote-annotation-rejected-${Math.random().toString(36).slice(2, 8)}`;
+    const deviceId = 'dev-remote-annotation-rejected';
+    const item = queued('q-remote-annotation-rejected', 'annotated remote edit');
+    const sourceUrl = 'xdt-image://session/rejected-annotation-source.png';
+    const burnedUrl = 'xdt-image://session/rejected-annotation-burned.png';
+    const source: AttachedFile = {
+      id: 'remote-annotation-rejected',
+      name: 'rejected-annotation-source.png',
+      path: 'C:\\images\\rejected-annotation-source.png',
+      ext: 'png',
+      size: 123,
+      category: 'image',
+      mimeType: 'image/png',
+      url: sourceUrl,
+      annotationStrokes: [{ points: [{ x: 0.1, y: 0.2 }] }],
+    };
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+    remoteProjectsStore.setDeviceSessions(deviceId, 'Remote Mac', [{ id: sid } as never]);
+    annotationBurnInMocks.materialize.mockResolvedValueOnce([
+      {
+        ...source,
+        url: burnedUrl,
+        annotated: true,
+        annotationStrokes: undefined,
+        annotationSourceUrl: undefined,
+      },
+    ]);
+    remoteInvoke.mockResolvedValue(projection(sid, { pendingQueue: [item] }));
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [source],
+    });
+
+    expect(saved).toBe(false);
+    expect(cleanupCachedImages).toHaveBeenCalledTimes(1);
+    expect(cleanupCachedImages).toHaveBeenCalledWith([burnedUrl]);
   });
 
   it('cleans original queue attachment artifacts only after an accepted replacement', async () => {

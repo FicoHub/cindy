@@ -13631,7 +13631,18 @@ function queuedContentProjectionMatches(
 ): boolean {
   if (!accepted || accepted.text !== replacement.text) return false;
   const stableFiles = (files: QueuedMessage['files']) =>
-    (files ?? []).map(({ path: _, url: __, pathOrigin: ___, ...file }) => file);
+    (files ?? []).map((file) => ({
+      id: file.id,
+      name: file.name,
+      ext: file.ext,
+      category: file.category,
+      mimeType: file.mimeType,
+      originalName: file.originalName ?? file.name,
+      base64: file.base64,
+      textContent: file.textContent,
+      truncated: file.truncated,
+      annotated: file.annotated,
+    }));
   return (
     JSON.stringify(stableFiles(accepted.files)) ===
       JSON.stringify(stableFiles(replacement.files)) &&
@@ -13681,6 +13692,43 @@ function cleanupAcceptedQueueEditReplacements(
   cleanupStagedChatAttachmentFiles(
     originalFiles.filter((file) => !acceptedPaths.has(file.path)),
   );
+}
+
+function cleanupAcceptedQueueEditMaterializationSources(
+  queuedFiles: readonly AttachedFile[],
+  editedFiles: readonly AttachedFile[],
+  preparedFiles: readonly AttachedFile[],
+  acceptedFiles: readonly AttachedFile[],
+): void {
+  const queuedUrls = new Set(queuedFiles.map((file) => file.url).filter(Boolean));
+  const retainedUrls = new Set(
+    [...preparedFiles, ...acceptedFiles].flatMap((file) =>
+      [file.url, file.annotationSourceUrl].filter((url): url is string => Boolean(url)),
+    ),
+  );
+  const preparedById = new Map(preparedFiles.map((file) => [file.id, file]));
+  const removedSourceUrls = [
+    ...new Set(
+      editedFiles.flatMap((file) => {
+        const prepared = preparedById.get(file.id);
+        if (
+          file.cacheUrlShared === true ||
+          !file.url?.startsWith('xdt-image://') ||
+          queuedUrls.has(file.url) ||
+          retainedUrls.has(file.url) ||
+          prepared?.annotated !== true ||
+          prepared.url === file.url
+        ) {
+          return [];
+        }
+        return [file.url];
+      }),
+    ),
+  ];
+  if (removedSourceUrls.length === 0) return;
+  void window.electronAPI.cleanupCachedImages(removedSourceUrls).catch((error: unknown) => {
+    log.warn('cleanup accepted queue edit annotation sources failed:', error);
+  });
 }
 
 function queueEditFilesMatch(
@@ -13828,6 +13876,12 @@ async function updateQueueItemContent(
   const updated = queuedContentProjectionMatches(accepted, replacement);
   if (updated && accepted) {
     cleanupAcceptedQueueEditReplacements(queued.files ?? [], accepted.files ?? []);
+    cleanupAcceptedQueueEditMaterializationSources(
+      queued.files ?? [],
+      files,
+      preparedFiles,
+      accepted.files ?? [],
+    );
   } else {
     cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
   }
