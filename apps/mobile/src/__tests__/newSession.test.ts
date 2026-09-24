@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import ts from 'typescript';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { i18n } from '@/i18n';
 import type { MobileModelOption } from '@/session/agentCapabilities';
@@ -1358,6 +1359,30 @@ describe('new session model', () => {
     expect(lists![0]).toMatch(/\bnestedScrollEnabled(?:\s|=\{true\})/);
     expect(lists![0]).toMatch(/\bshowsVerticalScrollIndicator(?:\s|=\{true\})/);
     expect(lists![0]).toContain('keyboardShouldPersistTaps="handled"');
+  });
+
+  it('hosts the workspace popup outside scrolling and selector touch bounds (#5013)', () => {
+    const source = ts.createSourceFile('new.tsx', readTextLf(
+      resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8',
+    ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const panels: ts.JsxElement[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxElement(node) && node.openingElement.attributes.properties.some(
+        (prop) => ts.isJsxAttribute(prop) && prop.name.getText(source) === 'testID'
+          && prop.initializer && ts.isStringLiteral(prop.initializer)
+          && prop.initializer.text === 'newSession.workspacePickerPanel',
+      )) panels.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(panels).toHaveLength(1);
+    const ancestors: ts.JsxElement[] = [];
+    for (let parent: ts.Node | undefined = panels[0].parent; parent; parent = parent.parent) {
+      if (ts.isJsxElement(parent)) ancestors.push(parent);
+    }
+    expect(ancestors.map(node => node.openingElement.tagName.getText(source)))
+      .not.toContain('ScrollView');
+    expect(ancestors[0].openingElement.getText(source)).toContain('ref={workspacePickerHostRef}');
   });
 
   it('builds recent workspace quick picks from mirrored remote sessions', () => {

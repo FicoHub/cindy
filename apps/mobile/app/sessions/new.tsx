@@ -544,6 +544,26 @@ export default function NewRemoteSessionScreen() {
   const [goalBusy, setGoalBusy] = useState(false);
   const [goalError, setGoalError] = useState<string | null>(null);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const workspacePickerHostRef = useRef<View>(null);
+  const workspacePickerAnchorRef = useRef<View>(null);
+  const [workspacePickerFrame, setWorkspacePickerFrame] = useState<{
+    left: number; bottom: number; width: number; maxHeight: number;
+  } | null>(null);
+  const measureWorkspacePicker = useCallback(() => {
+    if (nativeSelectionSheet || !workspacePickerOpen) return;
+    workspacePickerAnchorRef.current?.measureInWindow((x, y, width) => {
+      workspacePickerHostRef.current?.measureInWindow((hostX, hostY, _width, height) => {
+        setWorkspacePickerFrame({
+          left: x - hostX, bottom: hostY + height - y, width,
+          maxHeight: Math.max(0, y - hostY - spacing.xs),
+        });
+      });
+    });
+  }, [nativeSelectionSheet, workspacePickerOpen]);
+  useLayoutEffect(() => {
+    if (workspacePickerOpen) measureWorkspacePicker();
+    else setWorkspacePickerFrame(null);
+  }, [workspacePickerOpen, measureWorkspacePicker]);
   // 模型浮窗(ContextSheet 同款 Modal;新建页权限已提为独立选择器,浮窗只留模型)。
   const [modelSheetOpen, setModelSheetOpen] = useState(false);
   // 权限模式独立浮窗(composer 工具条权限药丸点开;列表复用 MobilePermissionPickerList)。
@@ -5479,7 +5499,7 @@ export default function NewRemoteSessionScreen() {
         )}
         style={styles.keyboard}
       >
-        <View style={styles.screen}>
+        <View ref={workspacePickerHostRef} collapsable={false} onLayout={measureWorkspacePicker} style={styles.screen}>
           {Platform.OS !== 'ios' || buildLabel || creating ? <View style={styles.topBar}>
             {Platform.OS !== 'ios' ? <ScreenBackButton
               hitSlop={12}
@@ -5494,6 +5514,7 @@ export default function NewRemoteSessionScreen() {
           </View> : null}
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.bottomCluster}
+            onScrollBeginDrag={() => setWorkspacePickerOpen(false)}
             keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={styles.selectorStack}>
               <View style={styles.deviceSelectorWrap}>
@@ -5600,7 +5621,7 @@ export default function NewRemoteSessionScreen() {
                 ) : null}
               </View>
               ) : null}
-              <View style={styles.workspaceSelectorWrap}>
+              <View ref={workspacePickerAnchorRef} collapsable={false} onLayout={measureWorkspacePicker} style={styles.workspaceSelectorWrap}>
                 <Pressable
                   accessibilityLabel={t('session.new.selectWorkspace')}
                   accessibilityRole="button"
@@ -5619,73 +5640,6 @@ export default function NewRemoteSessionScreen() {
                   <Text style={styles.selectorText} numberOfLines={1}>{workspaceLabel}</Text>
                   <ChevronsUpDown color={colors.borderStrong} size={iconSize.sm} strokeWidth={iconStroke.regular} />
                 </Pressable>
-                {!nativeSelectionSheet && workspacePickerOpen ? (
-                  <View style={styles.workspacePickerPanel} testID="newSession.workspacePickerPanel">
-                    <Pressable
-                      accessibilityLabel={t('session.new.dialogueNoProject')}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: draft.workspaceKind === 'dialogue' }}
-                      onPress={selectDialogueWorkspace}
-                      style={({ pressed }) => [styles.workspaceOptionRow, pressed && styles.pressed]}
-                      testID="newSession.workspaceDialogueOption"
-                    >
-                      <MessageCircle color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
-                      <Text style={styles.workspaceOptionText} numberOfLines={1}>{t('session.new.workspaceDialogue')}</Text>
-                      {draft.workspaceKind === 'dialogue' ? (
-                        <Check color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.medium} />
-                      ) : null}
-                    </Pressable>
-                    <View style={styles.workspacePickerDivider} />
-                    {recentWorkspaces.length > 0 ? (
-                      <ScrollView
-                        nestedScrollEnabled
-                        keyboardShouldPersistTaps="handled"
-                        showsVerticalScrollIndicator
-                        style={styles.workspaceProjectList}
-                      >
-                        {recentWorkspaces.map((workspace) => {
-                          const selected = draft.workspaceKind === 'project'
-                            && draft.workingDir.trim() === workspace.workingDir;
-                          return (
-                            <Pressable
-                              accessibilityLabel={t('session.new.selectProjectNamed', { title: workspace.title })}
-                              accessibilityRole="button"
-                              accessibilityState={{ selected }}
-                              disabled={creating}
-                              key={workspace.workingDir}
-                              onPress={() => selectRecentProject(workspace.workingDir)}
-                              style={({ pressed }) => [styles.workspaceProjectRow, pressed && styles.pressed]}
-                              testID="newSession.workspaceProjectOption"
-                            >
-                              <Folder color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
-                              <View style={styles.workspaceProjectText}>
-                                <Text style={styles.workspaceProjectTitle} numberOfLines={1}>{workspace.title}</Text>
-                                <Text style={styles.workspaceProjectPath} numberOfLines={1}>{workspace.workingDir}</Text>
-                              </View>
-                              {selected ? (
-                                <Check color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.medium} />
-                              ) : null}
-                            </Pressable>
-                          );
-                        })}
-                      </ScrollView>
-                    ) : (
-                      <Text style={styles.workspaceEmptyText}>{t('session.new.noProjects')}</Text>
-                    )}
-                    <View style={styles.workspaceDivider} />
-                    <Pressable
-                      accessibilityLabel={t('session.new.chooseOtherFolder')}
-                      accessibilityRole="button"
-                      disabled={creating}
-                      onPress={openProjectBrowse}
-                      style={({ pressed }) => [styles.workspaceOptionRow, pressed && styles.pressed]}
-                      testID="newSession.workspaceBrowseOption"
-                    >
-                      <FolderPlus color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
-                      <Text style={styles.workspaceOptionText} numberOfLines={1}>{t('session.new.chooseOtherFolder')}</Text>
-                    </Pressable>
-                  </View>
-                ) : null}
               </View>
               {worktreeRowVisible ? (
                 <View style={styles.worktreeToggleWrap}>
@@ -6055,6 +6009,74 @@ export default function NewRemoteSessionScreen() {
               </View>
             </View>
           </ScrollView>
+          {/* Keep the floating panel inside its native touch bounds on Android. */}
+          {!nativeSelectionSheet && workspacePickerOpen && workspacePickerFrame ? (
+            <View style={[styles.workspacePickerPanel, workspacePickerFrame]} testID="newSession.workspacePickerPanel">
+              <Pressable
+                accessibilityLabel={t('session.new.dialogueNoProject')}
+                accessibilityRole="button"
+                accessibilityState={{ selected: draft.workspaceKind === 'dialogue' }}
+                onPress={selectDialogueWorkspace}
+                style={({ pressed }) => [styles.workspaceOptionRow, pressed && styles.pressed]}
+                testID="newSession.workspaceDialogueOption"
+              >
+                <MessageCircle color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
+                <Text style={styles.workspaceOptionText} numberOfLines={1}>{t('session.new.workspaceDialogue')}</Text>
+                {draft.workspaceKind === 'dialogue' ? (
+                  <Check color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.medium} />
+                ) : null}
+              </Pressable>
+              <View style={styles.workspacePickerDivider} />
+              {recentWorkspaces.length > 0 ? (
+                <ScrollView
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator
+                  style={styles.workspaceProjectList}
+                >
+                  {recentWorkspaces.map((workspace) => {
+                    const selected = draft.workspaceKind === 'project'
+                      && draft.workingDir.trim() === workspace.workingDir;
+                    return (
+                      <Pressable
+                        accessibilityLabel={t('session.new.selectProjectNamed', { title: workspace.title })}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        disabled={creating}
+                        key={workspace.workingDir}
+                        onPress={() => selectRecentProject(workspace.workingDir)}
+                        style={({ pressed }) => [styles.workspaceProjectRow, pressed && styles.pressed]}
+                        testID="newSession.workspaceProjectOption"
+                      >
+                        <Folder color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
+                        <View style={styles.workspaceProjectText}>
+                          <Text style={styles.workspaceProjectTitle} numberOfLines={1}>{workspace.title}</Text>
+                          <Text style={styles.workspaceProjectPath} numberOfLines={1}>{workspace.workingDir}</Text>
+                        </View>
+                        {selected ? (
+                          <Check color={colors.textPrimary} size={iconSize.lg} strokeWidth={iconStroke.medium} />
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              ) : (
+                <Text style={styles.workspaceEmptyText}>{t('session.new.noProjects')}</Text>
+              )}
+              <View style={styles.workspaceDivider} />
+              <Pressable
+                accessibilityLabel={t('session.new.chooseOtherFolder')}
+                accessibilityRole="button"
+                disabled={creating}
+                onPress={openProjectBrowse}
+                style={({ pressed }) => [styles.workspaceOptionRow, pressed && styles.pressed]}
+                testID="newSession.workspaceBrowseOption"
+              >
+                <FolderPlus color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
+                <Text style={styles.workspaceOptionText} numberOfLines={1}>{t('session.new.chooseOtherFolder')}</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
       </ComposerKeyboardAvoidingView>
       <ContextSheet
@@ -6567,17 +6589,14 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     zIndex: 20,
   },
   workspacePickerPanel: {
-    // 悬浮下拉:从工作区选择器上方浮出,脱离布局流(同设备选择器)。
+    // Anchored above the selector in the screen's native touch hierarchy.
     backgroundColor: colors.surfaceElevated,
     borderColor: colors.border,
     borderRadius: radius.container,
     borderWidth: StyleSheet.hairlineWidth,
-    bottom: '100%',
-    left: 0,
     marginBottom: spacing.xs,
     padding: spacing.xs,
     position: 'absolute',
-    right: 0,
     zIndex: 20,
   },
   workspacePickerDivider: {
@@ -6587,6 +6606,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     marginVertical: spacing.xs,
   },
   workspaceProjectList: {
+    flexShrink: 1,
     maxHeight: 220,
   },
   workspaceOptionRow: {
