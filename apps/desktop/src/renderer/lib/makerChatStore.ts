@@ -79,7 +79,13 @@ import { normalizeAutoTitle } from '@cindy/maker-shared/session-title';
 import { parseToolLoopErrorDetails } from '@cindy/maker-shared/tool-loop-error';
 import type { ToolLoopErrorDetails } from '@cindy/maker-core';
 import type { AgentMeta, MessageRole, Message, MessageAutomationOrigin } from '@/lib/ccAgent.types';
-import type { AttachedFile, MentionedResource, SerializedAttachedFile } from '@/lib/fileTypes';
+import {
+  extractExt,
+  getMimeType,
+  type AttachedFile,
+  type MentionedResource,
+  type SerializedAttachedFile,
+} from '@/lib/fileTypes';
 import type {
   AgentInputCreateOpts,
   AgentInputProjection,
@@ -13776,13 +13782,48 @@ function queueEditFilesMatch(
   return JSON.stringify(stable(left)) === JSON.stringify(stable(right));
 }
 
+function queueEditFilesRemainUnchanged(
+  queued: QueuedMessage,
+  editedFiles: readonly AttachedFile[],
+): boolean {
+  if (queueEditFilesMatch(queued.files, editedFiles)) return true;
+  const retryFilesById = new Map(
+    (queued.chatMessage.retryFiles ?? []).map((file) => [file.id, file]),
+  );
+  const editableQueuedFiles = (queued.files ?? []).map((file) => {
+    const retryFile = retryFilesById.get(file.id);
+    const annotationSourceUrl =
+      file.annotated === true &&
+      retryFile?.annotated === true &&
+      retryFile.path === file.path &&
+      retryFile.url === file.url &&
+      retryFile.annotationSourceUrl &&
+      retryFile.annotationStrokes?.length
+        ? retryFile.annotationSourceUrl
+        : null;
+    if (!annotationSourceUrl || !retryFile?.annotationStrokes) return file;
+    const sourceExt = extractExt(annotationSourceUrl) || file.ext;
+    const editableFile = { ...file };
+    delete editableFile.annotated;
+    return {
+      ...editableFile,
+      path: annotationSourceUrl,
+      url: annotationSourceUrl,
+      ext: sourceExt,
+      mimeType: getMimeType(sourceExt, 'image'),
+      annotationStrokes: retryFile.annotationStrokes,
+    };
+  });
+  return queueEditFilesMatch(editableQueuedFiles, editedFiles);
+}
+
 function canFallbackQueueEditToText(
   queued: QueuedMessage,
   replacement: QueuedMessage,
   content: QueueItemContentUpdate['content'],
   files: readonly AttachedFile[],
 ): boolean {
-  if (!content.text.trim() || !queueEditFilesMatch(queued.files, files)) return false;
+  if (!content.text.trim() || !queueEditFilesRemainUnchanged(queued, files)) return false;
   if (JSON.stringify(queued.mentions ?? []) !== JSON.stringify(content.mentions ?? [])) return false;
   if ((queued.chatMessage.quotesEncoded === true) !== content.hasQuotes) return false;
   if ((queued.chatMessage.agentReferences?.length ?? 0) > 0) return false;
@@ -13863,6 +13904,7 @@ async function updateQueueItemContent(
   else delete replacement.sessionRefs;
   const boundaryOpts = getRemoteInputClearBoundaryOpts(sessionId);
   let projection: AgentInputProjection;
+  let usedTextFallback = false;
   try {
     ({ projection } = await runInputProjectionOperation(sessionId, (input) =>
       boundaryOpts
@@ -13872,7 +13914,7 @@ async function updateQueueItemContent(
   } catch (error) {
     if (
       extractIpcError(error)?.code === 'DEVICE_LINK_CHANNEL_NOT_ALLOWED' &&
-      canFallbackQueueEditToText(queued, replacement, content, preparedFiles)
+      canFallbackQueueEditToText(queued, replacement, content, files)
     ) {
       try {
         ({ projection } = await runInputProjectionOperation(sessionId, (input) =>
@@ -13887,6 +13929,7 @@ async function updateQueueItemContent(
               )
             : input.updateText(sessionId, clientId, content.text, replacement.sessionRefs),
         ));
+        usedTextFallback = true;
       } catch (fallbackError) {
         cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
         throw fallbackError;
@@ -13897,21 +13940,28 @@ async function updateQueueItemContent(
     }
   }
   const accepted = projection.pendingQueue.find((item) => item.clientId === clientId);
-  const updated = queuedContentProjectionMatches(accepted, replacement);
+  const acceptedReplacement = usedTextFallback
+    ? { ...replacement, files: queued.files }
+    : replacement;
+  const updated = queuedContentProjectionMatches(accepted, acceptedReplacement);
   if (updated && accepted) {
-    cleanupAcceptedQueueEditReplacements(
-      queued.files ?? [],
-      queued.chatMessage.retryFiles ?? [],
-      preparedFiles,
-      accepted.files ?? [],
-    );
-    cleanupAcceptedQueueEditMaterializationSources(
-      queued.files ?? [],
-      files,
-      preparedFiles,
-      accepted.files ?? [],
-      remoteMediaSession,
-    );
+    if (usedTextFallback) {
+      cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
+    } else {
+      cleanupAcceptedQueueEditReplacements(
+        queued.files ?? [],
+        queued.chatMessage.retryFiles ?? [],
+        preparedFiles,
+        accepted.files ?? [],
+      );
+      cleanupAcceptedQueueEditMaterializationSources(
+        queued.files ?? [],
+        files,
+        preparedFiles,
+        accepted.files ?? [],
+        remoteMediaSession,
+      );
+    }
   } else {
     cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
   }

@@ -799,6 +799,121 @@ describe('renderer input queue facade', () => {
     expect(input.updateText).toHaveBeenCalledWith(sid, item.clientId, 'edited text', undefined);
   });
 
+  it('falls back for an unchanged annotation on an old target but rejects changed strokes', async () => {
+    const sid = `legacy-annotation-${Math.random().toString(36).slice(2, 8)}`;
+    const deviceId = 'dev-legacy-annotation';
+    const sourceUrl = 'xdt-image://session/legacy-source.jpg';
+    const burnedUrl = 'xdt-image://session/legacy-burned.png';
+    const rematerializedUrl = 'xdt-image://session/legacy-rematerialized.png';
+    const strokes = [{ points: [{ x: 0.2, y: 0.8 }] }];
+    const item = queued('q-legacy-annotation', 'old text');
+    item.files = [{
+      id: 'legacy-annotation',
+      name: 'legacy-burned.png',
+      originalName: 'legacy-burned.png',
+      path: 'C:\\images\\legacy-burned.png',
+      ext: '.png',
+      size: 123,
+      category: 'image',
+      mimeType: 'image/png',
+      url: burnedUrl,
+      annotated: true,
+    }];
+    item.chatMessage.retryFiles = [{
+      ...item.files[0],
+      annotationSourceUrl: sourceUrl,
+      annotationStrokes: strokes,
+    }];
+    const editableFile: AttachedFile = {
+      ...item.files[0],
+      path: sourceUrl,
+      url: sourceUrl,
+      ext: '.jpg',
+      mimeType: 'image/jpeg',
+      annotated: undefined,
+      annotationStrokes: strokes.map((stroke) => ({
+        points: stroke.points.map((point) => ({ ...point })),
+      })),
+      cacheUrlShared: true,
+      stagedPathShared: true,
+    };
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+    remoteProjectsStore.setDeviceSessions(deviceId, 'Remote Mac', [{ id: sid } as never]);
+    annotationBurnInMocks.materialize.mockResolvedValueOnce([{
+      ...editableFile,
+      name: 'legacy-rematerialized.png',
+      originalName: 'legacy-rematerialized.png',
+      url: rematerializedUrl,
+      ext: '.png',
+      mimeType: 'image/png',
+      annotated: true,
+      annotationStrokes: undefined,
+    }]);
+    remoteInvoke.mockImplementation(async (_deviceId, channel) => {
+      if (channel === 'maker:input:update-content') {
+        throw new Error('[DEVICE_LINK_CHANNEL_NOT_ALLOWED] update-content unavailable');
+      }
+      expect(channel).toBe('maker:input:update-text');
+      return projection(sid, {
+        pendingQueue: [{
+          ...item,
+          text: 'edited text',
+          persistedContent: item.persistedContent,
+          chatMessage: { ...item.chatMessage, content: 'edited text' },
+        }],
+      });
+    });
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: 'edited text',
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [editableFile],
+    });
+
+    expect(saved).toBe(true);
+    expect(remoteInvoke).toHaveBeenCalledWith(
+      deviceId,
+      'maker:input:update-content',
+      expect.any(Array),
+    );
+    expect(remoteInvoke).toHaveBeenCalledWith(
+      deviceId,
+      'maker:input:update-text',
+      expect.any(Array),
+    );
+    expect(cleanupCachedImages).toHaveBeenCalledWith([rematerializedUrl]);
+
+    const updateTextCalls = remoteInvoke.mock.calls.filter(
+      ([, channel]) => channel === 'maker:input:update-text',
+    ).length;
+    await expect(
+      makerChatStore.updateQueueItemContent(sid, item.clientId, {
+        content: {
+          text: 'edited again',
+          mentions: [],
+          hasQuotes: false,
+          agentReferences: [],
+          pastedTextRanges: [],
+          slashCommandRanges: [],
+        },
+        files: [{
+          ...editableFile,
+          annotationStrokes: [{ points: [{ x: 0.4, y: 0.6 }] }],
+        }],
+      }),
+    ).rejects.toThrow('update-content unavailable');
+    expect(
+      remoteInvoke.mock.calls.filter(([, channel]) => channel === 'maker:input:update-text'),
+    ).toHaveLength(updateTextCalls);
+  });
+
   it('does not fall back to update-text when queue edit attachments change', async () => {
     const sid = `legacy-attachment-${Math.random().toString(36).slice(2, 8)}`;
     const item = queued('q-legacy-attachment', 'keep text');
