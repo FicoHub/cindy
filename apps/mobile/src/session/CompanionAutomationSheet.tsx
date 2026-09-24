@@ -16,7 +16,7 @@ import { fontWeight, radius, spacing, typeScale, lineHeight } from '@/theme/toke
 import { CompanionSheet } from './CompanionSheet';
 import { CompanionAutomationNativeView } from './CompanionAutomationNativeView';
 import { useRoutineCronFields } from './useRoutineCronFields';
-import { emptyRoutineDefinition, getRoutineActionId, parseRoutineDetail, parseRoutineSummaries, routineDraftValid, type RoutineDefinition, type RoutineDetail, type RoutineSummary, type RoutineTrigger } from './companionRoutines';
+import { emptyRoutineDefinition, getRoutineActionId, parseRoutineDefinition, parseRoutineDetail, parseRoutineSummaries, routineDraftValid, type RoutineDefinition, type RoutineDetail, type RoutineSummary, type RoutineTrigger } from './companionRoutines';
 
 function automationFailure(error: unknown, tr: (key: string) => string): string {
   const code = typeof (error as { code?: unknown } | null)?.code === 'string'
@@ -52,6 +52,7 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
   const [initialDraft, setInitialDraft] = useState('');
   const initialDraftRef = useRef(initialDraft); initialDraftRef.current = initialDraft;
   const detailRef = useRef(detail); detailRef.current = detail;
+  const draftRef = useRef(draft); draftRef.current = draft;
   const [draftGeneration, setDraftGeneration] = useState(0);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -63,10 +64,13 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
   const dirty = draft !== null && JSON.stringify(draft) !== initialDraft;
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const identity = `${accountGeneration}:${deviceId}:${collectionId}:${botId}`;
-  const current = useRef({ identity, visible, selected }); current.current = { identity, visible, selected };
+  const current = useRef({ identity, visible, selected, online }); current.current = { identity, visible, selected, online };
   const valid = (scope: string, page: string | null) => current.current.visible && current.current.identity === scope && current.current.selected === page;
   const load = useCallback(async (actionError?: string) => {
-    if (!visible || !online || !botId) return;
+    if (!visible || !botId || !valid(identity, selected)) return;
+    // An action may settle after connectivity changed; preserve its reason even offline.
+    if (actionError) setError(actionError);
+    if (!current.current.online) { setLoading(false); return; }
     const generation = ++seq.current;
     const scope = identity;
     setLoading(true); setError(actionError ?? null);
@@ -78,14 +82,20 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
       if (!block) throw new Error(t('devices.companions.automation.unsupported'));
       if (selected) {
         const next = parseRoutineDetail(block.data);
-        // Never renew a dirty draft's write authority against a newer version.
-        if (dirtyRef.current && detailRef.current && next.revision !== detailRef.current.revision) {
-          setResource(null);
-          setError(t('devices.companions.automation.changed'));
-          return;
+        const versionChanged = dirtyRef.current && detailRef.current && next.revision !== detailRef.current.revision;
+        if (versionChanged) {
+          // A lost save acknowledgement is settled only by identical authoritative content.
+          // Different remote edits must never grant stale drafts overwrite authority.
+          if (!next.input || JSON.stringify(next.input) !== JSON.stringify(parseRoutineDefinition(draftRef.current))) {
+            setResource(null);
+            const changed = t('devices.companions.automation.changed');
+            setError(actionError ? `${actionError}\n${changed}` : changed);
+            return;
+          }
+          setInitialDraft(JSON.stringify(draftRef.current)); dirtyRef.current = false;
         }
         setDetail(next);
-        if (!dirtyRef.current) {
+        if (!dirtyRef.current && !versionChanged) {
           const value = next.input ?? (selected === 'new' ? emptyRoutineDefinition() : null);
           const serialized = JSON.stringify(value);
           if (serialized !== initialDraftRef.current) {
@@ -248,10 +258,10 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
           {draft.triggers.length < 32 ? button(tr('addTrigger'), () => setDraft({ ...draft, triggers: [...draft.triggers, { id: randomUUID(), kind: 'interval', intervalMs: 3_600_000 }] })) : null}
         </> : <Text style={styles.empty}>{tr('largeDefinition')}</Text>}
         {selected !== 'new' ? <View style={styles.group}>
-          {getRoutineActionId(resource, 'routine-run') ? button(tr(dirty ? 'saveAndRun' : 'run'), () => void act('routine-run'), false, !online || detail.history.some((r) => r.status === 'running' || r.status === 'queued')) : null}
+          {getRoutineActionId(resource, 'routine-run') ? button(tr(dirty ? 'saveAndRun' : 'run'), () => void act('routine-run'), false, loading || !online || detail.history.some((r) => r.status === 'running' || r.status === 'queued')) : null}
           <Text style={styles.heading}>{tr('history')}</Text>
           {detail.history.length ? detail.history.map((run) => <View key={run.id} style={styles.field}><Text style={styles.label}>{tr(run.status)}</Text><Text style={styles.secondary}>{new Date(run.createdAt).toLocaleString(i18n.language)}</Text>{run.resultText ? <Text selectable style={styles.label}>{run.resultText}</Text> : null}{run.error ? <Text selectable style={styles.error}>{run.error}</Text> : null}</View>) : <Text style={styles.empty}>{tr('noRuns')}</Text>}
-          {getRoutineActionId(resource, 'routine-delete') ? button(tr('delete'), confirmDelete, true, dirty || !online) : null}
+          {getRoutineActionId(resource, 'routine-delete') ? button(tr('delete'), confirmDelete, true, loading || dirty || !online) : null}
         </View> : null}
       </> : null}
   </CompanionSheet>;

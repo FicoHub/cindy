@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   read: vi.fn(), invoke: vi.fn(), openLink: vi.fn(), subscribe: vi.fn(), unsubscribe: vi.fn(), changed: vi.fn(), close: vi.fn(),
   alert: vi.fn(), account: 1, foreground: null as null | ((state: string) => void), nativeWrites: vi.fn(),
   definition: null as any, revision: 0, existing: false, now: 0, uuid: 0, perform: vi.fn(), sheet: null as any, platform: 'ios',
+  history: [] as { id: string; status: string; createdAt: number }[],
 }));
 vi.mock('react-i18next', () => { const t = (key: string) => key.split('.').at(-1)!; return { useTranslation: () => ({ t, i18n: { language: 'en' } }) }; });
 vi.mock('react-native', () => ({
@@ -83,10 +84,10 @@ function resource(id: string) {
   }));
   return { ref: { collectionId: 'routines', kind: 'routine', id }, display: { title: 'Automations' }, links: [], revision: String(revision),
     actions: Object.values(operationActions).map(id => ({ id, label: 'Action' })), blocks: [{ primitive: selected ? 'routine-detail' : 'routine-list', data: selected
-      ? { id: existing ? 'rule' : null, revision, editable: true, input: h.definition, sources: [{ id: 'mail', name: 'Mail', status: 'ready', events: [{ type: 'received', name: 'Received', fields: ['sender', 'subject'] }] }], history: [], operationActions }
+      ? { id: existing ? 'rule' : null, revision, editable: true, input: h.definition, sources: [{ id: 'mail', name: 'Mail', status: 'ready', events: [{ type: 'received', name: 'Received', fields: ['sender', 'subject'] }] }], history: h.history, operationActions }
       : { items: h.existing ? [{ id: 'rule', name: 'Existing', enabled: true, revision: h.revision, triggers: [] }] : [], operationActions } }] };
 }
-async function render() { await act(async () => root.render(<CompanionAutomationSheet visible online onClose={h.close} botId="bot" collectionId="routines" deviceId="host" deviceName="Mac" />)); }
+async function render(online = true) { await act(async () => root.render(<CompanionAutomationSheet visible online={online} onClose={h.close} botId="bot" collectionId="routines" deviceId="host" deviceName="Mac" />)); }
 function input(label: string) { const node = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`); if (!node) throw new Error(`Missing ${label}`); return node; }
 async function type(label: string, value: string) { await act(async () => { const field = input(label); field.focus(); field.value = value; field.dispatchEvent(new Event('input', { bubbles: true })); }); }
 async function click(label: string) { await act(async () => { const button = [...container.querySelectorAll('button')].find(node => node.textContent === label); if (!button) throw new Error(`Missing ${label}`); button.click(); }); }
@@ -94,6 +95,7 @@ async function select(label: string, value: string) { await act(async () => { co
 async function open() { await render(); await click('new'); }
 beforeEach(() => {
   vi.resetAllMocks(); h.account = 1; h.revision = 0; h.existing = false; h.now = 0; h.uuid = 0; h.platform = 'ios'; h.definition = emptyRoutineDefinition();
+  h.history = [];
   grants.clear(); grantId = 0;
   h.changed.mockReturnValue(() => {}); h.openLink.mockResolvedValue(undefined);
   h.read.mockImplementation((_invoke, _target, ref) => Promise.resolve(resource(ref.id)));
@@ -259,11 +261,88 @@ it('preserves a dirty draft and blocks stale saves when the host version changed
     throw new Error('Response lost');
   });
   await click('save');
+  expect(container.textContent).toContain('Response lost');
   expect(container.textContent).toContain('changed');
   expect(input('name').value).toBe('Existing'); expect(input('hour').value).toBe('12');
   expect(container.querySelector<HTMLButtonElement>('[data-testid="companion.automation.save"]')!.disabled).toBe(true);
   await click('retry'); await click('save');
   expect(h.invoke).toHaveBeenCalledOnce();
+});
+
+it.each(['ios', 'android'])('reconciles an acknowledged-by-read save without overwriting or locking the draft on %s', async platform => {
+  h.platform = platform;
+  await openExisting(); await type('hour', '12');
+  const hour = input('hour');
+  h.perform.mockImplementationOnce(async request => {
+    h.definition = request.input.definition; h.revision++;
+    throw new Error('Response lost');
+  });
+  await click('save');
+  expect(h.invoke).toHaveBeenCalledOnce();
+  expect(container.textContent).toContain('Response lost');
+  expect(container.textContent).not.toContain('changed');
+  expect(input('hour')).toBe(hour); expect(hour.value).toBe('12');
+  await type('hour', '13'); await click('save');
+  expect(h.perform).toHaveBeenCalledTimes(2);
+  expect(h.perform.mock.calls[1][0].input).toMatchObject({ revision: 2, definition: { triggers: [{ expression: '0 13 * * *' }] } });
+});
+
+it.each(['ios', 'android'])('shows the action error when the connection goes offline before it settles on %s', async platform => {
+  h.platform = platform;
+  await openExisting(); await type('hour', '12');
+  let reject!: (error: Error) => void;
+  h.perform.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  await click('save');
+  const reads = h.read.mock.calls.length;
+  await render(false);
+  await act(async () => reject(new Error('Host rejected the automation')));
+  expect(container.textContent).toContain('Host rejected the automation');
+  expect(container.textContent).toContain('offline');
+  expect(input('hour').value).toBe('12');
+  expect(h.read).toHaveBeenCalledTimes(reads);
+  await click('save'); expect(h.invoke).toHaveBeenCalledOnce();
+  await render(true); await click('save');
+  expect(h.perform).toHaveBeenCalledTimes(2);
+});
+
+it.each(['ios', 'android'])('disables run and delete during an ordinary refresh on %s', async platform => {
+  h.platform = platform;
+  await openExisting();
+  let finish!: (value: ReturnType<typeof resource>) => void;
+  h.read.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await act(async () => h.foreground?.('active'));
+  for (const label of ['run', 'delete']) {
+    expect([...container.querySelectorAll('button')].find(node => node.textContent === label)?.disabled).toBe(true);
+    await click(label);
+  }
+  expect(h.invoke).not.toHaveBeenCalled(); expect(h.alert).not.toHaveBeenCalled();
+  await act(async () => finish(resource('bot:bot/rule')));
+  for (const label of ['run', 'delete']) {
+    expect([...container.querySelectorAll('button')].find(node => node.textContent === label)?.disabled).toBe(false);
+  }
+  await click('run'); expect(h.perform).toHaveBeenCalledOnce();
+});
+
+it.each(['ios', 'android'])('does not repeat a lost-acknowledgement run and blocks running or queued history on %s', async platform => {
+  h.platform = platform;
+  await openExisting();
+  h.perform.mockImplementationOnce(async () => {
+    h.history = [{ id: 'run-1', status: 'queued', createdAt: 1 }];
+    throw new Error('Response lost');
+  });
+  await click('run');
+  expect(h.invoke).toHaveBeenCalledOnce();
+  for (const status of ['queued', 'running']) {
+    h.history = [{ id: 'run-1', status, createdAt: 1 }];
+    await act(async () => h.foreground?.('active'));
+    expect([...container.querySelectorAll('button')].find(node => node.textContent === 'run')?.disabled).toBe(true);
+    await click('run'); expect(h.invoke).toHaveBeenCalledOnce();
+  }
+  h.history = [{ id: 'run-1', status: 'success', createdAt: 1 }];
+  await act(async () => h.foreground?.('active'));
+  expect(h.invoke).toHaveBeenCalledOnce();
+  expect(container.textContent).toContain('success');
+  await click('run'); expect(h.perform).toHaveBeenCalledTimes(2);
 });
 
 it('waits for reconciliation and discards a late read after switching accounts', async () => {
