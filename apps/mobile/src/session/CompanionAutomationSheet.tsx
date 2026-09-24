@@ -60,12 +60,18 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
   const requestId = useRef(randomUUID());
   const seq = useRef(0);
   const inFlight = useRef(false);
+  const pendingDelete = useRef(false);
   const operationGeneration = useRef(0);
   const dirty = draft !== null && JSON.stringify(draft) !== initialDraft;
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const identity = `${accountGeneration}:${deviceId}:${collectionId}:${botId}`;
   const current = useRef({ identity, visible, selected, online }); current.current = { identity, visible, selected, online };
   const valid = (scope: string, page: string | null) => current.current.visible && current.current.identity === scope && current.current.selected === page;
+  const open = useCallback((id: string | null) => {
+    pendingDelete.current = false;
+    setDraft(null); setInitialDraft(''); dirtyRef.current = false; setDetail(null); setResource(null); setError(null); setSelected(id);
+    if (id === 'new') requestId.current = randomUUID();
+  }, []);
   const load = useCallback(async (actionError?: string) => {
     if (!visible || !botId || !valid(identity, selected)) return;
     // An action may settle after connectivity changed; preserve its reason even offline.
@@ -103,19 +109,29 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
           }
         }
       } else setItems(parseRoutineSummaries(block.data));
+      pendingDelete.current = false;
       setResource(result);
     } catch (e) {
       if (valid(scope, selected) && generation === seq.current) {
+        // A lost delete response may leave no detail to refresh. Only a confirmed
+        // missing resource settles that intent; transient failures remain retryable.
+        const missing = (e as { code?: unknown } | null)?.code === 'NOT_FOUND'
+          || e instanceof Error && e.message.startsWith('[NOT_FOUND]');
+        if (pendingDelete.current && !dirtyRef.current && missing) {
+          open(null);
+          return;
+        }
         const unsupported = t('devices.companions.automation.unsupported');
         const readError = e instanceof Error && e.message === unsupported ? unsupported : t('devices.resources.loadFailed');
         setError(actionError ? `${actionError}\n${readError}` : readError);
       }
     }
     finally { if (valid(scope, selected) && generation === seq.current) setLoading(false); }
-  }, [visible, online, botId, identity, invoke, openLink, deviceId, deviceName, collectionId, selected, i18n.language, t]);
+  }, [visible, online, botId, identity, invoke, openLink, deviceId, deviceName, collectionId, selected, i18n.language, t, open]);
   useEffect(() => {
     setSelected(null); setResource(null); setItems([]); setDetail(null); setDraft(null); setInitialDraft(''); setError(null);
     requestId.current = randomUUID();
+    pendingDelete.current = false;
     operationGeneration.current++; inFlight.current = false; setBusy(false);
     return () => { seq.current++; };
   }, [visible, identity]);
@@ -136,10 +152,6 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
       { text: tr('continueEditing'), style: 'cancel' },
       { text: tr('discard'), style: 'destructive', onPress: () => { if (valid(identity, selected)) action(); } },
     ]);
-  };
-  const open = (id: string | null) => {
-    setDraft(null); setInitialDraft(''); dirtyRef.current = false; setDetail(null); setResource(null); setError(null); setSelected(id);
-    if (id === 'new') requestId.current = randomUUID();
   };
   const act = async (actionId: string) => {
     const capabilityId = getRoutineActionId(resource, actionId);
@@ -182,6 +194,7 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
         // The host consumes opaque actions even when validation or the response fails.
         // Reconcile by reading, never replay a write or renew a creation request ID.
         setResource(null);
+        pendingDelete.current = actionId === 'routine-delete';
         await load(automationFailure(e, tr));
       }
     }

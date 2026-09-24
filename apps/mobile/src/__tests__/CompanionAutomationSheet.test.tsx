@@ -376,6 +376,91 @@ it.each(['run', 'delete'])('renews a consumed %s action for an explicit retry', 
   expect(h.invoke.mock.calls[1][2].actionId).not.toBe(h.invoke.mock.calls[0][2].actionId);
 });
 
+async function confirmDelete() {
+  await click('delete');
+  await act(async () => h.alert.mock.calls.at(-1)![2].find((item: any) => item.style === 'destructive').onPress());
+}
+
+it.each(['ios', 'android'])('returns to a fresh list when delete succeeded but its acknowledgement was lost on %s', async platform => {
+  h.platform = platform;
+  await openExisting();
+  h.perform.mockImplementationOnce(async () => {
+    h.existing = false;
+    throw new Error('Response lost');
+  });
+  h.read.mockImplementation((_invoke, _target, ref) => {
+    if (ref.id === 'bot:bot/rule' && !h.existing) {
+      // Device-link IPC transports a bracketed message; also accept structured errors.
+      throw platform === 'ios' ? new Error('[NOT_FOUND] Automation unavailable')
+        : Object.assign(new Error('Automation unavailable'), { code: 'NOT_FOUND' });
+    }
+    return Promise.resolve(resource(ref.id));
+  });
+  await confirmDelete();
+  expect(h.perform).toHaveBeenCalledOnce();
+  expect(h.perform.mock.calls[0][0].actionId).toBe('routine-delete');
+  expect(h.read.mock.calls.at(-1)![2].id).toBe('bot:bot');
+  expect(container.querySelector('input[aria-label="name"]')).toBeNull();
+  expect(container.textContent).toContain('empty');
+  expect(container.textContent).not.toContain('loadFailed');
+  expect(container.textContent).not.toContain('Existing');
+});
+
+it('retains delete reconciliation across a transient read failure and a manual retry', async () => {
+  await openExisting();
+  h.perform.mockRejectedValueOnce(new Error('Response lost'));
+  h.read.mockRejectedValueOnce(new Error('Read unavailable'));
+  await confirmDelete();
+  expect(container.textContent).toContain('Response lost');
+  expect(container.textContent).toContain('loadFailed');
+  expect(input('name').value).toBe('Existing');
+  h.existing = false;
+  h.read.mockRejectedValueOnce(Object.assign(new Error('Automation unavailable'), { code: 'NOT_FOUND' }));
+  await click('retry');
+  expect(h.invoke).toHaveBeenCalledOnce();
+  expect(container.querySelector('input[aria-label="name"]')).toBeNull();
+  expect(container.textContent).toContain('empty');
+});
+
+it('does not discard edits when a missing detail is unrelated to a pending delete', async () => {
+  await openExisting(); await type('hour', '12');
+  h.perform.mockRejectedValueOnce(new Error('Save rejected'));
+  h.read.mockRejectedValueOnce(Object.assign(new Error('Automation unavailable'), { code: 'NOT_FOUND' }));
+  await click('save');
+  expect(input('hour').value).toBe('12');
+  expect(container.textContent).toContain('Save rejected');
+  expect(container.textContent).toContain('loadFailed');
+});
+
+it('reconciles a lost delete response after reconnecting without sending delete again', async () => {
+  await openExisting();
+  let reject!: (error: Error) => void;
+  h.perform.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  await confirmDelete(); await render(false);
+  await act(async () => reject(new Error('Response lost')));
+  expect(input('name').value).toBe('Existing');
+  expect(container.textContent).toContain('Response lost');
+  h.existing = false;
+  h.read.mockRejectedValueOnce(Object.assign(new Error('Automation unavailable'), { code: 'NOT_FOUND' }));
+  await render(true);
+  expect(h.invoke).toHaveBeenCalledOnce();
+  expect(container.querySelector('input[aria-label="name"]')).toBeNull();
+  expect(container.textContent).toContain('empty');
+});
+
+it('keeps edits made after an uncertain delete when a retry finds the detail missing', async () => {
+  await openExisting();
+  h.perform.mockRejectedValueOnce(new Error('Response lost'));
+  h.read.mockRejectedValueOnce(new Error('Read unavailable'));
+  await confirmDelete();
+  await type('hour', '12');
+  h.read.mockRejectedValueOnce(Object.assign(new Error('Automation unavailable'), { code: 'NOT_FOUND' }));
+  await click('retry');
+  expect(h.invoke).toHaveBeenCalledOnce();
+  expect(input('hour').value).toBe('12');
+  expect(container.textContent).toContain('loadFailed');
+});
+
 it('keeps a successful save committed when the following run fails', async () => {
   await openExisting(); await type('hour', '12');
   h.perform.mockImplementationOnce(async request => {
