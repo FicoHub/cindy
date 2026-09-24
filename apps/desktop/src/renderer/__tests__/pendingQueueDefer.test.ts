@@ -455,7 +455,7 @@ describe('renderer input queue facade', () => {
     );
   });
 
-  it('accepts queue attachment projections with transport-only field changes', async () => {
+  it('accepts queue attachment projections after transport materializes base64', async () => {
     const sid = `transport-fields-${Math.random().toString(36).slice(2, 8)}`;
     const item = queued('q-transport-fields', 'keep transport fields out of intent');
     makerChatStore.initGlobalListeners();
@@ -472,6 +472,7 @@ describe('renderer input queue facade', () => {
                 url: 'xdt-image://remote/materialized.png',
                 size: 87,
                 sha256: 'a'.repeat(64),
+                base64: undefined,
               })),
             },
           ],
@@ -496,7 +497,7 @@ describe('renderer input queue facade', () => {
           size: 123,
           category: 'image',
           mimeType: 'image/png',
-          url: 'xdt-image://session/transport.png',
+          base64: 'dHJhbnNwb3J0LWltYWdl',
         },
       ],
     });

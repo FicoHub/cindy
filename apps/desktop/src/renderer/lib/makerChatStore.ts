@@ -13644,7 +13644,6 @@ function queuedContentProjectionMatches(
       category: file.category,
       mimeType: file.mimeType,
       originalName: file.originalName ?? file.name,
-      base64: file.base64,
       textContent: file.textContent,
       truncated: file.truncated,
       annotated: file.annotated,
