@@ -47,5 +47,8 @@ export function createAnthropicEffortCompatibilityRule(): RecoveryRule {
     },
     // 语义绑在特定网关的拒绝文本上,别的 400 重试时不能顺手删掉用户档位。
     applyOnUnmatchedRetry: false,
+    // 网关只拒绝了档位:本规则作主匹配时不叠加 encrypted_content 等其它清理,
+    // 否则重试会顺手改写工具调用历史里网关并未拒绝的字段(review P1)。
+    allowExtraRules: false,
   };
 }

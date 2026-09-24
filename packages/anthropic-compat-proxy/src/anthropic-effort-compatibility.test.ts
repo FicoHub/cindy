@@ -59,6 +59,8 @@ describe('Anthropic Messages effort compatibility (#5032)', () => {
     expect(rule.matches('{"error":{"message":"Unexpected message role."}}')).toBe(false);
     expect(rule.matches('{"error":{"message":"messages.0.output_config: Extra inputs are not permitted"}}')).toBe(false);
     expect(rule.applyOnUnmatchedRetry).toBe(false);
+    // 主匹配时不叠加其它清理规则,重试只省略 effort、不改写工具调用历史。
+    expect(rule.allowExtraRules).toBe(false);
   });
 
   it('strips the effort from a matched body and declines bodies with nothing to change', () => {
