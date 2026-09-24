@@ -190,10 +190,7 @@ import {
   refreshDiscoveredCodexModels,
   setNativeProviderClaimListener,
 } from './createDesktopProviderService.js';
-import {
-  clearAnthropicDiscoveredModels,
-  setAnthropicDiscoveryFailureListener,
-} from './model-discovery/anthropic.js';
+import { clearAnthropicDiscoveredModels } from './model-discovery/anthropic.js';
 import {
   buildDesktopClaudeRuntimeConfig,
   desktopCodexRuntimeConfig,
@@ -202,7 +199,6 @@ import {
 import {
   getClaudeEndpoint,
   setClaudeProxyGatewayKeyReader,
-  setClaudeProxyOAuthSpawnChecker,
 } from './anthropic-compat-proxy-host.js';
 import { resolveRemoteClaudeRoute } from './remote-claude-route.js';
 import { resolveDesktopClaudeSubagentModelAccess } from './subagent-model-access.js';
@@ -214,7 +210,6 @@ import {
 } from './auto-review-model-router.js';
 import { ensureCurrentAccountProviderReadiness } from './account-provider-readiness-ensure.js';
 import { ACCOUNT_PROVIDER_NOT_READY_CODE } from '../../shared/accountProviderReadiness.js';
-import { hasClaudeAiOAuth } from './claude-credentials-store.js';
 import {
   armCodexHttpRecovery,
   clearCodexProxyAuthInjection,
@@ -447,25 +442,6 @@ setActiveCatalogChangedListener((revision) => {
       error: error instanceof Error ? error.message : String(error),
     });
     return;
-  }
-});
-
-/**
- * anthropic 清单发现的失败态变化 → 广播 PROVIDER_CHANGED。
- *
- * 归因不进 active catalog(清单没变,没有 revision 可言),但 renderer 往往在拉取失败
- * **之前**就取走了 provider 快照(15s 超时那条路径尤其明显)。不主动通知,设置页会一直
- * 停在「正在发现」而不是讲明失败理由(PR #548 review)。
- */
-setAnthropicDiscoveryFailureListener(() => {
-  try {
-    // 复用既有的「刷 capabilities + 广播」收口:清单确实没变,这一步只是把 provider
-    // 快照重新推给 renderer,让它重取带上失败归因的 listProviders。
-    refreshSelectableModelsAndBroadcast({});
-  } catch (error) {
-    desktopMakerLogger.warn('anthropic discovery failure broadcast failed', {
-      error: error instanceof Error ? error.message : String(error),
-    });
   }
 });
 
@@ -1145,9 +1121,8 @@ export function getMaker(): Maker {
     // 再转 gateway —— 这把 key 不进子进程 env(R4),由本地 proxy 旁路读取。注入 reader,
     // 与 codex setCodexProxyGatewayKeyReader 同源(都用 readClaudeApiKey 读那把 XD gateway key)。
     setClaudeProxyGatewayKeyReader(readClaudeApiKey);
-    // cc spawn 凭证形态(oauth-spawn vs gateway-spawn)由「是否连了 Claude.ai 订阅」决定;
-    // proxy 的默认路由据此分流(oauth-spawn 默认换网关 key、gateway-spawn passthrough)。live 读。
-    setClaudeProxyOAuthSpawnChecker(hasClaudeAiOAuth);
+    // 不再接 setClaudeProxyOAuthSpawnChecker:Claude 订阅会话由 CLI 直连 Anthropic、不经本
+    // proxy,经 proxy 的 cc 进程一律带网关 key / 占位 key,默认路由恒按 gateway-spawn 分流。
     // 两个 agent 各自持有一份 mcpProviders 数组(内置 lizi + orca bridge)。用户自定义 MCP
     // 由 custom-mcp-registry 在启动 + 每次 CRUD 后**原地追加/刷新**到这两个数组末尾,
     // 因此这里必须用具名 const 保住引用(不能内联 spread 出临时数组)。

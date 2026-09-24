@@ -90,18 +90,41 @@ function legacyCatalog(): Catalog {
 }
 
 describe('active-catalog discovered augment', () => {
+  it('keeps Claude subscription models on Claude Code only, even when the source catalog declares Codex / Pi', () => {
+    const catalog = bundledWithoutRegistry();
+    const builtin = catalog.providers.find((provider) => provider.id === 'anthropic')!;
+    const models = [fake('claude-sonnet-4-5'), fake('claude-sonnet-4-6')].map((model) => ({
+      ...model,
+      group: 'claude',
+    }));
+    // 远端目录形态:仍给 Claude 订阅声明 codex / pi 路由与清单。
+    builtin.agents = ['claude-code', 'codex', 'pi'];
+    builtin.routing = {
+      ...builtin.routing,
+      codex: { upstream: 'https://api.anthropic.com', authStrategy: 'provider-oauth-header' },
+      pi: { upstream: 'https://api.anthropic.com', authStrategy: 'provider-oauth-header' },
+    };
+    builtin.models = { codex: models, 'claude-code': models, pi: models };
+    setActiveCatalog({ ...catalog, providers: [builtin] });
+    setAnthropicDiscoveredModels(models);
+    const actual = getActiveCatalog().providers.find((provider) => provider.id === 'anthropic')!;
+    expect(actual.agents).toEqual(['claude-code']);
+    expect(Object.keys(actual.routing)).toEqual(['claude-code']);
+    expect(actual.models['claude-code']?.map((model) => model.id)).toEqual(
+      expect.arrayContaining(['claude-sonnet-4-5', 'claude-sonnet-4-6']),
+    );
+    expect(actual.models.codex).toBeUndefined();
+    expect(actual.models.pi).toBeUndefined();
+  });
+
   it.each([
-    ['anthropic', 'claude', 'claude-sonnet-4-5', 'claude-sonnet-4-6'],
     ['xai', 'xai', 'grok-4.5', 'grok-4.6'],
   ] as const)(
     'uses the same default selection for builtin and independent %s accounts',
     (id, native, oldId, newId) => {
       const catalog = bundledWithoutRegistry();
       const builtin = catalog.providers.find((provider) => provider.id === id)!;
-      const models = [fake(oldId), fake(newId)].map((model) => ({
-        ...model,
-        group: id === 'anthropic' ? 'claude' : 'grok',
-      }));
+      const models = [fake(oldId), fake(newId)].map((model) => ({ ...model, group: 'grok' }));
       builtin.models = { codex: models, 'claude-code': models, pi: models };
       const account = {
         ...builtin,
@@ -116,7 +139,6 @@ describe('active-catalog discovered augment', () => {
         auth: { method: 'apiKey' as const },
       };
       setActiveCatalog({ ...catalog, providers: [builtin, account, api] });
-      if (id === 'anthropic') setAnthropicDiscoveredModels(models);
       const actual = getActiveCatalog();
       for (const agent of ['codex', 'claude-code', 'pi'] as const) {
         const listed = (providerId: string) =>
@@ -131,10 +153,7 @@ describe('active-catalog discovered augment', () => {
               .map((model) => model.id)
               .join(',')}`,
           ).toBe(false);
-          // Claude's Codex bridge is explicitly disabled by default; keep it disabled.
-          expect(listed(providerId).find((model) => model.id === newId)?.defaultEnabled).toBe(
-            !(id === 'anthropic' && agent === 'codex'),
-          );
+          expect(listed(providerId).find((model) => model.id === newId)?.defaultEnabled).toBe(true);
         }
         expect(listed(api.id).find((model) => model.id === oldId)?.defaultEnabled).toBe(true);
       }
@@ -292,7 +311,7 @@ describe('active-catalog discovered augment', () => {
   });
 
   it.each(['builtin', 'independent'] as const)(
-    'adds a discovered Claude model to the %s account Pi catalog',
+    'never projects a discovered Claude model into the %s account Pi catalog',
     (kind) => {
       const catalog = bundledWithoutRegistry();
       const providerId = kind === 'builtin' ? 'anthropic' : 'claude-second';
@@ -310,13 +329,12 @@ describe('active-catalog discovered augment', () => {
       const discovered = { ...fake('claude-new'), group: 'anthropic' };
       if (kind === 'builtin') setAnthropicDiscoveredModels([discovered]);
       else setDiscoveredProviderModels(providerId, 'claude-code', [discovered]);
-      expect(
-        getActiveCatalog().providers.find((p) => p.id === providerId)!.models.pi,
-      ).toContainEqual(expect.objectContaining({ id: 'claude-new', piApi: 'anthropic-messages' }));
+      const provider = getActiveCatalog().providers.find((p) => p.id === providerId)!;
+      expect(provider.models.pi ?? []).toEqual([]);
+      expect(provider.models.codex ?? []).toEqual([]);
       if (kind === 'independent') {
-        expect(
-          getActiveCatalog().providers.find((p) => p.id === 'anthropic')!.models.pi,
-        ).not.toContainEqual(expect.objectContaining({ id: 'claude-new' }));
+        // 独立 Claude 账号已停用:不向任何 agent 提供模型。
+        expect(provider.agents).toEqual([]);
       }
     },
   );
@@ -823,18 +841,9 @@ describe('anthropic 发现条目的 modelRegistry 元数据基线', () => {
         .map((model) => model.id)
         .sort(),
     ).toEqual(['claude-fable-5-1', 'claude-haiku-4-5', 'claude-opus-5-5', 'claude-sonnet-5']);
-    expect(anthropicList('codex')).toEqual(
-      anthropicList('claude-code').map((model) => ({
-        ...model,
-        defaultEnabled: false,
-        supportsFastMode: false,
-      })),
-    );
-    expect(anthropicList('pi').map((model) => model.id)).toEqual(
-      BUNDLED_CATALOG.providers
-        .find((provider) => provider.id === 'anthropic')
-        ?.models.pi?.map((model) => model.id),
-    );
+    // Claude 订阅只供 Claude Code:不投影 Codex bridge,也不给 Pi。
+    expect(anthropicList('codex')).toEqual([]);
+    expect(anthropicList('pi')).toEqual([]);
     expect(
       Object.fromEntries(
         [

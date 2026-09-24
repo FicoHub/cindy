@@ -46,6 +46,7 @@ import {
   BUNDLED_CATALOG,
   PI_REASONING_EFFORTS,
   buildUserProvider,
+  claudeSubscriptionOnlyForClaudeCode,
   runtimeUserModelMetadata,
   clampEffortToSupported,
   modelDefaultEffort,
@@ -1155,6 +1156,8 @@ function computeMerged(): Catalog {
   const remoteXdIndex = b.providers.findIndex((provider) => provider.id === 'xd');
   const providerSources = b.providers
     .filter((provider) => provider.id !== 'xd')
+    // 远端目录若仍给 Claude 订阅声明 Codex / Pi 路由,按客户端合规边界收窄(见 builtin.ts)。
+    .map(claudeSubscriptionOnlyForClaudeCode)
     .map((provider) =>
       projectProviderMediaModels(provider, b.modelRegistry, { addDeclared: true }),
     );
@@ -1312,43 +1315,10 @@ function computeMerged(): Catalog {
       };
     }
     if (providerCatalogId(p) === 'anthropic') {
+      // Claude 订阅只供 Claude Code(内置 CLI 用它自己的登录),不向 Codex / Pi 投影。
       const seed = p.id === 'anthropic' && anthropicModels.length > 0 ? anthropicModels : (p.models['claude-code'] ?? []);
       const root = assembleRoot('anthropic', 'claude-code', seed, plan, false, p.id);
-      const remoteExcluded =
-        plan.roots.get(rootPlanKey('anthropic', 'claude-code'))?.bridgeExcluded ??
-        new Set<string>();
-      const excluded = resolveLocalBridgeExclusions(
-        p.id,
-        'codex',
-        remoteExcluded,
-        localOverrides,
-        'anthropic',
-      );
-      // Codex bridge 受 membership 门控且 fast=false；Pi 只用原始发现补新型号。
-      const codexBridge = root
-        .filter((m) => !excluded.has(m.id))
-        .map((model) =>
-          applyLocalConsumerOverrides(
-            p.id,
-            'codex',
-            model.id,
-            applyLayeredConsumer(model, 'anthropic', 'codex', plan),
-            localOverrides,
-            plan.warnings,
-            'anthropic',
-          ),
-        )
-        .map((model) => ({ ...model, supportsFastMode: false }));
-      return {
-        ...p,
-        models: {
-          ...p.models,
-          'claude-code': root,
-          codex: codexBridge,
-          pi: declaredPiModels('anthropic', p.id === 'anthropic'
-            ? anthropicModels : discoveredByProvider.get(p.id)?.['claude-code'] ?? []),
-        },
-      };
+      return { ...p, models: { 'claude-code': root } };
     }
     if (providerCatalogId(p) === 'xai') {
       const discovered = p.id === 'xai' ? xaiDiscoveredModels : xaiAccountModels.get(p.id) ?? null;

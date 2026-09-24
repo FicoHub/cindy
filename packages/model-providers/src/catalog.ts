@@ -30,7 +30,7 @@ import { withVerifiedStaticWindows } from './builtin.js';
 import { findReservedOAuthExtraParam } from './provider-oauth.js';
 import { isProviderRequestPath } from './provider-url.js';
 
-export { BUNDLED_CATALOG, BUILTIN_PROVIDERS } from './builtin.js';
+export { BUNDLED_CATALOG, BUILTIN_PROVIDERS, claudeSubscriptionOnlyForClaudeCode } from './builtin.js';
 
 const AGENT_KINDS: readonly AgentKind[] = ['claude-code', 'codex', 'pi'];
 const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];

@@ -64,7 +64,7 @@ export interface ProviderListOptions extends ConnectionReadOptions {
 export interface ProviderConnectionReaders {
   /** XD 网关：托管 api_key 是否存在。 */
   xd: (opts: ConnectionReadOptions) => boolean | Promise<boolean>;
-  /** Anthropic：系统 Claude.ai OAuth 是否登录。 */
+  /** Anthropic：内置 Claude Code CLI 是否已登录且 Cindy 获准使用。 */
   anthropic: (opts: ConnectionReadOptions) => boolean | Promise<boolean>;
   /** OpenAI：Codex 是否 OAuth 登录。 */
   openai: (opts: ConnectionReadOptions) => boolean | Promise<boolean>;

@@ -89,7 +89,6 @@ import {
   isAnthropicCompatProxyHandleReady,
 } from './anthropic-compat-proxy-host.js';
 import { hostCredentialEndpointAllowed } from './pi-provider-transport.js';
-import { hasClaudeAiOAuth } from './claude-credentials-store.js';
 import { hasGrokOAuthLogin } from './grok-oauth-login.js';
 import { isOpenAiSubscriptionProviderId } from './codex-account-auth.js';
 import hostSystemPrompt from './host-system-prompt.md?raw';
@@ -130,22 +129,6 @@ const PI_SESSION_ID_ENV = 'CINDY_PI_SESSION_ID';
 const PI_SESSION_TOKEN_ENV = 'CINDY_PI_SESSION_TOKEN';
 const PI_PROVIDER_AUTH_PLACEHOLDER_KEY = 'cindy-pi-provider-auth-placeholder';
 const PI_OPENAI_PROXY_KEY_ENV = 'CINDY_PI_OPENAI_PROXY_KEY';
-const PI_ANTHROPIC_PROXY_KEY_ENV = 'CINDY_PI_ANTHROPIC_PROXY_KEY';
-/**
- * Claude 订阅占位 token。Pi 的 anthropic 适配器按 `apiKey.includes('sk-ant-oat')` 判定
- * OAuth 形态,命中后才走原生订阅请求构造:Bearer 鉴权、`claude-code-20250219,oauth-2025-04-20`
- * 加各 beta(fine-grained tool streaming / server-side fallback 等)、Claude Code 身份 system
- * 段与 `claude-cli` UA。占位值本身不含授权能力;真 token 由 loopback proxy 在解析出
- * anthropic provider 路由时覆盖 `authorization`,故该路由是占位值被换掉的唯一保证 ——
- * 请求带 provider 头就必须钉在该路由上,不能落回默认上游(见
- * anthropic-compat-proxy-host 的 piProviderId 钉住分支)。
- * 用普通字串会让 Pi 按 x-api-key 形态发请求,proxy 再补 beta 头就会
- * 与 body 里 Pi 已注入的 `fallbacks` 等字段脱节(400 `fallbacks: Extra inputs are not permitted`)。
- *
- * 取值即探针要求的最短形态(二进制里只有 `sk-ant-oat` 这一个字面量,版本段不参与判定),
- * 与仓内既有 OAuth 形态夹具同值 —— 不额外造一个更长、更像真 token 的字串去撞密钥扫描。
- */
-const PI_ANTHROPIC_PROXY_PLACEHOLDER_TOKEN = 'sk-ant-oat01';
 const PI_PROVIDER_HEADER = 'x-cindy-pi-provider-id';
 
 export interface PiBundledModelInfo {
@@ -573,10 +556,9 @@ export function buildPiSubscriptionNativeProviders(
   const env: Record<string, string> = {
     [PI_OPENAI_PROXY_KEY_ENV]: piOpenaiProxyPlaceholderJwt(),
     [PI_XAI_PROXY_API_KEY_ENV]: PI_PROVIDER_AUTH_PLACEHOLDER_KEY,
-    [PI_ANTHROPIC_PROXY_KEY_ENV]: PI_ANTHROPIC_PROXY_PLACEHOLDER_TOKEN,
   };
   const add = (
-    sourceProviderId: 'anthropic' | 'openai' | 'xai',
+    sourceProviderId: 'openai' | 'xai',
     piProviderId: string,
     name: string,
     baseUrl: string,
@@ -637,7 +619,6 @@ export function buildPiSubscriptionNativeProviders(
       name,
       baseUrl,
       inheritModels: true,
-      ...(sourceProviderId === 'anthropic' ? { apiKeyEnvVar: PI_ANTHROPIC_PROXY_KEY_ENV } : {}),
       ...(sourceProviderId === 'openai' ? { apiKeyEnvVar: PI_OPENAI_PROXY_KEY_ENV } : {}),
       ...(sourceProviderId === 'xai' ? { apiKeyEnvVar: PI_XAI_PROXY_API_KEY_ENV } : {}),
       modelIdAliases,
@@ -661,8 +642,7 @@ export function buildPiSubscriptionNativeProviders(
           : sourceProviderId === 'xai' ? officialXaiById.get(wireId) : undefined;
         const api = sourceProviderId === 'openai'
           ? 'openai-codex-responses' as const
-          : model.piApi ?? bundledModel?.api ?? officialModel?.api
-            ?? (sourceProviderId === 'anthropic' ? 'anthropic-messages' as const : undefined);
+          : model.piApi ?? bundledModel?.api ?? officialModel?.api;
         const template = [bundledModel, contextProfileTemplate, officialModel]
           .find((candidate) => candidate?.api === api);
         const correction = sourceProviderId === 'xai'
@@ -673,9 +653,7 @@ export function buildPiSubscriptionNativeProviders(
         const compatibleCorrection = correction?.api === api ? correction : null;
         const thinking = compatibleCorrection?.thinkingLevelMap
           ?? officialThinking?.thinkingLevelMap ?? template?.thinkingLevelMap;
-        const compat = sourceProviderId === 'anthropic'
-          ? pruneAnthropicCompatForLink(template?.compat, 'subscription')
-          : compatibleCorrection?.compat ?? officialThinking?.compat ?? template?.compat;
+        const compat = compatibleCorrection?.compat ?? officialThinking?.compat ?? template?.compat;
         const cost = catalogCostForPiNative(model.cost) ?? template?.cost;
         const listedIds = listedModelIdsByProvider?.get(piProviderId)
           ?? listedPiModelIds(bundledModelsByProvider)?.get(piProviderId);
@@ -709,14 +687,15 @@ export function buildPiSubscriptionNativeProviders(
       }),
     });
   };
-  add('anthropic', 'anthropic', 'Anthropic', endpoint);
+  // Claude 订阅不给 Pi:它只供内置 Claude Code CLI 用自己的登录使用(Pi 原生 /login 不受影响)。
   add('openai', 'openai-codex', 'OpenAI (ChatGPT)', endpoint, 'chatgpt/');
   add('xai', 'xai', 'xAI (SuperGrok)', appendEndpointPath(endpoint, 'v1'), 'xai/');
-  for (const account of catalog.providers.filter((provider) => provider.auth.native)) {
+  // Independent Claude accounts are retired and never projected into Pi.
+  for (const account of catalog.providers.filter((provider) => provider.auth.native && provider.auth.native !== 'claude')) {
     // Reuse the native subscription projection with this account's catalog. Unique provider IDs
     // have no bundled registry entry, so materialize native model metadata instead of inheriting it.
-    const brand = account.auth.native === 'claude' ? 'anthropic' : account.auth.native === 'xai' ? 'xai' : 'openai';
-    const api = brand === 'anthropic' ? 'anthropic-messages' as const : brand === 'xai' ? 'openai-responses' as const : 'openai-codex-responses' as const;
+    const brand = account.auth.native === 'xai' ? 'xai' : 'openai';
+    const api = brand === 'xai' ? 'openai-responses' as const : 'openai-codex-responses' as const;
     const accountCatalog = {
       ...catalog,
       providers: [{ ...account, id: brand, auth: { method: 'oauth' as const } }],
@@ -752,7 +731,7 @@ export const PI_XAI_COMPAT_FORWARD_PORT = 47989;
  * xAI/BYOM provider **不在此列** —— 它们走各自原生块 + 独立 key,而网关块仍需真网关 key
  * 以便会话中途切回网关模型可用,故原生 provider 会话不能写占位符毒化网关块。
  */
-const PI_OAUTH_SUBSCRIPTION_PROVIDERS = new Set(['anthropic', 'openai']);
+const PI_OAUTH_SUBSCRIPTION_PROVIDERS = new Set(['openai']);
 const PI_BUNDLED_RESERVED_PROVIDER_IDS = ['anthropic', 'openai-codex', 'xai'] as const;
 
 /**
@@ -771,10 +750,9 @@ class DesktopPiAuthAdapter implements AuthAdapter {
   async getState(options?: AuthAdapterOptions): Promise<AuthState> {
     const providerId = options?.providerId?.trim() || null;
     if (providerId && subscriptionAccountKind(providerId)) return subscriptionAccountState(providerId);
+    // Claude 订阅只供内置 Claude Code CLI 使用,Pi 会话不能选它(旧会话在此明确拒绝)。
     if (providerId === 'anthropic') {
-      return hasClaudeAiOAuth()
-        ? { authenticated: true, identity: 'Claude.ai', authSource: 'oauth' }
-        : { authenticated: false, errorReason: 'anthropic_oauth_unavailable' };
+      return { authenticated: false, errorReason: 'anthropic_oauth_unavailable' };
     }
     if (providerId && isOpenAiSubscriptionProviderId(providerId)) {
       return desktopCodexAuthAdapter.getState({ credentialMode: 'oauth-bearer', providerId });
@@ -1095,36 +1073,27 @@ function xaiOfficialCapabilityCorrection(
 }
 
 /**
- * 按链路裁剪 Anthropic Messages 的 Pi compat 能力位(#4982 / #4983)。
+ * 裁剪网关链路 Anthropic Messages 的 Pi compat 能力位(#4982)。
  * Pi 目录探测把 Anthropic 直连的新格式能力位(tool `strict`、消息内 `tool_removal` 块、
- * 逐轮 effort)原样带进每条链路的 models.json:
- *   - xd 网关的 Anthropic-Messages schema 尚不接受 `tools[].strict` 与 `tool_removal`,
- *     Opus 5 / 5.5 每条消息 400;
- *   - Anthropic 订阅直连接受 `strict`,但 Pi 发出的 mid-conversation beta 名与 Anthropic
- *     现要求的 `inline-tools-2026-09-15` 不符,第二轮起 400。
- * `supportsMidConvoSystemMessages` 两条链路都被接受,保留。
- * 恢复条件:网关 schema 补齐 `strict` / `tool_removal` 后去掉网关侧 `supportsStrictTools`
- * 裁剪;Pi 上游补发正确 beta(或对不支持端点降级)并随内核更新进入 Cindy 后去掉两个
- * MidConvo 裁剪。只改客户端生成的 models.json,不改代理与上游。
+ * 逐轮 effort)原样带进网关链路的 models.json,而 xd 网关的 Anthropic-Messages schema
+ * 尚不接受 `tools[].strict` 与 `tool_removal`,Opus 5 / 5.5 每条消息 400。
+ * `supportsMidConvoSystemMessages` 网关接受,保留。
+ * Cindy 不再给 Pi 投影 Claude 订阅链路(订阅只归内置 Claude Code CLI);Pi 原生 /login 的
+ * Anthropic 由 Pi 自己的目录决定,不经这里。
+ * 恢复条件:网关 schema 补齐 `strict` / `tool_removal` 后去掉本裁剪。只改客户端生成的
+ * models.json,不改代理与上游。
  */
 const GATEWAY_UNSUPPORTED_ANTHROPIC_COMPAT: readonly string[] = [
   'supportsStrictTools',
   'supportsMidConvoToolChanges',
   'supportsMidConvoEffort',
 ];
-const SUBSCRIPTION_UNSUPPORTED_ANTHROPIC_COMPAT: readonly string[] = [
-  'supportsMidConvoToolChanges',
-  'supportsMidConvoEffort',
-];
 
-export function pruneAnthropicCompatForLink(
+export function pruneAnthropicCompatForGateway(
   compat: Record<string, unknown> | undefined,
-  link: 'gateway' | 'subscription',
 ): Record<string, unknown> | undefined {
   if (!compat) return compat;
-  const unsupported = link === 'gateway'
-    ? GATEWAY_UNSUPPORTED_ANTHROPIC_COMPAT
-    : SUBSCRIPTION_UNSUPPORTED_ANTHROPIC_COMPAT;
+  const unsupported = GATEWAY_UNSUPPORTED_ANTHROPIC_COMPAT;
   if (!unsupported.some((key) => key in compat)) return compat;
   const next = { ...compat };
   for (const key of unsupported) delete next[key];
@@ -1682,7 +1651,7 @@ export function resolvePiCindyGatewayModelSpec(
   const compatibleBundled = bundled?.api === api ? bundled : undefined;
   const compatibleProbed = probed?.api === api ? probed : undefined;
   let compat = compatibleProbed?.compat ?? compatibleBundled?.compat;
-  if (api === 'anthropic-messages') compat = pruneAnthropicCompatForLink(compat, 'gateway');
+  if (api === 'anthropic-messages') compat = pruneAnthropicCompatForGateway(compat);
   // Gateway routing needs Pi's native session identity on every Chat/Messages request.
   // This is a Gateway transport policy, not a change to direct BYOM/subscription providers.
   if (api === 'openai-completions' || api === 'anthropic-messages') {

@@ -1227,6 +1227,8 @@ function GenericOAuthHeader({
         onChanged();
       } else if (r.reason === 'login_cancelled') {
         /* 用户取消,不弹错 */
+      } else if (r.reason === 'claude_account_retired') {
+        toast.error(t('settings.providers.claudeAccountRetired'));
       } else {
         toast.error(
           t('settings.providers.genericOAuth.toast.loginFailed', { name: provider.name }),

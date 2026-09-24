@@ -74,7 +74,7 @@ import {
   type ChatBridgeCapabilities,
 } from '@cindy/responses-chat-bridge';
 import { createResponsesAnthropicHandler } from '@cindy/responses-anthropic-bridge';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -115,10 +115,7 @@ import {
 } from './provider-route.js';
 import type { CodexSubagentRouteSnapshot } from './codex-subagent-config.js';
 import { getSessionProvider } from './session-provider-store.js';
-import {
-  composeResponseObservers,
-  recordClaudeRateLimitHeaders,
-} from './claude-rate-limit-headers-observer.js';
+import { composeResponseObservers } from './claude-rate-limit-headers-observer.js';
 import { createProviderUpstreamErrorObserver, reportProviderUpstreamError } from './provider-upstream-error-observer.js';
 import { createXaiProxyAuthInvalidationObserver } from './xai-auth-invalidation-host.js';
 import { xaiServerSideTools } from './xai-server-side-tools.js';
@@ -1333,42 +1330,34 @@ function appendCommaSeparatedHeaderToken(
   headers[name] = values.join(',');
 }
 
-function claudeCodeSessionId(token: string): string {
-  const hash = createHash('sha256')
-    .update(`claude-code-session:${token}`, 'utf8')
-    .digest('hex');
-  const variant = ((Number.parseInt(hash[16], 16) & 0x3) | 0x8).toString(16);
-  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-${variant}${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
-}
-
-function claudeOAuthHeaders(
-  base: Record<string, string>,
-  token: string,
-): Record<string, string> {
-  return {
-    ...base,
-    authorization: `Bearer ${token}`,
-    'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
-    'user-agent': '@anthropic-ai/sdk/0.74.0',
-    'x-app': 'cli',
-    'x-stainless-retry-count': '0',
-    'x-stainless-runtime': 'node',
-    'x-stainless-lang': 'js',
-    'x-stainless-timeout': '600',
-    'x-stainless-arch': process.arch,
-    'x-stainless-os': process.platform,
-    'x-stainless-package-version': '0.74.0',
-    'x-stainless-runtime-version': process.version.slice(1),
-    'x-claude-code-session-id': claudeCodeSessionId(token),
-    'x-client-request-id': randomUUID(),
-  };
-}
-
 /**
  * Responses → Anthropic Messages local bridge. The bridge owns both request and
  * response translation; this host layer only resolves the selected provider, supplies
  * provider-owned credentials, and restores preprocessing skipped by localHandler.
  */
+/**
+ * Claude 订阅只供内置 Claude Code CLI 用它自己的登录使用,Codex 不得借用。目录已不向 Codex
+ * 提供 Claude 订阅;旧会话 / 远端目录残留的选择在本地明确拒绝,绝不回落到默认上游
+ * (否则会按 ChatGPT 订阅或网关另行计费)。
+ */
+function claudeSubscriptionCodexRefusalDecision(): RoutingDecision {
+  return {
+    localHandler: async ({ res }) => {
+      res.writeHead(403, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+      });
+      res.end(JSON.stringify({
+        error: {
+          type: 'permission_error',
+          code: 'anthropic_subscription_claude_code_only',
+          message: 'Claude subscriptions are only available in Claude Code. Choose another model for Codex.',
+        },
+      }));
+    },
+  };
+}
+
 function createAnthropicBridgeDecision(
   route: Awaited<ReturnType<typeof resolveSessionRoute>>,
   instructions: string | undefined,
@@ -1398,42 +1387,15 @@ function createAnthropicBridgeDecision(
       },
     };
   }
-  // For Codex, provider-oauth-header is the subscription-safe route: the host
-  // injects the Claude.ai token and never forwards the Codex/OpenAI bearer.
-  if (
-    isClaudeSubscriptionProviderId(route.providerId)
-    && route.routing.authStrategy === 'provider-oauth-header'
-    && !route.oauthToken
-  ) {
-    return {
-      localHandler: async ({ res }) => {
-        res.writeHead(401, {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-        });
-        res.end(JSON.stringify({
-          error: {
-            type: 'authentication_error',
-            code: 'anthropic_subscription_auth_required',
-            message: 'Connect a Claude.ai subscription before using Anthropic models in Codex.',
-          },
-        }));
-      },
-    };
-  }
+  if (isClaudeSubscriptionProviderId(route.providerId)) return claudeSubscriptionCodexRefusalDecision();
   const usesProviderOAuth = route.routing.authStrategy === 'provider-oauth-header';
-  const isAnthropicSubscriptionOAuth =
-    usesProviderOAuth
-    && isClaudeSubscriptionProviderId(route.providerId);
   const buildProviderHeaders = (token: string | null): Record<string, string> => {
     const { headers: baseHeaders } = buildLocalHandlerHeaders(
       token === route.oauthToken ? route : { ...route, oauthToken: token },
       'codex',
     );
-    let headers = { ...baseHeaders };
-    if (isAnthropicSubscriptionOAuth) {
-      if (token) headers = claudeOAuthHeaders(headers, token);
-    } else if (route.routing.authStrategy === 'api-key-header') {
+    const headers = { ...baseHeaders };
+    if (route.routing.authStrategy === 'api-key-header') {
       if (route.apiKey) {
         headers['x-api-key'] = route.apiKey;
       } else if (!headerValue(headers, 'x-api-key')) {
@@ -1483,7 +1445,7 @@ function createAnthropicBridgeDecision(
   const handler = createResponsesAnthropicHandler({
     upstreamBase,
     ...(route.routing.requestPath ? { requestPath: route.routing.requestPath } : {}),
-    authMode: isAnthropicSubscriptionOAuth ? 'oauth' : 'api-key',
+    authMode: 'api-key',
     buildHeaders: async () => buildProviderHeaders(route.oauthToken),
     ...(usesProviderOAuth
       ? {
@@ -1516,29 +1478,6 @@ function createAnthropicBridgeDecision(
       : () => false,
     imageCodec: desktopAnthropicImageCodec,
     ...(onUpstreamError ? { onUpstreamError } : {}),
-    // 账号额度旁路 —— 只给「内置 Anthropic + 订阅 OAuth + 官方 hostname」这一种路由
-    // 装。桥的 localHandler 绕开了 compat-proxy 的转发层, 转发层上的
-    // createClaudeRateLimitHeadersObserver 看不到这些响应(见 #2626), 所以额度只能
-    // 从这里回喂; 解析与去抖仍走 observer 那份共用状态, 不复制第二份。
-    //
-    // 其余形态一律不装: API key / 自定义兼容供应商 / XD Gateway 的响应要么没有
-    // unified headers, 要么根本不属于这个 Claude 订阅账号, 误写会污染快照。
-    ...(isAnthropicSubscriptionOAuth && isOfficialAnthropicUpstream(upstreamBase)
-      ? {
-          onUpstreamResponse: ({ responseHeaders, requestHeaders }: {
-            responseHeaders: Headers;
-            requestHeaders: Readonly<Record<string, string>>;
-          }) => {
-            // Fetch `Headers` 不支持索引取值, 直接传下去会被静默解析成 null;
-            // 迭代出的 key 一律小写, 正是解析函数要求的形态。
-            recordClaudeRateLimitHeaders({
-              upstreamBase,
-              responseHeaders: Object.fromEntries(responseHeaders),
-              requestHeaders,
-            });
-          },
-        }
-      : {}),
   }, {
     logger: log,
     fetchImpl: outboundFetch,
@@ -2819,6 +2758,10 @@ export function createModelRoutingTransform(
     const model = subagentRoute?.catalogModel ?? reportedModel;
     const explicitProviderId = subagentRoute?.providerId
       ?? (sessionId ? getSessionProvider(sessionId) : null);
+    // 推理请求钉在 Claude 订阅上(旧会话 / 子代理快照):本地拒绝,不落任何默认上游。
+    if (model && explicitProviderId && isClaudeSubscriptionProviderId(explicitProviderId)) {
+      return claudeSubscriptionCodexRefusalDecision();
+    }
     const pendingRoute = sessionId && !subagentRoute
       ? resolvePendingSessionRouteDecision(sessionId, model || undefined)
       : null;

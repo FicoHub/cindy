@@ -296,7 +296,7 @@
     "REMOTE_MODEL_SWITCH_ROUTE_CHANGE": "The target model or source needs a different remote route — close and recreate the remote session to apply.",
     "REMOTE_PROVIDER_UPDATING": "Provider credentials are being updated — retry in a moment",
     "REMOTE_PROVIDER_UNSUPPORTED": "This provider is not supported in SSH remote sessions — pick another source",
-    "REMOTE_NATIVE_OAUTH_UNAVAILABLE": "Claude.ai subscription is not connected — connect it first or pick a gateway model",
+    "REMOTE_NATIVE_OAUTH_UNAVAILABLE": "Remote tasks can't use a Claude subscription — pick a gateway or API key model",
     "DEVICE_LINK_DEVICE_UNRESPONSIVE": "The target device is not responding. Check the remote device and try again.",
     "INTERNAL": "Operation failed. Please try again later.",
     "SSH_CONFIG_CONCURRENT_MODIFICATION": "The SSH configuration changed on disk. Reload it and try again.",
@@ -1735,7 +1735,7 @@
         },
         "logoutConfirm": {
           "title": "Disconnect Claude.ai subscription?",
-          "description": "Cindy will no longer use this Claude subscription.",
+          "description": "Cindy will no longer use this Claude subscription. Your Claude Code sign-in on this computer is not affected.",
           "confirm": "Disconnect",
           "cancel": "Cancel"
         },
@@ -1744,7 +1744,7 @@
           "loggedOut": "Disconnected Claude",
           "loginFailed": "Could not sign in to Claude. Try again.",
           "logoutFailed": "Could not disconnect Claude. Try again.",
-          "notSubscription": "This account has no Claude subscription (Pro/Max); subscription mode is unavailable",
+          "notSubscription": "Claude Code on this computer isn't signed in with a Claude subscription (Pro/Max), for example it uses an API key or a relay. Subscription mode is unavailable",
           "needAuth": "Sign in to Claude first"
         },
         "apiMode": {
@@ -2583,8 +2583,8 @@
         "codexResetCredits": "{{count}} limit reset credits"
       },
       "localAccount": {
-        "useClaude": "Use local Claude Code account",
-        "unavailable": "No local sign-in is available. Sign in to the source app or add a separate account."
+        "useClaude": "Sign in with Claude Code",
+        "unavailable": "The built-in Claude Code isn't ready yet. Try again shortly."
       },
       "connection": {
         "modelCount": "{{count}} models configured",
@@ -2597,7 +2597,8 @@
         "refreshFailed": "Enterprise settings could not be refreshed. Try again later.",
         "pending": "Preparing credentials",
         "unavailable": "Temporarily unavailable"
-      }
+      },
+      "claudeAccountRetired": "Separate Claude accounts are no longer supported. Use \"Sign in with Claude Code\" to connect your Claude subscription; you can delete this account."
     },
     "experimental": {
       "title": "Experimental",
@@ -9954,7 +9955,8 @@
       "remoteWorktreeCleanupPending": "The previous remote worktree is still awaiting cleanup. Reconnect the device and try again.",
       "remoteProviderUpdating": "Provider credentials are being updated — retry in a moment",
       "remoteProviderUnsupported": "This provider is not supported in SSH remote sessions — pick another source",
-      "remoteNativeOauthUnavailable": "Claude.ai subscription is not connected — connect it first or pick a gateway model",
+      "remoteNativeOauthUnavailable": "Remote tasks can't use a Claude subscription — pick a gateway or API key model",
+      "claudeSubscriptionWorkspaceOverride": "This folder's .claude settings change where Claude sends requests or how it signs in, so the Claude subscription can't be used here. Remove those settings, or pick a gateway or API key model",
       "deviceStillLoading": "Remote device is still loading, please wait",
       "remoteDefaultsLoadFailed": "Could not load the remote device settings. Check the connection; Cindy is retrying.",
       "worktreeMissingRepo": "Can't create a worktree: the current directory's repo root is missing",

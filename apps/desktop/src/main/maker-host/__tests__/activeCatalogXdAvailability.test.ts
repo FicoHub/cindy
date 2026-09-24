@@ -862,10 +862,8 @@ describe('Anthropic 权威模型清单注入', () => {
     setAnthropicDiscoveredModels([opus]);
     expect(anthropicModels().map((m) => m.id)).toEqual(['claude-opus-4-8']);
     expect(anthropicModels()[0]).toMatchObject({ name: 'Opus 4.8', supportsFastMode: true });
-    expect(anthropicModels('codex')[0]).toMatchObject({
-      name: 'Opus 4.8',
-      supportsFastMode: false,
-    });
+    // Claude 订阅只供 Claude Code,不再投影 Codex bridge。
+    expect(anthropicModels('codex')).toEqual([]);
     setAnthropicDiscoveredModels([]);
     expect(anthropicModels()).toEqual([]);
     expect(anthropicModels('codex')).toEqual([]);

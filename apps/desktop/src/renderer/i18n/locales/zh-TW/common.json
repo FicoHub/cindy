@@ -292,7 +292,7 @@
     "REMOTE_MODEL_SWITCH_ROUTE_CHANGE": "目標模型或來源需要不同的遠端路由，請關閉並重新建立遠端任務後生效。",
     "REMOTE_PROVIDER_UPDATING": "供應商憑證正在更新，請稍後重試",
     "REMOTE_PROVIDER_UNSUPPORTED": "該供應商不支援 SSH 遠端會話，請更換來源",
-    "REMOTE_NATIVE_OAUTH_UNAVAILABLE": "未連線 Claude.ai 訂閱，請先連線或選擇閘道器模型",
+    "REMOTE_NATIVE_OAUTH_UNAVAILABLE": "遠端任務不能使用 Claude 訂閱，請選擇閘道器或 API Key 模型",
     "DEVICE_LINK_DEVICE_UNRESPONSIVE": "目標裝置長時間無響應，請檢查遠端裝置後重試",
     "INTERNAL": "操作失敗，請稍後重試。",
     "SSH_CONFIG_CONCURRENT_MODIFICATION": "SSH 設定已在磁碟上變更，請重新載入後再試。",
@@ -1735,7 +1735,7 @@
         },
         "logoutConfirm": {
           "title": "斷開 Claude.ai 訂閱？",
-          "description": "中斷後，Cindy 將無法使用這份 Claude 訂閱。",
+          "description": "中斷後，Cindy 將不再使用這份 Claude 訂閱。本機 Claude Code 的登入不受影響。",
           "confirm": "中斷連線",
           "cancel": "取消"
         },
@@ -1744,7 +1744,7 @@
           "loggedOut": "已中斷 Claude 的連線",
           "loginFailed": "Claude 登入失敗，請重試",
           "logoutFailed": "Claude 中斷連線失敗，請重試",
-          "notSubscription": "該帳號沒有 Claude 訂閱（Pro/Max），無法走訂閱模式",
+          "notSubscription": "本機 Claude Code 目前不是以 Claude 訂閱（Pro/Max）登入（例如使用了 API Key 或中轉），無法使用訂閱模式",
           "needAuth": "請先登入 Claude"
         },
         "apiMode": {
@@ -2582,8 +2582,8 @@
         "codexResetCredits": "限額重設券 {{count}} 張"
       },
       "localAccount": {
-        "useClaude": "使用本機 Claude Code 帳號",
-        "unavailable": "找不到可用的本機登入，請先在對應應用程式登入，或新增獨立帳號。"
+        "useClaude": "使用 Claude Code 登入",
+        "unavailable": "內建的 Claude Code 尚未就緒，請稍後重試。"
       },
       "connection": {
         "modelCount": "已設定 {{count}} 個模型",
@@ -2596,7 +2596,8 @@
         "refreshFailed": "暫時無法重新整理企業設定，請稍後再試。",
         "pending": "憑證準備中",
         "unavailable": "暫時無法使用"
-      }
+      },
+      "claudeAccountRetired": "獨立 Claude 帳號已停用。請改用「使用 Claude Code 登入」連線 Claude 訂閱，這個帳號可以刪除。"
     },
     "experimental": {
       "title": "實驗性功能",
@@ -9939,7 +9940,8 @@
       "remoteWorktreeCleanupPending": "上一次遠端 worktree 仍待回收，請重新連線裝置後再試。",
       "remoteProviderUpdating": "供應商憑證正在更新，請稍後重試",
       "remoteProviderUnsupported": "該供應商不支援 SSH 遠端會話，請更換來源",
-      "remoteNativeOauthUnavailable": "未連線 Claude.ai 訂閱，請先連線或選擇閘道器模型",
+      "remoteNativeOauthUnavailable": "遠端任務不能使用 Claude 訂閱，請選擇閘道器或 API Key 模型",
+      "claudeSubscriptionWorkspaceOverride": "這個工作目錄的 .claude 設定修改了 Claude 的上游位址或驗證方式，不能在這裡使用 Claude 訂閱。請移除這些設定，或選擇閘道器或 API Key 模型",
       "deviceStillLoading": "遠端裝置仍在載入中，請稍候",
       "remoteDefaultsLoadFailed": "無法讀取遠端裝置配置。請檢查連線，Cindy 正在重試。",
       "worktreeMissingRepo": "無法開 worktree：缺少當前目錄的倉庫根",

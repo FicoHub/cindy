@@ -71,6 +71,7 @@ export { modelProtocolComparison, nativeModelAgents } from "./modelProtocol.js";
 export {
   BUNDLED_CATALOG,
   BUILTIN_PROVIDERS,
+  claudeSubscriptionOnlyForClaudeCode,
   parseCatalog,
   presetDisplayName,
   sanitizePresets,

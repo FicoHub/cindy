@@ -44,7 +44,7 @@ import {
   resolvePiBundledModelById,
   resolvePiCindyGatewayModelApi,
   resolvePiCindyGatewayModelSpec,
-  pruneAnthropicCompatForLink,
+  pruneAnthropicCompatForGateway,
   type PiBundledModelInfo,
 } from '../pi-host.js';
 import { getActiveCatalog, setActiveCatalog, setDiscoveredCodexModels, setXdGatewayModels, setXaiDiscoveredModels, setLocalCatalogOverrides } from '../active-catalog.js';
@@ -53,8 +53,17 @@ import { deriveAvailableModels } from '../catalog-to-descriptors.js';
 
 type Cfg = Parameters<typeof buildPiNativeProvidersFromConfigs>[0][number];
 
+it('never projects retired independent Claude accounts into Pi', () => {
+  const original = BUNDLED_CATALOG.providers.find(provider => provider.id === 'anthropic')!;
+  const catalog: Catalog = { ...BUNDLED_CATALOG, providers: [...BUNDLED_CATALOG.providers,
+    { ...original, id: 'anthropic-second', source: 'user', auth: { method: 'oauth', native: 'claude' } },
+  ] };
+  const result = buildPiSubscriptionNativeProviders(catalog, 'http://127.0.0.1:18765');
+  expect(result.providers.some(provider => provider.sourceProviderId === 'anthropic-second')).toBe(false);
+  expect(result.providers.some(provider => provider.sourceProviderId === 'anthropic')).toBe(false);
+});
+
 it.each([
-  ['anthropic', 'claude', 'anthropic-messages'],
   ['xai', 'xai', 'openai-responses'],
 ] as const)('keeps independent %s native Pi routes bound to their account', (brand, native, api) => {
   const original = BUNDLED_CATALOG.providers.find(provider => provider.id === brand)!;
@@ -1025,18 +1034,12 @@ describe('buildPiNativeProvidersFromConfigs', () => {
       ]),
     );
 
-    expect(providers.map((provider) => provider.id)).toEqual(['anthropic', 'openai-codex', 'xai']);
+    // Claude 订阅只供内置 Claude Code CLI:即便目录残留 anthropic 的 Pi 清单,也不投影成
+    // Pi provider,更不下发冒充 Claude Code 的 `sk-ant-oat` 占位 token。
+    expect(providers.map((provider) => provider.id)).toEqual(['openai-codex', 'xai']);
+    expect(providers.some((provider) => provider.sourceProviderId === 'anthropic')).toBe(false);
+    expect(JSON.stringify(env)).not.toContain('sk-ant-oat');
     expect(providers[0]).toMatchObject({
-      sourceProviderId: 'anthropic',
-      baseUrl: 'http://127.0.0.1:4567/',
-      inheritModels: true,
-      apiKeyEnvVar: 'CINDY_PI_ANTHROPIC_PROXY_KEY',
-      models: [{ id: 'claude-opus-5', wireId: 'claude-opus-5' }],
-    });
-    // Pi 按 `sk-ant-oat` 前缀识别 OAuth 形态,才会自己拼 claude-code/oauth/server-side-fallback
-    // 等 beta 头与 Claude Code 身份;占位值不能是真 token 形态之外的普通字串。
-    expect(env.CINDY_PI_ANTHROPIC_PROXY_KEY).toContain('sk-ant-oat');
-    expect(providers[1]).toMatchObject({
       sourceProviderId: 'openai',
       baseUrl: 'http://127.0.0.1:4567/',
       inheritModels: true,
@@ -1053,12 +1056,12 @@ describe('buildPiNativeProvidersFromConfigs', () => {
         },
       ],
     });
-    expect(providers[1]?.models[0]?.catalogAddition).toBeUndefined();
-    expect(providers[1]?.models[0]).toMatchObject({
+    expect(providers[0]?.models[0]?.catalogAddition).toBeUndefined();
+    expect(providers[0]?.models[0]).toMatchObject({
       api: 'openai-codex-responses',
       contextWindow: 272_000,
     });
-    expect(providers[2]).toMatchObject({
+    expect(providers[1]).toMatchObject({
       sourceProviderId: 'xai',
       baseUrl: 'http://127.0.0.1:4567/v1',
       inheritModels: true,
@@ -1067,8 +1070,8 @@ describe('buildPiNativeProvidersFromConfigs', () => {
         { id: 'xai/grok-4.20', wireId: 'grok-4.20', api: 'openai-responses' },
       ],
     });
-    expect(providers[2]?.models[0]?.api).toBe('openai-responses');
-    const proxyJwt = env[providers[1]!.apiKeyEnvVar!];
+    expect(providers[1]?.models[0]?.api).toBe('openai-responses');
+    const proxyJwt = env[providers[0]!.apiKeyEnvVar!];
     expect(proxyJwt).toMatch(/^[^.]+\.[^.]+\.$/);
     expect(proxyJwt).not.toContain('Bearer');
     for (const provider of providers) {
@@ -1597,10 +1600,8 @@ describe('buildPiNativeProvidersFromConfigs', () => {
         'http://127.0.0.1:4567/',
         bundled,
       ).providers;
-      expect(providers.find((provider) => provider.id === 'anthropic')?.models[0]).toMatchObject({
-        wireId: 'claude-daily',
-        api: 'anthropic-messages',
-      });
+      // Claude 订阅不给 Pi:目录残留的 anthropic Pi 清单不投影。
+      expect(providers.find((provider) => provider.id === 'anthropic')).toBeUndefined();
       expect(providers.find((provider) => provider.id === 'openai-codex')?.models[0]).toMatchObject(
         { wireId: 'gpt-daily', catalogAddition: true },
       );
@@ -2653,7 +2654,6 @@ describe('server metadata reaches every native Pi transport', () => {
 
   it.each([
     ['openai', 'openai-codex', 'chatgpt/gpt-fixture', 'gpt-fixture', 'openai-responses', 'openai-codex-responses'],
-    ['anthropic', 'anthropic', 'claude-fixture', 'claude-fixture', 'anthropic-messages', 'anthropic-messages'],
     ['xai', 'xai', 'grok-fixture', 'grok-fixture', 'openai-responses', 'openai-responses'],
   ] as const)('materializes %s declarations with and without a native SDK entry',
     (providerId, nativeId, id, wireId, piApi, api) => {
@@ -2771,7 +2771,7 @@ it('serializes mixed-protocol enterprise models with their own gateway base URLs
   }
 });
 
-describe('Anthropic compat per-link pruning (#4982 / #4983)', () => {
+describe('Anthropic compat per-link pruning (#4982)', () => {
   const probedClaude = (id: string): PiBundledModelInfo => ({
     ...piBundledModel(id, 'anthropic-messages'),
     compat: {
@@ -2783,7 +2783,7 @@ describe('Anthropic compat per-link pruning (#4982 / #4983)', () => {
     },
   });
 
-  it('subscription direct link drops the MidConvo flags but keeps strict and mid-conv system messages', () => {
+  it('Pi gets no Claude subscription link, so probed Anthropic compat is never projected as one', () => {
     const catalog = JSON.parse(JSON.stringify(BUNDLED_CATALOG)) as Catalog;
     const bundled = probedClaude('claude-opus-5');
     const { providers } = buildPiSubscriptionNativeProviders(
@@ -2791,29 +2791,23 @@ describe('Anthropic compat per-link pruning (#4982 / #4983)', () => {
       'http://127.0.0.1:4567/',
       new Map([['anthropic', new Map([['claude-opus-5', bundled]])]]),
     );
-    const anthropic = providers.find((provider) => provider.id === 'anthropic');
-    const model = anthropic?.models.find((candidate) => candidate.wireId === 'claude-opus-5');
-    expect(model?.compat).toEqual({
-      forceAdaptiveThinking: true,
-      supportsStrictTools: true,
-      supportsMidConvoSystemMessages: true,
-    });
+    expect(providers.find((provider) => provider.id === 'anthropic')).toBeUndefined();
     // The probe catalog shared with other links must not be mutated.
     expect(bundled.compat).toMatchObject({ supportsMidConvoToolChanges: true, supportsMidConvoEffort: true });
   });
 
-  it('gateway link additionally drops strict tools and never touches non-Anthropic APIs', () => {
-    expect(pruneAnthropicCompatForLink({
+  it('gateway link drops strict tools and MidConvo flags and never touches non-Anthropic APIs', () => {
+    expect(pruneAnthropicCompatForGateway({
       forceAdaptiveThinking: true,
       supportsStrictTools: true,
       supportsMidConvoToolChanges: true,
       supportsMidConvoEffort: true,
       supportsMidConvoSystemMessages: true,
-    }, 'gateway')).toEqual({ forceAdaptiveThinking: true, supportsMidConvoSystemMessages: true });
+    })).toEqual({ forceAdaptiveThinking: true, supportsMidConvoSystemMessages: true });
     // Nothing to prune → same reference (no needless clone) and undefined passthrough.
     const plain = { forceAdaptiveThinking: true };
-    expect(pruneAnthropicCompatForLink(plain, 'gateway')).toBe(plain);
-    expect(pruneAnthropicCompatForLink(undefined, 'subscription')).toBeUndefined();
+    expect(pruneAnthropicCompatForGateway(plain)).toBe(plain);
+    expect(pruneAnthropicCompatForGateway(undefined)).toBeUndefined();
     setXdGatewayModels([{ id: 'moonshot/kimi-k3', agents: ['pi'] }]);
     expect(resolvePiCindyGatewayModelSpec('xd', 'moonshot/kimi-k3')?.compat).toMatchObject({ thinkingFormat: 'openai' });
   });

@@ -185,6 +185,22 @@ beforeAll(async () => {
   await import('../codex-proxy-host.js');
 }, 60_000);
 
+
+/** 本地 403 拒绝的 localHandler:执行它并返回写出的状态码与响应体。 */
+async function runLocalRefusal(decision: unknown): Promise<{ status: number; body: { error?: { code?: string } } }> {
+  const handler = (decision as { localHandler?: (args: { res: unknown }) => Promise<void> }).localHandler;
+  if (typeof handler !== 'function') throw new Error('expected a local refusal handler');
+  let status = 0;
+  let raw = '';
+  await handler({
+    res: {
+      writeHead: (code: number) => { status = code; },
+      end: (chunk?: string) => { raw += chunk ?? ''; },
+    },
+  });
+  return { status, body: JSON.parse(raw) };
+}
+
 describe('withCodexUpstreamRecording', () => {
   const DEFAULT_UPSTREAM = 'https://gateway.example/v1';
   const ctxFor = (threadId?: string) => ({
@@ -1183,34 +1199,12 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     }
   });
 
-  it('routes the built-in Anthropic subscription through the bridge with host-owned Claude.ai OAuth', async () => {
+  it('refuses a Codex session pinned to the Claude subscription locally, never borrowing Claude.ai credentials', async () => {
     const host = await freshCodexProxyHost();
-    const { setAnthropicDiscoveredModels } = await import('../active-catalog.js');
     const { setProviderOAuthTokenReader } = await import('../provider-route.js');
     const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
-    setAnthropicDiscoveredModels([
-      {
-        id: 'claude-opus-5',
-        name: 'Opus 5',
-        contextWindow: 1_000_000,
-        efforts: ['low', 'medium', 'high'],
-        defaultEffort: 'high',
-        status: 'active',
-      },
-      {
-        id: 'claude-sonnet-4-5',
-        name: 'Sonnet 4.5',
-        contextWindow: 200_000,
-        efforts: ['low', 'medium', 'high'],
-        defaultEffort: 'high',
-        status: 'active',
-      },
-    ]);
-    setProviderOAuthTokenReader((providerId, agent) =>
-      providerId === 'anthropic' && agent === 'codex'
-        ? Promise.resolve('claude-subscription-token')
-        : null,
-    );
+    const tokenReader = vi.fn(() => Promise.resolve('claude-subscription-token'));
+    setProviderOAuthTokenReader(tokenReader);
     host.registerComposed(
       'session-anthropic-subscription',
       'thread-anthropic-subscription',
@@ -1219,76 +1213,34 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     setSessionProvider('session-anthropic-subscription', 'anthropic');
     host.setCodexProxyAuthInjection('oauth-bearer');
 
-    const decision = await Promise.resolve(host.createModelRoutingTransform()(
-      {
-        model: 'claude-opus-5',
-        input: [{ role: 'user', content: 'hello' }],
-      },
-      {
-        reqId: 1,
-        method: 'POST',
-        url: '/responses',
-        headers: {
-          'thread-id': 'thread-anthropic-subscription',
-          authorization: 'Bearer codex-openai-token-must-not-leak',
-          'chatgpt-account-id': 'account-must-not-leak',
+    try {
+      const decision = await Promise.resolve(host.createModelRoutingTransform()(
+        {
+          model: 'claude-opus-5',
+          input: [{ role: 'user', content: 'hello' }],
         },
-      },
-    ));
-
-    expect(decision).toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
-    const anthropicHandlerCalls = mockState.createResponsesAnthropicHandler.mock.calls as unknown as Array<[
-      {
-        buildHeaders: () => Promise<Record<string, string>>;
-        rewriteModel: (model: string) => string;
-      },
-    ]>;
-    const config = anthropicHandlerCalls.at(-1)?.[0];
-    expect(config).toBeDefined();
-    if (!config) throw new Error('Anthropic subscription bridge config was not captured');
-    const headers = await config.buildHeaders();
-    expect(headers).toEqual(expect.objectContaining({
-      'anthropic-version': '2023-06-01',
-      authorization: 'Bearer claude-subscription-token',
-      'x-app': 'cli',
-      'x-stainless-runtime': 'node',
-      'x-claude-code-session-id': expect.any(String),
-      'x-client-request-id': expect.any(String),
-    }));
-    expect(headers['anthropic-beta']?.split(',')).toEqual([
-      'claude-code-20250219',
-      'oauth-2025-04-20',
-      'context-1m-2025-08-07',
-    ]);
-    expect(config.rewriteModel('claude-opus-5[1m]')).toBe('claude-opus-5');
-
-    await Promise.resolve(host.createModelRoutingTransform()(
-      {
-        model: 'claude-sonnet-4-5',
-        input: [{ role: 'user', content: 'short context' }],
-      },
-      {
-        reqId: 2,
-        method: 'POST',
-        url: '/responses',
-        headers: {
-          'thread-id': 'thread-anthropic-subscription',
+        {
+          reqId: 1,
+          method: 'POST',
+          url: '/responses',
+          headers: {
+            'thread-id': 'thread-anthropic-subscription',
+            authorization: 'Bearer codex-openai-token-must-not-leak',
+          },
         },
-      },
-    ));
-    const ordinaryConfig = (mockState.createResponsesAnthropicHandler.mock.calls as unknown as Array<[
-      { buildHeaders: () => Promise<Record<string, string>> },
-    ]>).at(-1)?.[0];
-    expect(ordinaryConfig).toBeDefined();
-    if (!ordinaryConfig) throw new Error('ordinary Anthropic bridge config was not captured');
-    expect((await ordinaryConfig.buildHeaders())['anthropic-beta']?.split(',')).toEqual([
-      'claude-code-20250219',
-      'oauth-2025-04-20',
-    ]);
+      ));
 
-    clearSessionProvider('session-anthropic-subscription');
-    setProviderOAuthTokenReader(() => null);
-    setAnthropicDiscoveredModels([]);
+      // 不回落 ChatGPT 订阅 / 网关等默认上游,本地明确拒绝。
+      expect(decision).not.toHaveProperty('upstreamOverride');
+      const refusal = await runLocalRefusal(decision);
+      expect(refusal.status).toBe(403);
+      expect(refusal.body.error?.code).toBe('anthropic_subscription_claude_code_only');
+      expect(mockState.createResponsesAnthropicHandler).not.toHaveBeenCalled();
+      expect(tokenReader).not.toHaveBeenCalled();
+    } finally {
+      clearSessionProvider('session-anthropic-subscription');
+      setProviderOAuthTokenReader(() => null);
+    }
   });
 
   it('refreshes non-Anthropic provider OAuth without applying Claude.ai credentials or policy', async () => {
@@ -2357,7 +2309,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     setXdGatewayModels([]);
   });
 
-  it('fails the built-in Anthropic subscription bridge locally when Claude.ai OAuth is missing', async () => {
+  it('refuses a pinned Claude subscription locally even with no credentials at all', async () => {
     const host = await freshCodexProxyHost();
     const { setProviderOAuthTokenReader } = await import('../provider-route.js');
     const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
@@ -2382,13 +2334,13 @@ describe('chatBridgeCapabilitiesForRoute', () => {
       },
     ));
 
-    expect(decision).toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
+    expect((await runLocalRefusal(decision)).status).toBe(403);
     expect(mockState.createResponsesAnthropicHandler).not.toHaveBeenCalled();
 
     clearSessionProvider('session-anthropic-no-auth');
   });
 
-  it('routes an implicit Anthropic-only model through the subscription bridge', async () => {
+  it('never routes an implicit Claude-only model through the Claude subscription', async () => {
     const host = await freshCodexProxyHost();
     const {
       getActiveCatalog,
@@ -2441,23 +2393,9 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       ));
 
-      expect(decision).toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
-      const anthropicHandlerCalls = mockState.createResponsesAnthropicHandler.mock.calls as unknown as Array<[
-        {
-          upstreamBase: string;
-          authMode: string;
-          buildHeaders: () => Promise<Record<string, string>>;
-        },
-      ]>;
-      const config = anthropicHandlerCalls.at(-1)?.[0];
-      expect(config).toBeDefined();
-      if (!config) throw new Error('implicit Anthropic bridge config was not captured');
-      expect(config.upstreamBase).toBe('https://api.anthropic.com');
-      expect(config.authMode).toBe('oauth');
-      expect(await config.buildHeaders()).toEqual(expect.objectContaining({
-        authorization: 'Bearer claude-subscription-token',
-        'x-app': 'cli',
-      }));
+      // Claude 订阅不在 Codex 的来源里:不建 Anthropic 桥,也不读 Claude.ai token。
+      expect(mockState.createResponsesAnthropicHandler).not.toHaveBeenCalled();
+      expect(decision).not.toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
     } finally {
       host.unregister('session-implicit-anthropic');
       clearSessionProvider('session-implicit-anthropic');
@@ -2467,7 +2405,7 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     }
   });
 
-  it('falls back to connected Anthropic when XD advertises the model without credentials', async () => {
+  it('does not fall back to the Claude subscription when XD advertises the model without credentials', async () => {
     const host = await freshCodexProxyHost();
     const {
       getActiveCatalog,
@@ -2522,19 +2460,8 @@ describe('chatBridgeCapabilitiesForRoute', () => {
         },
       ));
 
-      expect(decision).toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
-      const config = (mockState.createResponsesAnthropicHandler.mock.calls as unknown as Array<[
-        {
-          upstreamBase: string;
-          authMode: string;
-          buildHeaders: () => Promise<Record<string, string>>;
-        },
-      ]>).at(-1)?.[0];
-      expect(config?.upstreamBase).toBe('https://api.anthropic.com');
-      expect(config?.authMode).toBe('oauth');
-      expect(await config?.buildHeaders()).toEqual(expect.objectContaining({
-        authorization: 'Bearer claude-subscription-token',
-      }));
+      expect(mockState.createResponsesAnthropicHandler).not.toHaveBeenCalled();
+      expect(decision).not.toEqual(expect.objectContaining({ localHandler: expect.any(Function) }));
     } finally {
       host.unregister('session-connected-anthropic');
       clearSessionProvider('session-connected-anthropic');
@@ -6875,102 +6802,10 @@ describe('codex proxy host', () => {
 });
 
 /**
- * 额度回调的安装门(#2626)。桥的 localHandler 绕开 compat-proxy 的转发层, 转发层上的
- * rate-limit observer 看不到这些响应, 只能由 host 在这里回喂 —— 但必须只对
- * 「内置 Anthropic + 订阅 OAuth + 官方 hostname」这一种路由安装, 其余形态误装会把
- * 别的账号 / 别的上游的数据写进 Claude 订阅快照。
+ * 额度回调的安装门(#2626)。Claude 订阅已不经 Codex 桥,Codex 的 Anthropic 桥对任何形态都
+ * 不装 Claude 订阅额度回调 —— 误装会把别的账号 / 别的上游的数据写进 Claude 订阅快照。
  */
 describe('createModelRoutingTransform —— Anthropic 桥的额度回调安装门', () => {
-  it('installs the quota callback for builtin Anthropic subscription OAuth and feeds the shared recorder', async () => {
-    const host = await freshCodexProxyHost();
-    const {
-      getActiveCatalog,
-      setAnthropicDiscoveredModels,
-      setXdGatewayModels,
-    } = await import('../active-catalog.js');
-    const {
-      setProviderOAuthTokenReader,
-      setProviderViewsReader,
-    } = await import('../provider-route.js');
-    const { clearSessionProvider } = await import('../session-provider-store.js');
-    const {
-      resetClaudeRateLimitHeadersDedup,
-      setClaudeRateLimitHeadersListener,
-    } = await import('../claude-rate-limit-headers-observer.js');
-
-    const model: import('@cindy/model-providers').CatalogModel = {
-      id: 'claude-quota-callback',
-      name: 'Quota Callback',
-      group: 'anthropic',
-      contextWindow: 200_000,
-      efforts: ['low', 'medium', 'high'],
-      defaultEffort: 'high',
-      status: 'active',
-    };
-    setAnthropicDiscoveredModels([model]);
-    setXdGatewayModels([{ id: model.id, agents: ['claude-code'] }]);
-    setProviderViewsReader(async () => getActiveCatalog().providers.map((provider) => ({
-      ...provider,
-      connected: provider.id === 'anthropic',
-    })));
-    setProviderOAuthTokenReader((providerId, agent) => (
-      providerId === 'anthropic' && agent === 'codex' ? 'claude-subscription-token' : null
-    ));
-    host.registerComposed('session-quota-callback', 'thread-quota-callback', 'PRODUCT_PROMPT');
-    clearSessionProvider('session-quota-callback');
-    host.setCodexProxyGatewayKeyReader(() => null);
-    host.setCodexProxyAuthInjection('oauth-bearer');
-    resetClaudeRateLimitHeadersDedup();
-    const listener = vi.fn();
-    setClaudeRateLimitHeadersListener(listener);
-
-    try {
-      await Promise.resolve(host.createModelRoutingTransform()(
-        { model: model.id, input: [{ role: 'user', content: 'hello' }] },
-        {
-          reqId: 1,
-          method: 'POST',
-          url: '/responses',
-          headers: { 'thread-id': 'thread-quota-callback' },
-        },
-      ));
-
-      const config = (mockState.createResponsesAnthropicHandler.mock.calls as unknown as Array<[
-        {
-          onUpstreamResponse?: (info: {
-            status: number;
-            responseHeaders: Headers;
-            requestHeaders: Readonly<Record<string, string>>;
-          }) => void;
-        },
-      ]>).at(-1)?.[0];
-      expect(config?.onUpstreamResponse).toBeTypeOf('function');
-
-      // 回调真的把 headers 喂到了共用入口 —— 只断言「装上了」会漏掉接错线的情形。
-      config?.onUpstreamResponse?.({
-        status: 200,
-        responseHeaders: new Headers({
-          'anthropic-ratelimit-unified-5h-utilization': '0.34',
-          'anthropic-ratelimit-unified-status': 'allowed',
-        }),
-        requestHeaders: { authorization: 'Bearer claude-subscription-token' },
-      });
-      expect(listener).toHaveBeenCalledTimes(1);
-      expect(listener.mock.calls[0][0].fiveHour.utilization).toBeCloseTo(34, 5);
-      expect(listener.mock.calls[0][0].source).toBe('unified-headers');
-      expect(listener.mock.calls[0][1]).toBe('claude-subscription-token');
-    } finally {
-      host.unregister('session-quota-callback');
-      clearSessionProvider('session-quota-callback');
-      setProviderOAuthTokenReader(() => null);
-      setProviderViewsReader(async () => []);
-      setAnthropicDiscoveredModels([]);
-      setXdGatewayModels([]);
-      host.setCodexProxyGatewayKeyReader(() => null);
-      setClaudeRateLimitHeadersListener(() => undefined);
-    }
-  });
-
   it('does not install it for a custom anthropic-compatible provider on an API key', async () => {
     const host = await freshCodexProxyHost();
     const { buildUserProvider } = await import('@cindy/model-providers');

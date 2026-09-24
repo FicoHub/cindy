@@ -26,11 +26,24 @@ import { BUNDLED_CATALOG } from "../catalog.js";
 import { providerCatalogId } from "../provider-identity.js";
 
 describe('native subscription instances', () => {
-  it.each(['claude', 'xai'] as const)('%s shares definitions but keeps unique routing identity', native => {
-    const brand = native === 'claude' ? 'anthropic' : 'xai';
-    const make = (id: string) => buildUserProvider({ id, name: brand, auth: { method: 'oauth', native }, runtimes: native === 'claude'
-      ? { 'claude-code': { baseUrl: 'https://api.anthropic.com', wireProtocol: 'anthropic-messages', models: [] } }
-      : { codex: { baseUrl: 'https://api.x.ai/v1', wireProtocol: 'openai-responses', models: [] } } });
+  it('retired independent Claude accounts stay listed but serve no agent', () => {
+    const account = buildUserProvider({
+      id: 'anthropic-a',
+      name: 'anthropic',
+      auth: { method: 'oauth', native: 'claude' },
+      runtimes: { 'claude-code': { baseUrl: 'https://api.anthropic.com', wireProtocol: 'anthropic-messages', models: [] } },
+    });
+    expect(providerCatalogId(account)).toBe('anthropic');
+    expect(account.auth.native).toBe('claude');
+    expect(account.agents).toEqual([]);
+    expect(Object.keys(account.routing)).toEqual(['claude-code']);
+  });
+
+  it('xai shares definitions but keeps unique routing identity', () => {
+    const native = 'xai' as const;
+    const brand = 'xai';
+    const make = (id: string) => buildUserProvider({ id, name: brand, auth: { method: 'oauth', native },
+      runtimes: { codex: { baseUrl: 'https://api.x.ai/v1', wireProtocol: 'openai-responses', models: [] } } });
     const a = make(`${brand}-a`);
     const b = make(`${brand}-b`);
     expect(a.id).not.toBe(b.id);
@@ -40,11 +53,7 @@ describe('native subscription instances', () => {
     for (const agent of a.agents) expect(a.routing[agent]?.authStrategy).toBe('provider-oauth-header');
     const builtin = BUNDLED_CATALOG.providers.find(provider => provider.id === brand)!;
     for (const agent of a.agents) {
-      expect(a.routing[agent]).toEqual({
-        ...builtin.routing[agent],
-        authStrategy: 'provider-oauth-header',
-        ...(native === 'claude' && agent === 'claude-code' ? { headerDelete: ['x-api-key'] } : {}),
-      });
+      expect(a.routing[agent]).toEqual({ ...builtin.routing[agent], authStrategy: 'provider-oauth-header' });
     }
     expect(a.auth.native).toBe(native);
     expect(a.imageModels).toBeUndefined();

@@ -592,6 +592,9 @@ export function buildUserProvider(
       id: runtimeProviderId,
       name: config.name,
       source: 'user',
+      // 独立 Claude 账号已停用:它的凭证由 Cindy 自己登录并保存,而 Claude 订阅只允许经
+      // 官方 CLI 自己的登录使用。条目保留在设置里供用户查看 / 删除,不再提供给任何 agent。
+      ...(native === 'claude' ? { agents: [] } : {}),
       auth: { method: 'oauth', native },
       routing: Object.fromEntries(Object.entries(identity.routing).map(([agent, route]) => [
         agent, {

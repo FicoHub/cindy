@@ -692,7 +692,6 @@ import { clearModelVisibilityMirror } from './maker-host/model-visibility-mirror
 import { setClaudeSupportedModelsListener } from '@cindy/maker-core';
 import {
   noteAnthropicSdkSupportedModels,
-  refreshAnthropicModelsFromHttp,
   clearAnthropicDiscoveredModels,
 } from './maker-host/model-discovery/anthropic.js';
 import {
@@ -808,12 +807,20 @@ import {
   resetImDefaultSettingsChannel,
   writeImDefaultSettingsPatch,
 } from './im/defaultSettingsStore.js';
-import { hasClaudeAiOAuth } from './maker-host/claude-credentials-store.js';
+import { hasClaudeNativeLogin } from './maker-host/claude-native-auth.js';
 import {
-  disconnectClaudeAiOAuth,
-  reconnectClaudeAiOAuth,
-} from './maker-host/claude-oauth-refresh.js';
-import { beginClaudeLocalLogin, cancelClaudeOAuthLogin } from './maker-host/claude-oauth-login.js';
+  connectClaudeNativeLogin,
+  disconnectClaudeNativeLogin,
+} from './maker-host/claude-native-connection.js';
+import {
+  beginClaudeCliLogin,
+  cancelClaudeCliLogin,
+  onClaudeCliLoginStatusChange,
+  readClaudeCliLoginStatus,
+  runClaudeCliLogin,
+} from './maker-host/claude-native-cli.js';
+import { closeClaudeCliProxyBridge } from './maker-host/claude-cli-proxy-bridge.js';
+import { isNativeProviderAuthBound, isNativeProviderAuthRevoked } from './maker-host/nativeProviderAuthBinding.js';
 import {
   runGrokOAuthLogin,
   cancelGrokOAuthLogin,
@@ -2575,6 +2582,8 @@ registerGhostIpc();
 registerPluginMarketIpc();
 registerPluginPublisherIpc();
 setAppSessionCommitBoundaryHook(() => {
+  // 进行中的 Claude Code 登录属于旧 owner:结束 CLI 子进程,不让它在新 owner 下完成。
+  cancelClaudeCliLogin();
   clearAllSessionAttention();
   remoteDesktopViewerWindows.reset();
   ghostPanelWindowsController.closeForOwnerChange();
@@ -5068,35 +5077,51 @@ const registerIpcHandlers = () => {
     tapWindowBroadcast(MAKER_PUSH.CLAUDE_SESSION_ROUTE_CHANGED, { sessionId, route });
   });
 
-  // ── 本机 Claude Code 订阅：只管理 Cindy 的使用许可 ─────────────────────────
-  // 与鉴权模式开关正交:管理订阅凭证本身(像 Codex 的 OAuth 登录独立于 API 模式)。
+  // ── 本机 Claude Code 订阅:登录交给内置 CLI,Cindy 只管使用许可 ─────────────────
+  // 登录 = 拉起 CLI 的 `claude auth login`(凭证由 CLI 自己保存,与终端 claude 共用);
+  // 断开 = 撤销 Cindy 的使用许可,不登出 CLI。Cindy 不读取、不保存订阅凭证(claude-native-cli)。
   // Anthropic 模型清单动态发现接线(2026-07-19 统一重构):
   //   - active-catalog 统一收口 capabilities 刷新 + revision 广播;
   //   - SDK supportedModels 捕获(maker-core 会话 init 后上报)是能力字段权威。
   setClaudeSupportedModelsListener(noteAnthropicSdkSupportedModels);
+  // CLI 登录态在 Cindy 之外变化(终端里登录 / 登出)时同步连接态;登出与手动断开同款收尾。
+  onClaudeCliLoginStatusChange((status) => {
+    void broadcastClaudeAuthStateChanged();
+    syncClaudeSubscriptionUsageForAuthChange();
+    if (!status.loggedIn) {
+      resetProviderModelAutoRefreshCooldowns('anthropic');
+      void clearAnthropicDiscoveredModels().catch(() => undefined);
+    }
+  });
+  // 启动时后台读一次(不阻塞):已连接的用户由 provider 目录加载等这次结果;
+  // 从未连接的用户据此自动沿用本机登录。明确断开过的用户不再读。
+  if (!isNativeProviderAuthRevoked('anthropic')) void readClaudeCliLoginStatus();
+  // 退出时结束进行中的登录子进程(CLI 的本机回调监听没有超时),并关闭 CLI 的代理桥。
+  app.once('will-quit', () => {
+    cancelClaudeCliLogin();
+    void closeClaudeCliProxyBridge();
+  });
   ipcMain.handle(MAKER_IPC_INVOKE.CLAUDE_OAUTH_STATUS, async () => {
-    return { authorized: hasClaudeAiOAuth() };
+    // 没有使用许可时结论恒为 false,不必拉起 CLI(状态栏等常驻读取对所有用户都会调用)。
+    if (isNativeProviderAuthBound('anthropic')) await readClaudeCliLoginStatus({ maxAgeMs: 30_000 });
+    return { authorized: hasClaudeNativeLogin() };
   });
   ipcMain.handle(MAKER_IPC_INVOKE.CLAUDE_OAUTH_LOGIN, async (event, loginKey?: string) => {
     assertTrustedAppRendererEvent(event);
     const owner = activeOwnerScopeKey();
     if (isAppSessionBoundaryPending() || !getActiveAppSession().dataOwnerId)
       return { ok: false, reason: 'login_cancelled', authorized: false };
-    const signal = beginClaudeLocalLogin(loginKey);
+    const signal = beginClaudeCliLogin(loginKey);
+    const result = await runClaudeCliLogin(signal);
+    if (signal.aborted || owner !== activeOwnerScopeKey() || isAppSessionBoundaryPending())
+      return { ok: false, reason: 'login_cancelled', authorized: false };
+    if (!result.ok) return { ok: false, reason: result.reason, authorized: false };
     resetProviderModelAutoRefreshCooldowns('anthropic');
-    await clearAnthropicDiscoveredModels();
-    if (signal.aborted || owner !== activeOwnerScopeKey() || isAppSessionBoundaryPending())
-      return { ok: false, reason: 'login_cancelled', authorized: false };
-    await ensureAnthropicCompatProxyReady();
-    if (signal.aborted || owner !== activeOwnerScopeKey() || isAppSessionBoundaryPending())
-      return { ok: false, reason: 'login_cancelled', authorized: false };
-    if (!reconnectClaudeAiOAuth())
-      return { ok: false, reason: 'local_unavailable', authorized: false };
     // Binding is the commit point; auxiliary refresh must not prolong the cancellable login.
+    connectClaudeNativeLogin();
     void broadcastClaudeAuthStateChanged();
     syncClaudeSubscriptionUsageForAuthChange();
-    void refreshAnthropicModelsFromHttp();
-    return { ok: true, authorized: hasClaudeAiOAuth() };
+    return { ok: true, authorized: hasClaudeNativeLogin() };
   });
   ipcMain.handle(
     MAKER_IPC_INVOKE.CLAUDE_OAUTH_LOGOUT,
@@ -5112,10 +5137,10 @@ const registerIpcHandlers = () => {
       ) {
         throwIpcError('INVALID_PARAMS', 'Provider owner changed');
       }
-      // Cancel pending Cindy login/refresh before revoking the binding; keep native credentials.
+      // Cancel a pending CLI login before revoking the binding; keep the CLI's own login.
       try {
-        cancelClaudeOAuthLogin();
-        await disconnectClaudeAiOAuth();
+        cancelClaudeCliLogin();
+        await disconnectClaudeNativeLogin();
         if (owner !== activeOwnerScopeKey() || isAppSessionBoundaryPending())
           return { authorized: false };
         resetProviderModelAutoRefreshCooldowns('anthropic');
@@ -5132,13 +5157,13 @@ const registerIpcHandlers = () => {
       syncClaudeSubscriptionUsageForAuthChange();
       // 模型清单动态发现:登出完成前清空清单 + 删磁盘缓存,并等待旧 SDK 写盘收尾。
       await clearAnthropicDiscoveredModels();
-      return { authorized: hasClaudeAiOAuth() };
+      return { authorized: hasClaudeNativeLogin() };
     },
   );
   ipcMain.handle(MAKER_IPC_INVOKE.CLAUDE_OAUTH_CANCEL, async (event, loginKey?: string) => {
     assertTrustedAppRendererEvent(event);
-    cancelClaudeOAuthLogin(loginKey);
-    return { authorized: hasClaudeAiOAuth() };
+    cancelClaudeCliLogin(loginKey);
+    return { authorized: hasClaudeNativeLogin() };
   });
 
   // 上游作废 xAI 凭证、收口自动登出后,走和手动登出完全一致的 UI 收尾(广播 + 清账号级

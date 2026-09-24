@@ -885,10 +885,6 @@ import {
   beginProviderRouteMutation,
   setPendingCredentialSwitchReader,
 } from '../maker-host/provider-route.js';
-import {
-  getAnthropicModelDiscoveryFailure,
-  refreshAnthropicModelsFromHttp,
-} from '../maker-host/model-discovery/anthropic.js';
 import { refreshXaiModelsFromHttp } from '../maker-host/model-discovery/xai.js';
 import { refreshBuiltinProviderModels, refreshModelsWithCatalog } from '../maker-host/provider-model-refresh.js';
 import {
@@ -5591,7 +5587,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     refreshProvider: (providerId) =>
       refreshBuiltinProviderModels(providerId, {
         refreshXd: options.refreshXdGatewayModels,
-        refreshAnthropic: refreshAnthropicModelsFromHttp,
+        // Claude 订阅清单只由 Claude Code 会话 init 的 SDK 捕获刷新(Cindy 不带订阅凭证
+        // 请求 Anthropic),这里没有可主动拉取的通道。
+        refreshAnthropic: async () => true,
         refreshOpenAi: () =>
           maker.refreshAgentLocalModels('codex', { credentialMode: 'oauth-bearer' }),
         refreshOpenAiMedia: refreshOpenAiMediaModels,
@@ -5689,13 +5687,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 改用不抛的判定决定「这次读取要不要放行本机绑定自愈 + 清单拉取」。
     isTrustedSender: (event) =>
       isTrustedAppRendererEvent(event as Parameters<typeof isTrustedAppRendererEvent>[0]),
-    // 动态清单重新发现：目前只有 anthropic 订阅是「清单唯一来源是动态发现」的供应商。
-    // 拉取内部只记账不抛，完成后现读一次失败归因回给 renderer。
-    rediscoverModels: async (providerId) => {
-      if (providerId !== 'anthropic') return null;
-      await refreshAnthropicModelsFromHttp();
-      return getAnthropicModelDiscoveryFailure();
-    },
+    // 动态清单重新发现:目前没有需要主动重拉的供应商(anthropic 清单来自 Claude Code
+    // 会话 init 的 SDK 捕获,没有 HTTP 发现通道,也就没有失败态)。
+    rediscoverModels: async () => null,
     refreshBuiltinModels: refreshProviderModelsManually,
     requestModelsAutoRefresh: requestProviderModelAutoRefresh,
     scanLocalCli: () => scanLocalCliAuth(createLocalCliScanDeps()),

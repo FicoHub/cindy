@@ -767,8 +767,10 @@ export function AddProviderWizard({
       const result = await window.electronAPI.maker.claudeOAuthLogin(loginKey);
       if (localLoginRef.current !== login) return;
       if (result.ok) onDone('anthropic');
-      else if (result.reason !== 'login_cancelled') toast.error(t('settings.providers.localAccount.unavailable'));
-    } catch { if (localLoginRef.current === login) toast.error(t('settings.providers.localAccount.unavailable')); }
+      else if (result.reason === 'local_unavailable') toast.error(t('settings.providers.localAccount.unavailable'));
+      else if (result.reason === 'not_a_subscription') toast.error(t('settings.connections.claude.toast.notSubscription'));
+      else if (result.reason !== 'login_cancelled') toast.error(t('settings.connections.claude.toast.loginFailed'));
+    } catch { if (localLoginRef.current === login) toast.error(t('settings.connections.claude.toast.loginFailed')); }
     finally {
       if (localLoginRef.current === login) {
         localLoginRef.current = null;
@@ -1801,7 +1803,8 @@ export function AddProviderWizard({
                         {t('settings.providers.openai.useLocalAccount')}
                       </Button>
                     )}
-                    {sel.provider.id === 'anthropic' && !providers.some(p => p.id === 'anthropic' && !p.removed && (p.connected || p.removed === false)) && (
+                    {/* Claude 订阅唯一入口:已添加时点它等同重新连接本机 Claude Code 登录。 */}
+                    {sel.provider.id === 'anthropic' && (
                       <Button
                         variant="secondary"
                         size="lg"
@@ -1811,15 +1814,18 @@ export function AddProviderWizard({
                         {t('settings.providers.localAccount.useClaude')}
                       </Button>
                     )}
-                    <Button variant="secondary" size="lg" type="button" onClick={() => void handleAuthorize()}>
-                      {t(
-                        ['openai', 'anthropic', 'xai'].includes(sel.provider.id)
-                            ? 'settings.providers.openai.addIndependentAccount'
-                            : sel.provider.auth.oauth?.flow === 'device-code'
-                              ? 'settings.providers.wizard.authorizeWithDeviceCode'
-                              : 'settings.providers.button.authorize',
-                      )}
-                    </Button>
+                    {/* Claude 订阅只能经内置 Claude Code 自己的登录使用,不提供独立账号。 */}
+                    {sel.provider.id !== 'anthropic' && (
+                      <Button variant="secondary" size="lg" type="button" onClick={() => void handleAuthorize()}>
+                        {t(
+                          ['openai', 'xai'].includes(sel.provider.id)
+                              ? 'settings.providers.openai.addIndependentAccount'
+                              : sel.provider.auth.oauth?.flow === 'device-code'
+                                ? 'settings.providers.wizard.authorizeWithDeviceCode'
+                                : 'settings.providers.button.authorize',
+                        )}
+                      </Button>
+                    )}
                     {sel.provider.id === 'xai' && (
                       <Button variant="secondary" size="lg" type="button" onClick={() => void handleAuthorize('device')}>
                         {t('settings.connections.xai.deviceLogin')}

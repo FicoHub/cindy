@@ -1060,22 +1060,20 @@ describe('maker:event hot path ordering', () => {
     expect(piDoneSource).toContain('await recordSchedulerTurnCost({');
   });
 
-  it('refreshes Claude credential cache before dropping mismatched header snapshots', () => {
+  it('records Claude subscription quota events only while the native login is connected', () => {
     const listenerSource = usageSource.match(
-      /setClaudeRateLimitHeadersListener\(\(snapshot, requestBearerToken\) => \{[\s\S]*?\n {2}\}\);/,
+      /setClaudeRateLimitInfoListener\(\(info\) => \{[\s\S]*?\n {2}\}\);/,
     )?.[0];
     expect(listenerSource).toBeTruthy();
     if (!listenerSource) return;
 
-    expect(listenerSource).toContain('let currentToken = _currentClaudeToken;');
-    expect(listenerSource).toContain(
-      'currentToken = readClaudeCredentialsInfo()?.accessToken ?? null;',
-    );
+    // 登出 / 断开后晚到的事件必须丢弃,不能复活刚清掉的快照。
     expectOrder(
       listenerSource,
-      'currentToken = readClaudeCredentialsInfo()?.accessToken ?? null;',
-      'if (requestBearerToken !== currentToken) return false;',
+      'if (!hasClaudeNativeLogin()) return;',
+      'void recordClaudeSubscriptionUsageSnapshot(',
     );
+    expect(usageSource).not.toContain('setClaudeRateLimitHeadersListener');
   });
 });
 
