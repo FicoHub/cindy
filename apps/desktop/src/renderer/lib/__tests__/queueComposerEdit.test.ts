@@ -72,6 +72,43 @@ describe('queueMessageToComposerEditDraft', () => {
     expect(prepared.draft.attachments).toHaveLength(1);
   });
 
+  it('restores queued annotations as an editable source image plus vector strokes', () => {
+    const entry = queuedMessage();
+    const burnedUrl = 'xdt-image://session/annotated.png';
+    const sourceUrl = 'xdt-image://session/source.jpg';
+    const strokes = [{ points: [{ x: 0.25, y: 0.75 }] }];
+    entry.files = [
+      {
+        ...entry.files![0],
+        path: 'C:\\images\\annotated.png',
+        url: burnedUrl,
+        annotated: true,
+      },
+    ];
+    entry.chatMessage.retryFiles = [
+      {
+        ...entry.files[0],
+        annotationSourceUrl: sourceUrl,
+        annotationStrokes: strokes,
+      },
+    ];
+
+    const prepared = queueMessageToComposerEditDraft('session-1', entry);
+
+    expect(prepared.draft.attachments[0]).toMatchObject({
+      id: 'existing-image',
+      path: sourceUrl,
+      url: sourceUrl,
+      ext: '.jpg',
+      mimeType: 'image/jpeg',
+      annotationStrokes: strokes,
+      cacheUrlShared: true,
+      stagedPathShared: true,
+    });
+    expect(prepared.draft.attachments[0]).not.toHaveProperty('annotated');
+    expect(prepared.draft.attachments[0]?.annotationStrokes).not.toBe(strokes);
+  });
+
   it('restores structured references, file mentions and pasted text chips', () => {
     const entry = queuedMessage();
     const messageHref = 'cindy://session/source?message=message-1';

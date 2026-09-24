@@ -80,7 +80,7 @@ vi.mock('@/lib/composerDraftStore', () => ({
   }),
 }));
 
-import { makerChatStore } from '@/lib/makerChatStore';
+import { makerChatStore, type QueuedMessage } from '@/lib/makerChatStore';
 
 const MODEL = 'claude-opus-4-7';
 const EFFORT = 'medium';
@@ -160,7 +160,7 @@ function projection(
   };
 }
 
-function queued(clientId: string, text: string): AgentInputQueuedMessage {
+function queued(clientId: string, text: string): QueuedMessage {
   return {
     clientId,
     text,
@@ -616,6 +616,7 @@ describe('renderer input queue facade', () => {
         category: 'image',
         mimeType: 'image/png',
         url: 'xdt-image://session/old.png',
+        annotated: true,
       },
       {
         id: 'old-staged-file',
@@ -625,6 +626,13 @@ describe('renderer input queue facade', () => {
         size: 1,
         category: 'file',
         mimeType: 'application/octet-stream',
+      },
+    ];
+    item.chatMessage.retryFiles = [
+      {
+        ...item.files[0],
+        annotationSourceUrl: 'xdt-image://session/old-source.png',
+        annotationStrokes: [{ points: [{ x: 0.25, y: 0.75 }] }],
       },
     ];
 
@@ -644,7 +652,10 @@ describe('renderer input queue facade', () => {
     });
 
     expect(saved).toBe(true);
-    expect(cleanupCachedImages).toHaveBeenCalledWith(['xdt-image://session/old.png']);
+    expect(cleanupCachedImages).toHaveBeenCalledWith([
+      'xdt-image://session/old.png',
+      'xdt-image://session/old-source.png',
+    ]);
     expect(cleanupStagedChatAttachments).toHaveBeenCalledWith(['C:\\cache\\old.bin']);
   });
 

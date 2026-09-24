@@ -5,7 +5,7 @@ import type { ComposerDraft } from '@/lib/composerDraftStore';
 import { formatQuoteForSend, parseChatQuoteSegments, type ChatQuoteSegment } from '@/lib/chatQuotes';
 import { COMPOSER_QUOTE_NODE_TYPE } from '@/lib/composerQuoteDocument';
 import { normalizeComposerDocumentJSON } from '@/lib/composerListDocument';
-import type { AttachedFile } from '@/lib/fileTypes';
+import { extractExt, getMimeType, type AttachedFile } from '@/lib/fileTypes';
 import type { QueuedMessage } from '@/lib/makerChatStore';
 import { formatMentionRef } from '@/lib/mentionRefFormat';
 import type { AgentInputMention, AgentInputReference } from '../../shared/agentInputQueue';
@@ -313,11 +313,39 @@ export function queueMessageToComposerEditDraft(
   entry: QueuedMessage,
 ): QueueComposerEditDraft {
   const text = entry.chatMessage.content ?? entry.text;
-  const attachments: AttachedFile[] = (entry.files ?? []).map(({ pathOrigin: _, ...file }) => ({
-    ...file,
-    cacheUrlShared: true,
-    stagedPathShared: true,
-  }));
+  const retryFilesById = new Map(
+    (entry.chatMessage.retryFiles ?? []).map((file) => [file.id, file]),
+  );
+  const attachments: AttachedFile[] = (entry.files ?? []).map(({ pathOrigin: _, ...file }) => {
+    const retryFile = retryFilesById.get(file.id);
+    const annotationSourceUrl =
+      file.annotated === true &&
+      retryFile?.annotated === true &&
+      retryFile.path === file.path &&
+      retryFile.url === file.url &&
+      retryFile.annotationSourceUrl &&
+      retryFile.annotationStrokes?.length
+        ? retryFile.annotationSourceUrl
+        : null;
+    if (!annotationSourceUrl || !retryFile?.annotationStrokes) {
+      return { ...file, cacheUrlShared: true, stagedPathShared: true };
+    }
+    const sourceExt = extractExt(annotationSourceUrl) || file.ext;
+    const editableFile = { ...file };
+    delete editableFile.annotated;
+    return {
+      ...editableFile,
+      path: annotationSourceUrl,
+      url: annotationSourceUrl,
+      ext: sourceExt,
+      mimeType: getMimeType(sourceExt, 'image'),
+      annotationStrokes: retryFile.annotationStrokes.map((stroke) => ({
+        points: stroke.points.map((point) => ({ ...point })),
+      })),
+      cacheUrlShared: true,
+      stagedPathShared: true,
+    };
+  });
   const document = structuredQueueDocument(entry, text);
 
   return {

@@ -13673,19 +13673,42 @@ function cleanupUnacceptedQueueEditMaterialization(
 
 function cleanupAcceptedQueueEditReplacements(
   originalFiles: readonly AttachedFile[],
+  originalRetryFiles: readonly AttachedFile[],
+  preparedFiles: readonly AttachedFile[],
   acceptedFiles: readonly AttachedFile[],
 ): void {
   const acceptedUrls = new Set(acceptedFiles.map((file) => file.url).filter(Boolean));
-  const removedUrls = originalFiles
-    .map((file) => file.url)
-    .filter(
-      (url): url is string =>
-        Boolean(url?.startsWith('xdt-image://')) && !acceptedUrls.has(url),
-    );
+  const retainedUrls = new Set(
+    [...preparedFiles, ...acceptedFiles].flatMap((file) =>
+      [file.url, file.annotationSourceUrl].filter((url): url is string => Boolean(url)),
+    ),
+  );
+  const originalFilesById = new Map(originalFiles.map((file) => [file.id, file]));
+  const removedUrls = [
+    ...originalFiles
+      .map((file) => file.url)
+      .filter(
+        (url): url is string => Boolean(url?.startsWith('xdt-image://')) && !acceptedUrls.has(url),
+      ),
+    ...originalRetryFiles
+      .filter((file) => {
+        const original = originalFilesById.get(file.id);
+        return (
+          original?.path === file.path &&
+          original.url === file.url &&
+          file.cacheUrlShared !== true &&
+          Boolean(file.annotationSourceUrl?.startsWith('xdt-image://')) &&
+          !retainedUrls.has(file.annotationSourceUrl!)
+        );
+      })
+      .map((file) => file.annotationSourceUrl!),
+  ];
   if (removedUrls.length > 0) {
-    void window.electronAPI.cleanupCachedImages(removedUrls).catch((error: unknown) => {
-      log.warn('cleanup replaced queue edit images failed:', error);
-    });
+    void window.electronAPI
+      .cleanupCachedImages([...new Set(removedUrls)])
+      .catch((error: unknown) => {
+        log.warn('cleanup replaced queue edit images failed:', error);
+      });
   }
 
   const acceptedPaths = new Set(acceptedFiles.map((file) => file.path));
@@ -13875,7 +13898,12 @@ async function updateQueueItemContent(
   const accepted = projection.pendingQueue.find((item) => item.clientId === clientId);
   const updated = queuedContentProjectionMatches(accepted, replacement);
   if (updated && accepted) {
-    cleanupAcceptedQueueEditReplacements(queued.files ?? [], accepted.files ?? []);
+    cleanupAcceptedQueueEditReplacements(
+      queued.files ?? [],
+      queued.chatMessage.retryFiles ?? [],
+      preparedFiles,
+      accepted.files ?? [],
+    );
     cleanupAcceptedQueueEditMaterializationSources(
       queued.files ?? [],
       files,
