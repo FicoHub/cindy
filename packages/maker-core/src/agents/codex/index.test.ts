@@ -24904,6 +24904,59 @@ describe('CodexAgent rewind', () => {
     await handle.close();
   });
 
+  it('forks with a persisted anchor when a daemon without a parseable version rejects thread/rollback as removed (#5002 P1)', async () => {
+    const agent = new CodexAgent(createDeps());
+    // userAgent 无版本串:版本门控无法判断 fork 能力,但 unknown variant 拒绝已证明
+    // daemon ≥ 0.156.0,有持久化锚点时必须走 fork 而不是报 rewind unavailable。
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadRollback) {
+        throw Object.assign(new Error(ROLLBACK_REMOVED_ERROR_TEXT), { code: -32600 });
+      }
+    }, { userAgent: 'codex-remote' });
+    const handle = await agent.startSession({
+      sessionId: 'session-rewind-rollback-removed-unknown-ua',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const commitRewindFiles = handle.commitRewindFiles;
+    if (!commitRewindFiles) throw new Error('expected commitRewindFiles');
+
+    await expect(commitRewindFiles('', '', { tailTurnsToDrop: 1, lastTurnId: 'persisted-boundary' }))
+      .resolves.toEqual({ sdkSessionId: 'fork-thread-id' });
+    expect(host.request).toHaveBeenCalledWith(Method.ThreadFork, {
+      threadId: 'start-thread-id',
+      lastTurnId: 'persisted-boundary',
+      excludeTurns: true,
+      cwd: '/repo',
+    });
+    await handle.close();
+  });
+
+  it('resolves the boundary via thread/turns/list when an unversioned daemon has removed thread/rollback (#5002 P1)', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ThreadRollback) {
+        throw Object.assign(new Error(ROLLBACK_REMOVED_ERROR_TEXT), { code: -32600 });
+      }
+      if (method === Method.ThreadTurnsList) return {
+        data: [{ id: 'boundary-turn', status: 'completed', startedAt: 100 }], nextCursor: null,
+      };
+    }, { userAgent: 'codex-remote' });
+    const handle = await agent.startSession({
+      sessionId: 'session-rewind-rollback-removed-unknown-ua-list',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+    });
+    const commitRewindFiles = handle.commitRewindFiles;
+    if (!commitRewindFiles) throw new Error('expected commitRewindFiles');
+
+    await expect(commitRewindFiles('', '', { tailTurnsToDrop: 1, forkAtTimestampMs: 150_500 }))
+      .resolves.toEqual({ sdkSessionId: 'fork-thread-id' });
+    expect(host.request).toHaveBeenCalledWith(Method.ThreadTurnsList, expect.objectContaining({ threadId: 'start-thread-id' }));
+    expect(host.request).toHaveBeenCalledWith(Method.ThreadFork, expect.objectContaining({ lastTurnId: 'boundary-turn' }));
+    await handle.close();
+  });
+
   it('classifies the 0.156 unknown-variant rejection as rollback unavailable (#4994)', () => {
     expect(isCodexRollbackMethodRemovedError(new Error(ROLLBACK_REMOVED_ERROR_TEXT))).toBe(true);
     expect(isCodexRollbackUnavailableError(new Error(ROLLBACK_REMOVED_ERROR_TEXT))).toBe(true);

@@ -14149,16 +14149,23 @@ export class CodexAgent extends BaseAgent {
           // turn 作 lastTurnId,thread/fork 出一条截断后的新线程并把活动线程切过去。
           // native turn 计数含失败/重试轮次,与可见 user 消息数不一一对应,所以边界只认
           // 宿主传来的持久化锚点或按事件时间戳经 thread/turns/list 解析,绝不按 numTurns 数。
-          if (!supportsCodexNativeTurnFork(initResp.userAgent)) {
+          //
+          // daemon 以 unknown variant 拒绝 thread/rollback 本身就证明它 ≥ 0.156.0(该方法
+          // 在此版本才被移除),原生 fork 与 thread/turns/list 必然可用;userAgent 缺失或
+          // 无法解析时不能再拿版本串否决 fork(#5002 review P1)。
+          const unavailableReason = rollbackUnavailableReason ?? 'thread/rollback unavailable';
+          const rollbackMethodRemoved = unavailableReason.includes('unknown method')
+            || unavailableReason.includes('removed in Codex');
+          if (!rollbackMethodRemoved && !supportsCodexNativeTurnFork(initResp.userAgent)) {
             throw new Error(
-              `Codex app-server ${initResp.userAgent ?? 'unknown'}: ${rollbackUnavailableReason} and predates native turn fork (0.145.0); rewind is unavailable for this thread`,
+              `Codex app-server ${initResp.userAgent ?? 'unknown'}: ${unavailableReason} and predates native turn fork (0.145.0); rewind is unavailable for this thread`,
             );
           }
           let lastTurnId = normalizeNativeForkTurnId(rewindOpts?.lastTurnId);
           if (!lastTurnId) {
-            if (!codexUserAgentAtLeast(initResp.userAgent, [0, 153, 4])) {
+            if (!rollbackMethodRemoved && !codexUserAgentAtLeast(initResp.userAgent, [0, 153, 4])) {
               throw new Error(
-                `Codex app-server ${initResp.userAgent ?? 'unknown'}: ${rollbackUnavailableReason} and cannot list native turns (0.153.4); rewind is unavailable for this thread`,
+                `Codex app-server ${initResp.userAgent ?? 'unknown'}: ${unavailableReason} and cannot list native turns (0.153.4); rewind is unavailable for this thread`,
               );
             }
             lastTurnId = await resolveForkTurnAnchor(
@@ -14171,13 +14178,13 @@ export class CodexAgent extends BaseAgent {
             threadId,
             tailTurnsToDrop,
             lastTurnId,
-            reason: rollbackUnavailableReason,
+            reason: unavailableReason,
           });
           assertCurrentHost('thread/fork (rewind)');
           const forkParams: ThreadForkParams = {
             threadId,
             lastTurnId,
-            ...(supportsCodexForkExcludeTurns(initResp.userAgent) ? { excludeTurns: true } : {}),
+            ...(rollbackMethodRemoved || supportsCodexForkExcludeTurns(initResp.userAgent) ? { excludeTurns: true } : {}),
             ...(opts.workingDir ? { cwd: opts.workingDir } : {}),
           };
           const forkResp = await host.request<ThreadForkResponse>(Method.ThreadFork, forkParams);
