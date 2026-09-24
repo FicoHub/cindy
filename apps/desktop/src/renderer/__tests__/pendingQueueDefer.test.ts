@@ -504,6 +504,57 @@ describe('renderer input queue facade', () => {
     expect(saved).toBe(true);
   });
 
+  it('recycles an ordinary controller image after a remote queue edit is accepted', async () => {
+    const sid = `remote-image-${Math.random().toString(36).slice(2, 8)}`;
+    const deviceId = 'dev-remote-image';
+    const item = queued('q-remote-image', 'ordinary remote image edit');
+    const sourceUrl = 'xdt-image://session/ordinary-source.png';
+    const source: AttachedFile = {
+      id: 'remote-image',
+      name: 'ordinary-source.png',
+      path: 'C:\\images\\ordinary-source.png',
+      ext: 'png',
+      size: 123,
+      category: 'image',
+      mimeType: 'image/png',
+      url: sourceUrl,
+    };
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+    remoteProjectsStore.setDeviceSessions(deviceId, 'Remote Mac', [{ id: sid } as never]);
+    remoteInvoke.mockImplementation(async (_deviceId, channel, args) => {
+      expect(channel).toBe('maker:input:update-content');
+      const replacement = args[2] as AgentInputQueuedMessage;
+      return projection(sid, {
+        pendingQueue: [
+          {
+            ...replacement,
+            files: (replacement.files ?? []).map((file) => ({
+              ...file,
+              path: 'C:\\remote-cache\\ordinary.png',
+              url: 'xdt-image://remote/ordinary.png',
+            })),
+          },
+        ],
+      });
+    });
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: item.text,
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [source],
+    });
+
+    expect(saved).toBe(true);
+    expect(cleanupCachedImages).toHaveBeenCalledWith([sourceUrl]);
+  });
+
   it('recycles a newly annotated remote queue edit source only after acceptance', async () => {
     const sid = `remote-annotation-${Math.random().toString(36).slice(2, 8)}`;
     const deviceId = 'dev-remote-annotation';

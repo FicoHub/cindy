@@ -13722,25 +13722,22 @@ function cleanupAcceptedQueueEditMaterializationSources(
   editedFiles: readonly AttachedFile[],
   preparedFiles: readonly AttachedFile[],
   acceptedFiles: readonly AttachedFile[],
+  remoteMediaSession: boolean,
 ): void {
   const queuedUrls = new Set(queuedFiles.map((file) => file.url).filter(Boolean));
   const retainedUrls = new Set(
-    [...preparedFiles, ...acceptedFiles].flatMap((file) =>
+    (remoteMediaSession ? acceptedFiles : [...preparedFiles, ...acceptedFiles]).flatMap((file) =>
       [file.url, file.annotationSourceUrl].filter((url): url is string => Boolean(url)),
     ),
   );
-  const preparedById = new Map(preparedFiles.map((file) => [file.id, file]));
   const removedSourceUrls = [
     ...new Set(
       editedFiles.flatMap((file) => {
-        const prepared = preparedById.get(file.id);
         if (
           file.cacheUrlShared === true ||
           !file.url?.startsWith('xdt-image://') ||
           queuedUrls.has(file.url) ||
-          retainedUrls.has(file.url) ||
-          prepared?.annotated !== true ||
-          prepared.url === file.url
+          retainedUrls.has(file.url)
         ) {
           return [];
         }
@@ -13814,9 +13811,10 @@ async function updateQueueItemContent(
     if (!queuedFile || queuedFile.url !== file.url || queuedFile.path !== file.path) return file;
     return { ...file, cacheUrlShared: undefined, stagedPathShared: undefined };
   });
+  const remoteMediaSession = isRemoteMediaSession(sessionId);
   const preparedFiles =
     (await materializeAnnotatedAttachmentsForSend(filesForMaterialization, sessionId, {
-      stripAnnotationMeta: isRemoteMediaSession(sessionId),
+      stripAnnotationMeta: remoteMediaSession,
     })) ?? [];
 
   const textUnchanged = content.text === queued.text;
@@ -13912,6 +13910,7 @@ async function updateQueueItemContent(
       files,
       preparedFiles,
       accepted.files ?? [],
+      remoteMediaSession,
     );
   } else {
     cleanupUnacceptedQueueEditMaterialization(files, preparedFiles);
