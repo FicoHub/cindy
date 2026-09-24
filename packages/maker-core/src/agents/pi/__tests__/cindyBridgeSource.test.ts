@@ -20,7 +20,7 @@ import { createInterface } from 'node:readline';
 import { runInNewContext } from 'node:vm';
 
 import ts from 'typescript';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   CINDY_BRIDGE_EXTENSION_SOURCE,
@@ -146,11 +146,15 @@ function loadBashIsolationHelper(
   home: string | undefined,
 ) => Record<string, string | undefined> {
   const source = CINDY_BRIDGE_EXTENSION_SOURCE;
-  const start = source.indexOf('function withoutPiSecrets');
+  const constantsStart = source.indexOf('const MANAGED_RG_PATH_ENV');
+  const constantsEnd = source.indexOf('const PI_PACKAGE_MANAGEMENT_TITLE');
+  const start = source.indexOf('const SECRET_ENV_NAMES');
   const end = source.indexOf('function managedRipgrepPath');
-  if (start < 0 || end <= start) throw new Error('bash isolation helper was not found');
+  if (constantsStart < 0 || constantsEnd <= constantsStart || start < 0 || end <= start) {
+    throw new Error('bash isolation helper was not found');
+  }
   const executableSource = [
-    "const SECRET_ENV_NAMES = new Set(['PI_CODING_AGENT_DIR', 'CINDY_PI_PACKAGE_MANAGEMENT', 'CINDY_PI_BASH_PACKAGE_HOME']);",
+    source.slice(constantsStart, constantsEnd),
     source.slice(start, end),
     '(globalThis as any).isolatedBashEnvironment = isolatedBashEnvironment;',
   ].join('\n');
@@ -160,7 +164,7 @@ function loadBashIsolationHelper(
       target: ts.ScriptTarget.ES2022,
     },
   }).outputText;
-  const context: Record<string, unknown> = { path: pathImpl };
+  const context: Record<string, unknown> = { path: pathImpl, process: { env: {} } };
   runInNewContext(compiled, context);
   return context.isolatedBashEnvironment as (
     env: Record<string, string | undefined>,
@@ -1792,6 +1796,30 @@ describe('cindy-bridge extension source', () => {
     expect(() => isolateWindows({}, 'relative\\home')).toThrow(/unavailable/);
   });
 
+  it.each([
+    ['POSIX', path.posix, '/isolated/pi-home'],
+    ['Windows', path.win32, 'D:\\isolated\\pi-home'],
+  ] as const)('hides Fast preferences from %s shells without mutating the runtime', (_platform, pathImpl, home) => {
+    const isolate = loadBashIsolationHelper(pathImpl);
+    const runtimeEnv = {
+      CINDY_PI_MODEL_REQUEST_PREFS_FILE: pathImpl.join(home, 'request-prefs.json'),
+      CINDY_PI_FAST_MODELS: '[]',
+      PATH: 'ordinary-shell-path',
+      SHELL_CANARY: 'preserved',
+    };
+    const shellEnv = isolate(runtimeEnv, home);
+    expect(shellEnv).not.toHaveProperty('CINDY_PI_MODEL_REQUEST_PREFS_FILE');
+    expect(shellEnv).not.toHaveProperty('CINDY_PI_FAST_MODELS');
+    expect(shellEnv).toMatchObject({
+      PATH: runtimeEnv.PATH,
+      SHELL_CANARY: runtimeEnv.SHELL_CANARY,
+      PI_CODING_AGENT_DIR: home,
+    });
+    expect(runtimeEnv.CINDY_PI_MODEL_REQUEST_PREFS_FILE).toBe(
+      pathImpl.join(home, 'request-prefs.json'),
+    );
+  });
+
   it('routes both Pi command names to the single host permission service', () => {
     expect(CINDY_BRIDGE_EXTENSION_SOURCE).toContain(
       "if (event.toolName === 'cindy_pi_extension' || event.toolName === 'cindy_pi_command') return;",
@@ -2329,23 +2357,32 @@ describe('Pi same-turn library native mapping', () => {
 });
 
 
-it('applies native Fast only to the exact declared connection and follows preference changes', () => {
-  const start = CINDY_BRIDGE_EXTENSION_SOURCE.indexOf('function nativeFastPayload(');
+it('applies native Fast only to the exact declared connection and fails closed on invalid host replies', async () => {
+  const start = CINDY_BRIDGE_EXTENSION_SOURCE.indexOf('async function nativeFastPayload(');
   const end = CINDY_BRIDGE_EXTENSION_SOURCE.indexOf('export default async function cindyBridge');
   const helpers = ts.transpileModule(CINDY_BRIDGE_EXTENSION_SOURCE.slice(start, end), {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  let fast = true;
-  const read = () => JSON.stringify({ fast, models: [{ provider: 'relay-a', id: 'gpt-6-sol' }] });
-  const adapt = new Function('readFileSync', 'process', `${helpers}; return nativeFastPayload;`)(
-    read, { env: { CINDY_PI_MODEL_REQUEST_PREFS_FILE: '/fixture/prefs.json' } });
+  let reply: unknown = JSON.stringify({ fast: true });
+  const adapt = new Function('process', `${helpers}; return nativeFastPayload;`)({ env: {
+    CINDY_PI_FAST_MODELS: JSON.stringify([{ provider: 'relay-a', id: 'gpt-6-sol' }]),
+  } });
+  const ctx = { ui: { input: async () => { if (reply instanceof Error) throw reply; return reply; } } };
   const original = { model: 'gpt-6-sol', reasoning: { effort: 'high' }, input: 'hello' };
   const model = { provider: 'relay-a', id: 'gpt-6-sol', api: 'openai-responses' };
-  expect(adapt(original, model)).toEqual({ ...original, service_tier: 'priority' });
-  expect(adapt(original, { ...model, provider: 'relay-b' })).toBeUndefined();
-  expect(adapt(original, { ...model, id: 'other-model' })).toBeUndefined();
-  expect(adapt(original, { ...model, api: 'anthropic-messages' })).toBeUndefined();
-  fast = false;
-  expect(adapt({ ...original, service_tier: 'priority' }, model)).toEqual(original);
+  expect(await adapt(original, model, ctx)).toEqual({ ...original, service_tier: 'priority' });
+  expect(await adapt(original, { ...model, provider: 'relay-b' }, ctx)).toBeUndefined();
+  expect(await adapt(original, { ...model, id: 'other-model' }, ctx)).toBeUndefined();
+  expect(await adapt(original, { ...model, api: 'anthropic-messages' }, ctx)).toBeUndefined();
+  for (reply of [JSON.stringify({ fast: false }), JSON.stringify({ fast: 'true' }), undefined, 'broken', new Error('closed')]) {
+    expect(await adapt({ ...original, service_tier: 'priority' }, model, ctx)).toEqual(original);
+  }
+  vi.useFakeTimers();
+  try {
+    const pending = adapt({ ...original, service_tier: 'priority' }, model,
+      { ui: { input: () => new Promise(() => {}) } });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await pending).toEqual(original);
+  } finally { vi.useRealTimers(); }
   expect(original).not.toHaveProperty('service_tier');
 });

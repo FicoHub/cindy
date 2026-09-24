@@ -3,7 +3,7 @@ import { previousModelGenerations } from '../modelGeneration.js';
 import { buildUserProvider } from '../user-provider.js';
 import { isChatEligible } from '../classification.js';
 import { BUNDLED_CATALOG } from '../builtin.js';
-import { providerModelGenerationRecord, providerModelRecord } from '../providerModelCatalog.js';
+import { providerModelGenerationRecord, providerModelRecord, providerModelAdapterId } from '../providerModelCatalog.js';
 import { parseModelsListResponse } from '../modelDiscovery.js';
 import { mergeDiscoveredRuntimeModels } from '../modelMetadataLayers.js';
 import type { ProviderRuntimeModelConfig, ProviderWireProtocol } from '../types.js';
@@ -31,6 +31,20 @@ describe('new model generation defaults', () => {
         expect(model.cost).toBeUndefined();
         expect(model.userModelConfig).toEqual(saved[0]);
       }
+    }
+  });
+
+  it('uses a target maximum-only report before inherited working windows without verifying it', () => {
+    const provider = build([
+      { id: 'private-6-sol', name: 'Old', discoveredMetadata: { contextWindow: 272000 } },
+      ...discovered('private-7-sol', { max_context_window: 64000 }),
+      ...discovered('gpt-9-sol', { max_context_window: 32000 }),
+    ]);
+    for (const agent of ['codex', 'pi', 'claude-code'] as const) {
+      expect(provider.models[agent]![1]).toMatchObject({ contextWindow: 64000,
+        contextWindowMax: 64000, contextWindowVerified: false });
+      expect(provider.models[agent]![2]).toMatchObject({ contextWindow: 32000,
+        contextWindowMax: 32000, contextWindowVerified: false });
     }
   });
 
@@ -138,6 +152,24 @@ describe('new model generation defaults', () => {
     expect(previousModelGenerations('qwen4-30b', ['qwen3-235b', 'qwen3-30b'], id => id)).toEqual(['qwen3-30b']);
   });
 
+  it.each([
+    ['private-7b', 'private-70b'],
+    ['gpt-oss-20b', 'gpt-oss-120b'],
+    ['private-0.5b', 'private-1.5b'],
+    ['private-350m', 'private-700m'],
+    ['mixtral-8x7b', 'mixtral-8x22b'],
+  ])('does not treat parameter sizes %s and %s as generations', (small, large) => {
+    expect(previousModelGenerations(large, [small], id => id)).toEqual([]);
+    const target = build([
+      { id: small, name: small, discoveredMetadata: { contextWindow: 64000,
+        efforts: ['high'], supportsImageInput: true, supportsFastMode: true } },
+      { id: large, name: large },
+    ]).models.pi![1]!;
+    expect(target.efforts).toEqual([]);
+    expect(target.supportsFastMode).not.toBe(true);
+    expect(target.supportsImageInput).not.toBe(true);
+  });
+
   it('normalizes long trailing slashes without treating internal slashes as the same endpoint', () => {
     const endpoint = 'https://api.openai.com/v1';
     const slashes = '/'.repeat(100_000);
@@ -215,4 +247,30 @@ describe('new model generation defaults', () => {
     expect(inherited.execution.pi.headers).toBeUndefined();
     expect(providerModelGenerationRecord('gpt-9-sol', 'https://relay.example/v1', 'anthropic-messages')).toBeUndefined();
   });
+});
+
+
+it('preserves canonical API metadata, including explicit negative capabilities', () => {
+  const metadata = { nativeApi: 'openai-responses', contextWindow: 1000000, maxOutputTokens: 32000,
+    supportsFastMode: false, supportsToolCalls: false, supportsImageInput: false,
+    efforts: ['low', 'high'], defaultEffort: 'low', reasoningRequired: true };
+  const result = parseModelsListResponse({ data: [{ id: 'gpt-7-sol', ...metadata }] });
+  expect(result?.[0]?.discoveredMetadata).toMatchObject(metadata);
+  for (const agent of ['claude-code', 'codex', 'pi'] as const) {
+    const provider = build(mergeDiscoveredRuntimeModels([], result!));
+    expect(provider.models[agent]?.[0]).toMatchObject({ maxOutput: 32000,
+      supportsFastMode: false, supportsToolCalls: false, supportsImageInput: false,
+      efforts: ['low', 'high'] });
+  }
+});
+
+
+it('resolves inherited adapters only within a matching connection or explicit preset', () => {
+  const inherited = providerModelGenerationRecord('claude-opus-9', 'https://account.example/v1', 'anthropic-messages', 'cloudflare-ai-gateway')!;
+  expect(inherited).toBeDefined();
+  expect(providerModelAdapterId(inherited, 'cloudflare-ai-gateway')).toBe('cloudflare-ai-gateway');
+  expect(providerModelAdapterId(inherited)).toBeUndefined();
+  expect(providerModelAdapterId({ ...inherited, execution: { pi: { api: 'google-generative-ai' } } }, 'cloudflare-ai-gateway')).toBeUndefined();
+  expect(inherited.execution.pi.headers).toBeUndefined();
+  expect(inherited.cost).toBeUndefined();
 });

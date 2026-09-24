@@ -111,6 +111,7 @@ export {
   decideModelRegistrySnapshot,
   findModelRegistryRoute,
   resolveModelNativeApi,
+  resolveCatalogModelNativeApi,
   resolveModelReferencePrice,
   resolveBaseModelReferencePrice,
 } from "./modelRegistry.js";
@@ -296,6 +297,7 @@ export {
   registryEntryDefaults,
   expandedRegistryEntries,
   pickModelMetadata,
+  MODEL_METADATA_FIELDS,
   validModelMetadata,
   mergeModelMetadata,
 } from "./modelMetadataLayers.js";

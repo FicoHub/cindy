@@ -185,14 +185,20 @@ describe('xAI API sync through the actual picker import', () => {
     expect(row.defaultEnabled).toBe(false);
   });
 
-  it('does not infer capabilities or prices from a Fast suffix, description, or adjacent model', () => {
-    const candidate = build({ data: [...account.data, { ...account.data[0], id: 'grok-4.8-build-fast',
+  it.each([
+    ['grok-4.8-build-fast', true, false],
+    ['grok-unrelated-build-fast', undefined, undefined],
+  ] as const)('inherits only matching previous-variant capabilities, never prices: %s', (id, vision, fastToggle) => {
+    const candidate = build({ data: [...account.data, { ...account.data[0], id,
       name: 'Grok 4.8 Fast', description: 'Fast variant. 2x the price.' }] });
+    const reported = candidate.catalog.modelRegistry!.baseModels!.find(model => model.id === `xai/${id}`)!.defaults;
+    expect(reported.supportsFastMode).toBeUndefined();
+    expect(reported.supportsImageInput).toBeUndefined();
     const report = inspectXaiImport(candidate);
-    const fast = report.rows.find(row => row.modelId.endsWith('build-fast'))!;
+    const fast = report.rows.find(row => row.modelId === `xai/${id}`)!;
     for (const row of Object.values(fast.harnesses)) {
-      expect(row.supportsFastMode).toBeUndefined();
-      expect(row.supportsImageInput).toBeUndefined();
+      expect(row.supportsFastMode).toBe(fastToggle);
+      expect(row.supportsImageInput).toBe(vision);
       expect(row.apiReferencePrice).toBeNull();
       expect(row.defaultEnabled).toBe(row.protocol?.mode === 'matching');
     }

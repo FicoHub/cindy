@@ -167,13 +167,13 @@ function nativeInvocationModel(options: PiProviderTransportOptions, modelId: str
   const destination = options.upstream ?? row.upstream;
   assertHostCredentialEndpoint(row.execution.pi.api, destination, options.apiKey);
   const model: Model<Api> = { id: modelId, name: row.name, provider: providerModelAdapterId(row) ?? options.providerId,
-    api: row.execution.pi.api, baseUrl: destination, contextWindow: row.contextWindow,
-    maxTokens: row.maxOutput ?? Math.min(4096, row.contextWindow), reasoning: row.reasoning,
+    api: row.execution.pi.api, baseUrl: destination, contextWindow: row.contextWindow ?? 200_000,
+    maxTokens: row.maxOutput ?? Math.min(4096, row.contextWindow ?? 200_000), reasoning: row.reasoning ?? (row.efforts?.length ?? 0) > 0,
     input: row.supportsImageInput ? ['text', 'image'] : ['text'],
     cost: { input: row.cost?.input ?? 0, output: row.cost?.output ?? 0,
       cacheRead: row.cost?.cacheRead ?? 0, cacheWrite: row.cost?.cacheWrite ?? 0 },
     thinkingLevelMap: { ...row.execution.pi.thinkingLevelMap, ...Object.fromEntries(PI_REASONING_EFFORTS.map(level =>
-      [level, row.efforts.includes(level) ? row.execution.pi.thinkingLevelMap?.[level] ?? level : null])) },
+      [level, row.efforts?.includes(level) ? row.execution.pi.thinkingLevelMap?.[level] ?? level : null])) },
     compat: row.execution.pi.compat,
     samplingParams: row.execution.pi.samplingParams,
     headers: row.execution.pi.headers,
@@ -276,7 +276,7 @@ export function createPiProviderFetch(options: PiProviderTransportOptions): type
         ['openai-responses', 'azure-openai-responses', 'openai-completions'].includes(model.api)
         ? { onPayload: (payload: unknown) => payload && typeof payload === 'object' && !Array.isArray(payload)
           ? { ...payload, service_tier: 'priority' } : payload } : {}),
-      reasoning: reconcileOutboundReasoningEffort(request.reasoning?.effort, options.row.efforts) as ThinkingLevel | undefined,
+      reasoning: reconcileOutboundReasoningEffort(request.reasoning?.effort, options.row.efforts ?? []) as ThinkingLevel | undefined,
       maxTokens: typeof request.max_output_tokens === 'number' ? Math.min(request.max_output_tokens, model.maxTokens) : model.maxTokens,
     });
     const iterator = events[Symbol.asyncIterator]();

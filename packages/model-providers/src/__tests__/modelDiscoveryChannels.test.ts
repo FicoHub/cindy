@@ -5,6 +5,30 @@ import { buildUserProvider } from '../user-provider.js';
 import { BUNDLED_CATALOG } from '../catalog.js';
 
 describe('shared provider discovery', () => {
+  it.each([
+    { contextWindow: 128000, contextWindowMax: 64000 },
+    { context_window: 128000, contextWindowMax: 64000 },
+    { contextWindow: 128000, max_context_window: 64000 },
+    { model_info: { max_input_tokens: 128000 }, contextWindowMax: 64000 },
+    { contextWindow: 128000, contextWindowMax: 64000, max_context_window: 32000 },
+  ])('ignores a maximum smaller than the normalized working window: %j', fields => {
+    const models = parseModelsListResponse({ data: [{ id: 'private-model', ...fields }] })!;
+    expect(models[0].discoveredMetadata?.contextWindow).toBe(128000);
+    expect(models[0].discoveredMetadata).not.toHaveProperty('contextWindowMax');
+    const provider = buildUserProvider({ id: 'relay', name: 'Relay', runtimes: {
+      'claude-code': { baseUrl: 'https://relay.example/v1', models },
+    } });
+    expect(provider.models['claude-code']?.[0]).toMatchObject({ contextWindow: 128000 });
+    expect(provider.models['claude-code']?.[0].contextWindowMax).not.toBe(64000);
+  });
+
+  it.each(['contextWindowMax', 'max_context_window'])('retains a valid %s with or without a working window', key => {
+    for (const fields of [{}, { contextWindow: 128000 }]) {
+      const [model] = parseModelsListResponse({ data: [{ id: 'private-model', ...fields, [key]: 256000 }] })!;
+      expect(model.discoveredMetadata?.contextWindowMax).toBe(256000);
+    }
+  });
+
   it('retains the working window when a refresh only reports maximum capacity', () => {
     const original = parseModelsListResponse({ data: [{ id: 'private-model',
       context_window: 272000, max_context_window: 1050000 }] })!;
@@ -22,40 +46,49 @@ describe('shared provider discovery', () => {
     }
   });
 
-  it('shrinks a saved discovered working window when a max-only refresh reduces capacity', () => {
+  it.each([
+    [{ context_window: 272000 }, { max_context_window: 64000 }],
+    [{ context_window: 272000, max_context_window: 1050000 }, { contextWindowMax: 64000 }],
+    [{ context_window: 32000, max_context_window: 64000 }, { context_window: 272000 }],
+  ])('reconciles working and maximum windows after a sparse refresh: %j + %j', (before, refresh) => {
     const original = mergeDiscoveredRuntimeModels([], parseModelsListResponse({ data: [
-      { id: 'private-model', context_window: 128000, max_context_window: 256000 },
+      { id: 'private-model', ...before },
     ] })!);
-    const refreshed = mergeDiscoveredRuntimeModels(original, parseModelsListResponse({ data: [
-      { id: 'private-model', max_context_window: 64000 },
+    const models = mergeDiscoveredRuntimeModels(original, parseModelsListResponse({ data: [
+      { id: 'private-model', ...refresh },
     ] })!);
-    expect(original[0].discoveredMetadata?.contextWindow).toBe(128000);
-    expect(refreshed[0].discoveredMetadata).toMatchObject({ contextWindow: 64000, contextWindowMax: 64000 });
+    expect(original[0].discoveredMetadata?.contextWindow).toBe(before.context_window);
+    expect(models[0].discoveredMetadata?.contextWindow).toBe(272000);
+    expect(models[0].discoveredMetadata).not.toHaveProperty('contextWindowMax');
     for (const agent of ['claude-code', 'codex', 'pi'] as const) {
       const provider = buildUserProvider({ id: 'relay', name: 'Relay', runtimes: {
-        [agent]: { baseUrl: 'https://relay.example/v1', models: refreshed },
+        [agent]: { baseUrl: 'https://relay.example/v1', models },
       } });
-      expect(provider.models[agent]?.[0]).toMatchObject({ contextWindow: 64000, contextWindowMax: 64000 });
+      expect(provider.models[agent]?.[0].contextWindow).toBe(272000);
+      expect(provider.models[agent]?.[0].contextWindowMax).toBeUndefined();
     }
   });
 
-  it('uses max-only discovery as the first working window, ahead of inherited defaults', () => {
-    const discovered = parseModelsListResponse({ data: [{ id: 'gpt-9-sol', max_context_window: 32000 }] })!;
-    for (const models of [discovered, mergeDiscoveredRuntimeModels([], discovered)]) {
-      for (const agent of ['claude-code', 'codex', 'pi'] as const) {
-        const provider = buildUserProvider({ id: 'relay', name: 'Relay', runtimes: {
-          [agent]: { baseUrl: 'https://relay.example/v1', wireProtocol: 'openai-responses', models },
-        } }, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
-        expect(provider.models[agent]?.[0]).toMatchObject({
-          contextWindow: 32000, contextWindowMax: 32000, contextWindowVerified: true,
-        });
-      }
+  it('uses maximum-only discovery as an unverified working fallback without saving it as a report', () => {
+    const discovered = parseModelsListResponse({ data: [{ id: 'private-model', max_context_window: 64000 }] })!;
+    const models = mergeDiscoveredRuntimeModels([], discovered);
+    expect(models[0].discoveredMetadata?.contextWindow).toBeUndefined();
+    for (const agent of ['claude-code', 'codex', 'pi'] as const) {
+      const provider = buildUserProvider({ id: 'relay', name: 'Relay', runtimes: {
+        [agent]: { baseUrl: 'https://relay.example/v1', models },
+      } });
+      expect(provider.models[agent]?.[0]).toMatchObject({
+        contextWindow: 64000, contextWindowMax: 64000, contextWindowVerified: false,
+      });
+      expect(provider.models[agent]?.[0].userModelConfig?.discoveredMetadata?.contextWindow).toBeUndefined();
     }
-    const saved = mergeDiscoveredRuntimeModels([], discovered);
-    const refreshed = mergeDiscoveredRuntimeModels(saved, parseModelsListResponse({ data: [
-      { id: 'gpt-9-sol', max_context_window: 64000 },
+    const refreshed = mergeDiscoveredRuntimeModels(models, parseModelsListResponse({ data: [
+      { id: 'private-model', context_window: 32000 },
     ] })!);
-    expect(refreshed[0].discoveredMetadata).toMatchObject({ contextWindow: 32000, contextWindowMax: 64000 });
+    const provider = buildUserProvider({ id: 'relay', name: 'Relay', runtimes: {
+      pi: { baseUrl: 'https://relay.example/v1', models: refreshed },
+    } });
+    expect(provider.models.pi?.[0]).toMatchObject({ contextWindow: 32000, contextWindowMax: 64000, contextWindowVerified: true });
   });
 
   it('imports Vercel token prices, output capacity, image inputs and declared effort levels', () => {

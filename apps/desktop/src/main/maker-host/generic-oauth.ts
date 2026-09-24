@@ -1,5 +1,6 @@
+import { collectModelDiscoveryPages } from './model-discovery-pages.js';
 import { providerOAuthContract } from '@cindy/model-providers';
-import { parseModelsListResponse, isOpenRouterModelsUrl, type DiscoveredModel } from '@cindy/model-providers';
+import { isOpenRouterModelsUrl, type DiscoveredModel } from '@cindy/model-providers';
 /**
  * generic-oauth —— 目录 `auth.oauth` 描述符驱动的通用 OAuth Runner。
  *
@@ -871,7 +872,14 @@ export async function discoverGenericOAuthModels(
   } catch {
     return null;
   }
-  return parseModelsListResponse(json, url);
+  const pageDeadline = Date.now() + 30_000;
+  return collectModelDiscoveryPages(json, url, async nextUrl => {
+    if (Date.now() >= pageDeadline) throw new Error('catalog deadline exceeded');
+    const page = await io.fetchImpl(nextUrl, { headers, redirect: 'error',
+      signal: AbortSignal.timeout(Math.max(1, Math.min(REFRESH_FETCH_TIMEOUT_MS, pageDeadline - Date.now()))) });
+    if (!page.ok) { await page.body?.cancel(); throw new Error('catalog page failed'); }
+    return page.json();
+  });
 }
 
 

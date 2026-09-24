@@ -1287,7 +1287,7 @@ export function buildPiNativeProvidersFromConfigs(
         id: row.id, name: row.name, baseUrl: row.upstream,
         ...row.execution.pi, api: row.execution.pi.api as PiModelApi,
         contextWindow: row.contextWindow, maxTokens: row.maxOutput,
-        input: row.modalities.input.filter((value): value is 'text' | 'image' => value === 'text' || value === 'image'),
+        input: (row.modalities?.input ?? ['text']).filter((value): value is 'text' | 'image' => value === 'text' || value === 'image'),
         reasoning: row.reasoning,
         cost: row.cost?.input !== undefined && row.cost.output !== undefined
           ? { input: row.cost.input, output: row.cost.output,
@@ -1353,10 +1353,14 @@ export function buildPiNativeProvidersFromConfigs(
       onSkip?.(cfg.id, 'native SDK requires an approved cloud endpoint');
       continue;
     }
-    const adapterIds = new Set(rt.models.flatMap(model => {
-      const row = providerModelRecord(model.id, model.route?.baseUrl ?? rt.baseUrl, model.api ?? model.piApi)
-        ?? providerPresetModelRecord(rt.catalogPresetId, model.id, model.api ?? model.piApi);
-      const adapter = row ? providerModelAdapterId(row) : undefined;
+    const adapterIds = new Set(rt.models.flatMap((model, index) => {
+      const api = modelApis[index];
+      // The native ChatGPT subscription transport owns its authentication separately.
+      if (!api || api === 'openai-codex-responses') return [];
+      const row = providerModelRecord(model.id, model.route?.baseUrl ?? rt.baseUrl, api)
+        ?? providerPresetModelRecord(rt.catalogPresetId, model.id, api)
+        ?? providerModelGenerationRecord(model.id, model.route?.baseUrl ?? rt.baseUrl, api, rt.catalogPresetId);
+      const adapter = row ? providerModelAdapterId(row, rt.catalogPresetId) : undefined;
       return adapter ? [adapter] : [];
     }));
     providers.push({

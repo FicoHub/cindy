@@ -90,6 +90,17 @@ function legacyCatalog(): Catalog {
 }
 
 describe('active-catalog discovered augment', () => {
+  it('keeps a future subscription model inherited window unverified', () => {
+    setActiveCatalog(structuredClone(BUNDLED_CATALOG));
+    setDiscoveredCodexModels([{ ...fake('gpt-7-sol'), discoveredMetadata: {}, contextWindowVerified: false }]);
+    for (const agent of ['codex', 'claude-code'] as const) {
+      const models = getActiveCatalog().providers.find(provider => provider.id === 'openai')!.models[agent]!;
+      const model = models.find(model => model.id === 'gpt-7-sol' || model.id === 'chatgpt/gpt-7-sol');
+      expect(model?.contextWindow).toBeGreaterThan(0);
+      expect(model?.contextWindowVerified).toBe(false);
+    }
+  });
+
   it('keeps Claude subscription models on Claude Code only, even when the source catalog declares Codex / Pi', () => {
     const catalog = bundledWithoutRegistry();
     const builtin = catalog.providers.find((provider) => provider.id === 'anthropic')!;
@@ -840,7 +851,7 @@ describe('anthropic 发现条目的 modelRegistry 元数据基线', () => {
         .filter((model) => model.defaultEnabled !== false)
         .map((model) => model.id)
         .sort(),
-    ).toEqual(['claude-fable-5-1', 'claude-haiku-4-5', 'claude-opus-5-5', 'claude-sonnet-5']);
+    ).toEqual(['claude-fable-5', 'claude-fable-5-1', 'claude-haiku-4-5', 'claude-mythos-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5']);
     // Claude 订阅只供 Claude Code:不投影 Codex bridge,也不给 Pi。
     expect(anthropicList('codex')).toEqual([]);
     expect(anthropicList('pi')).toEqual([]);

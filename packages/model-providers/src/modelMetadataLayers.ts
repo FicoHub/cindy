@@ -1,3 +1,4 @@
+import { generationCapabilities, previousModelGenerations } from './modelGeneration.js';
 import type { CatalogModel } from "./types.js";
 import type {
   ModelRegistry,
@@ -5,10 +6,18 @@ import type {
   ModelRegistryRoute,
   ModelEffort,
   ModelReferencePriceGroup,
+  ModelAccessWireProtocol,
 } from "./modelAccessBean.js";
+
+// Projection-only provenance; a symbol keeps it out of the public metadata schema
+// and JSON storage. CatalogModel carries the serializable verification flag.
+const inheritedContextWindow = Symbol('inheritedContextWindow');
+type ResolvedModelMetadata = ModelMetadata & { [inheritedContextWindow]?: true };
 
 /** Data only. Membership, credentials, routing and billed prices never inherit. */
 export interface ModelMetadata {
+  /** Manufacturer language, independent of the connection's execution protocol. */
+  nativeApi?: ModelAccessWireProtocol | null;
   mode?: string;
   modalities?: { input: string[]; output: string[] };
   officialDocs?: string;
@@ -34,6 +43,7 @@ export interface BaseModel {
   referencePriceGroups?: ModelReferencePriceGroup[];
 }
 export const MODEL_METADATA_FIELDS = [
+  "nativeApi",
   "mode",
   "modalities",
   "officialDocs",
@@ -64,6 +74,8 @@ export function validModelMetadata(value: unknown): value is ModelMetadata {
   return Object.entries(value).every(([key, v]) => {
     if (!(MODEL_METADATA_FIELDS as readonly string[]).includes(key))
       return false;
+    if (key === 'nativeApi') return v === null ||
+      ['anthropic-messages', 'openai-responses', 'openai-completions', 'google-generative-ai'].includes(v as string);
     if (key === "mode")
       return typeof v === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(v);
     if (key === "modalities") {
@@ -173,13 +185,13 @@ export function resolveModelMetadata(
   registry: ModelRegistry | undefined,
   providerId: string,
   modelId: string,
-  live?: ModelMetadata,
+  live?: ResolvedModelMetadata,
   user?: ModelMetadata,
   agent?: string,
   providerDefaults?: ModelMetadata,
   declaredDefaultEffort?: ModelMetadata["defaultEffort"],
   generationDefaults?: ModelMetadata,
-): ModelMetadata {
+): ResolvedModelMetadata {
   const ids = [modelId];
   if (providerId === "openai" && modelId.startsWith("chatgpt/"))
     ids.push(modelId.slice(8));
@@ -215,10 +227,25 @@ export function resolveModelMetadata(
           findBaseModel(registry, modelId)?.defaults,
           providerDefaults,
         );
-  const result = mergeModelMetadata(
-    generationDefaults,
+  // Public family capabilities also cover subscription discovery. Exact/live data and
+  // server corrections below still win; inheritance never adds account membership.
+  const familyDefaults = generationDefaults ?? mergeModelMetadata(
+    ...previousModelGenerations(ids.at(-1)!, registry?.baseModels?.flatMap(model =>
+      [model.id, ...model.aliases].map(id => ({ id, defaults: model.defaults }))) ?? [], model => model.id)
+      .map(model => generationCapabilities(model.defaults)),
+    ...previousModelGenerations(modelId,
+      registry?.models.flatMap(entry => entry.routes
+        .filter(route => route.providerId === providerId && (!agent || agent === 'pi' || route.agents.includes(agent as never)))
+        .map(route => ({ entry, route }))) ?? [], candidate => candidate.route.modelId)
+      .map(({ entry, route }) => generationCapabilities(registryEntryDefaults(registry!, entry, route, agent))),
+  );
+  const inheritedLiveWindow = live?.[inheritedContextWindow] === true;
+  const currentLive = inheritedLiveWindow ? { ...live, contextWindow: undefined } : live;
+  const result: ResolvedModelMetadata = mergeModelMetadata(
+    familyDefaults,
+    inheritedLiveWindow ? { contextWindow: live?.contextWindow } : undefined,
     defaults,
-    live,
+    currentLive,
     // A Harness's suggested default is not a model capability. Keep the shared
     // model intent (including explicit route/Harness exceptions), then adapt it
     // to the live effort membership below. Explicit force/user settings still win.
@@ -231,15 +258,27 @@ export function resolveModelMetadata(
     matched?.route.forceOverrides,
     user,
   );
-  // A predecessor's capacity cannot constrain the target's larger working
-  // window. Discard only inherited capacity, not target/route/user declarations.
-  if (generationDefaults?.contextWindowMax !== undefined &&
-      result.contextWindow !== undefined && result.contextWindowMax !== undefined &&
-      result.contextWindow > result.contextWindowMax &&
-      [defaults, live, matched?.route.forceOverrides, user].every(
-        (layer) => layer?.contextWindowMax === undefined,
-      )) {
+  // Resolve the pair only after all layers: a maximum-only report is a usable
+  // fallback, not a verified working-window report. Never replace a known window.
+  const hasOwnWorkingWindow = [defaults, currentLive, matched?.route.forceOverrides, user]
+    .some(source => source?.contextWindow !== undefined);
+  if (!hasOwnWorkingWindow && currentLive?.contextWindowMax !== undefined) {
+    // This model's reported maximum takes precedence over a predecessor's
+    // working-window fallback, without claiming a verified working window.
+    result.contextWindow = result.contextWindowMax;
+    result[inheritedContextWindow] = true;
+  }
+  if (result.contextWindow === undefined && result.contextWindowMax !== undefined) {
+    result.contextWindow = result.contextWindowMax;
+    result[inheritedContextWindow] = true;
+  }
+  if (result.contextWindow !== undefined && result.contextWindowMax !== undefined &&
+      result.contextWindowMax < result.contextWindow) {
     delete result.contextWindowMax;
+  }
+  if (result.contextWindow !== undefined &&
+      !hasOwnWorkingWindow) {
+    result[inheritedContextWindow] = true;
   }
   if (result.efforts?.length === 0) result.defaultEffort = null;
   else if (
@@ -384,9 +423,11 @@ export function expandedRegistryEntries(
 
 export function catalogModelMetadata(
   model: Partial<CatalogModel>,
-): ModelMetadata {
+): ResolvedModelMetadata {
   return {
     ...pickModelMetadata(model),
+    ...(model.contextWindowVerified === false && model.contextWindow !== undefined
+      ? { [inheritedContextWindow]: true as const } : {}),
     ...(model.maxOutput !== undefined
       ? { maxOutputTokens: model.maxOutput }
       : {}),
@@ -394,17 +435,20 @@ export function catalogModelMetadata(
 }
 export function applyModelMetadata(
   model: CatalogModel,
-  metadata: ModelMetadata,
+  metadata: ResolvedModelMetadata,
 ): CatalogModel {
-  const { maxOutputTokens, ...fields } = metadata;
+  const { maxOutputTokens, [inheritedContextWindow]: inheritedWindow, ...fields } = metadata;
   const result = {
     ...model,
     ...fields,
     ...(metadata.contextWindow !== undefined
-      ? { contextWindowVerified: true }
+      ? { contextWindowVerified: inheritedWindow !== true }
       : {}),
     ...(maxOutputTokens !== undefined ? { maxOutput: maxOutputTokens } : {}),
   };
+  if (result.contextWindowMax !== undefined && result.contextWindowMax < result.contextWindow) {
+    delete result.contextWindowMax;
+  }
   if (
     result.efforts.length === 0 ||
     (result.defaultEffort != null &&
@@ -431,18 +475,17 @@ export function mergeDiscoveredRuntimeModels(
   for (const model of discovered) {
     if (!model.id || !model.name || seen.has(model.id)) continue;
     seen.add(model.id);
-    const discoveredMetadata = pickModelMetadata(
-      model.discoveredMetadata ?? model,
-    );
     const index = models.findIndex((m) => m.id === model.id);
-    // Max-only refreshes preserve smaller working budgets, but a reduced
-    // capacity must bound the old discovered window. User overrides stay separate.
-    const previousWindow = models[index]?.discoveredMetadata?.contextWindow;
-    if (discoveredMetadata.contextWindow === undefined &&
+    const discoveredMetadata = mergeModelMetadata(
+      index >= 0 ? models[index].discoveredMetadata : undefined,
+      pickModelMetadata(model.discoveredMetadata ?? model),
+    );
+    // Sparse refreshes can supply either half of this pair. Validate after merging
+    // with the last snapshot, without shrinking its working window to a bad maximum.
+    if (discoveredMetadata.contextWindow !== undefined &&
         discoveredMetadata.contextWindowMax !== undefined &&
-        ((previousWindow === undefined && models[index]?.contextWindow === undefined) ||
-          (previousWindow !== undefined && previousWindow > discoveredMetadata.contextWindowMax))) {
-      discoveredMetadata.contextWindow = discoveredMetadata.contextWindowMax;
+        discoveredMetadata.contextWindowMax < discoveredMetadata.contextWindow) {
+      delete discoveredMetadata.contextWindowMax;
     }
     if (index < 0)
       models.push({
@@ -456,7 +499,7 @@ export function mergeDiscoveredRuntimeModels(
       models[index] = {
         ...models[index],
         ...(!models[index].discoveredMetadata ? { nameExplicit: true } : {}),
-        discoveredMetadata: mergeModelMetadata(models[index].discoveredMetadata, discoveredMetadata),
+        discoveredMetadata,
         ...(model.discoveredCost ? { discoveredCost: model.discoveredCost } : {}),
       };
   }
@@ -467,12 +510,9 @@ export function mergeDiscoveredRuntimeModels(
 export function runtimeUserModelMetadata(
   m: import("./types.js").ProviderRuntimeModelConfig,
 ): ModelMetadata {
+  const { name: _name, ...metadata } = pickModelMetadata(m);
   return pickModelMetadata({
-    ...pickModelMetadata({
-      mode: m.mode,
-      modalities: m.modalities,
-      officialDocs: m.officialDocs,
-    }),
+    ...metadata,
     ...(!m.discoveredMetadata || m.nameExplicit ? { name: m.name } : {}),
     ...(m.contextWindow !== undefined
       ? { contextWindow: m.contextWindow }
@@ -480,9 +520,8 @@ export function runtimeUserModelMetadata(
     ...(m.supportsImageInput !== undefined
       ? { supportsImageInput: m.supportsImageInput }
       : {}),
-    ...(m.reasoning !== undefined
-      ? { efforts: m.reasoning ? (m.reasoningEfforts ?? []) : [] }
-      : {}),
+    ...(m.reasoning === false ? { efforts: [] }
+      : m.reasoningEfforts !== undefined ? { efforts: m.reasoningEfforts } : {}),
     ...(m.reasoningDefaultEffort !== undefined
       ? { defaultEffort: m.reasoningDefaultEffort }
       : {}),
