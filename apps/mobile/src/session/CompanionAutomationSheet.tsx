@@ -65,11 +65,11 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
   const identity = `${accountGeneration}:${deviceId}:${collectionId}:${botId}`;
   const current = useRef({ identity, visible, selected }); current.current = { identity, visible, selected };
   const valid = (scope: string, page: string | null) => current.current.visible && current.current.identity === scope && current.current.selected === page;
-  const load = useCallback(async () => {
+  const load = useCallback(async (actionError?: string) => {
     if (!visible || !online || !botId) return;
     const generation = ++seq.current;
     const scope = identity;
-    setLoading(true); setError(null);
+    setLoading(true); setError(actionError ?? null);
     try {
       await openLink(deviceId);
       const result = await getRemoteResource(invoke, { deviceId, deviceName }, { collectionId, kind: 'routine', id: `bot:${botId}${selected ? `/${selected}` : ''}` }, i18n.language, ['routine-list', 'routine-detail']);
@@ -80,6 +80,7 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
         const next = parseRoutineDetail(block.data);
         // Never renew a dirty draft's write authority against a newer version.
         if (dirtyRef.current && detailRef.current && next.revision !== detailRef.current.revision) {
+          setResource(null);
           setError(t('devices.companions.automation.changed'));
           return;
         }
@@ -96,7 +97,8 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
     } catch (e) {
       if (valid(scope, selected) && generation === seq.current) {
         const unsupported = t('devices.companions.automation.unsupported');
-        setError(e instanceof Error && e.message === unsupported ? unsupported : t('devices.resources.loadFailed'));
+        const readError = e instanceof Error && e.message === unsupported ? unsupported : t('devices.resources.loadFailed');
+        setError(actionError ? `${actionError}\n${readError}` : readError);
       }
     }
     finally { if (valid(scope, selected) && generation === seq.current) setLoading(false); }
@@ -131,7 +133,7 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
   };
   const act = async (actionId: string) => {
     const capabilityId = getRoutineActionId(resource, actionId);
-    if (!valid(identity, selected) || inFlight.current || !online || !resource || !capabilityId) return;
+    if (!valid(identity, selected) || inFlight.current || loading || !online || !resource || !capabilityId) return;
     if (actionId === 'routine-create' || actionId === 'routine-save' || actionId === 'routine-run' && dirty) {
       if (!draft || !routineDraftValid(draft)) { setError(tr('invalid')); return; }
     }
@@ -165,7 +167,14 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
       if (!valid(scope, page)) return;
       if (actionId === 'routine-run') { await load(); }
       else open(null);
-    } catch (e) { if (valid(scope, page)) setError(automationFailure(e, tr)); }
+    } catch (e) {
+      if (valid(scope, page)) {
+        // The host consumes opaque actions even when validation or the response fails.
+        // Reconcile by reading, never replay a write or renew a creation request ID.
+        setResource(null);
+        await load(automationFailure(e, tr));
+      }
+    }
     finally { if (operationGeneration.current === operation) { inFlight.current = false; if (current.current.identity === scope) setBusy(false); } }
   };
   const button = (label: string, onPress: () => void, destructive = false, disabled = false) => (
@@ -198,7 +207,7 @@ export function CompanionAutomationSheet({ visible, onClose, collectionId, botId
   return <CompanionSheet visible={visible} onClose={() => leave(onClose)} preventDismiss={dirty || busy}
       title={selected ? draft?.name || tr('new') : t('devices.companionProfile.automation')}
       onBack={selected ? () => leave(() => open(null)) : undefined} testID="companion.automationSheet"
-      footer={selected && detail?.editable ? button(tr('save'), () => void act(selected === 'new' ? 'routine-create' : 'routine-save'), false, !online || !dirty) : undefined}>
+      footer={selected && detail?.editable ? button(tr('save'), () => void act(selected === 'new' ? 'routine-create' : 'routine-save'), false, !online || !dirty || loading || !getRoutineActionId(resource, selected === 'new' ? 'routine-create' : 'routine-save')) : undefined}>
       {!online ? <Text style={styles.error}>{tr('offline')}</Text> : null}
       {error ? <View style={styles.field}><Text selectable style={styles.error}>{error}</Text>{button(tr('retry'), () => void load(), false, !online)}</View> : null}
       {loading ? <ActivityIndicator color={colors.textSecondary} style={styles.field} /> : null}

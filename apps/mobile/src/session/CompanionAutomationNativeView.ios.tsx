@@ -133,7 +133,7 @@ export function CompanionAutomationNativeView(p: CompanionAutomationNativeViewPr
         </Section>)}
         {draft.triggers.length < 32 ? <Section><Action label={tr('addTrigger')} onPress={() => p.onChange(d => d && ({ ...d, triggers: [...d.triggers, { id: randomUUID(), kind: 'interval', intervalMs: 3_600_000 }] }))} blocked={p.busy} /></Section> : null}
       </Fragment> : note(tr('largeDefinition'))}
-      {detail.editable ? <Section><Action label={tr('save')} onPress={() => p.onAct(p.selected === 'new' ? 'routine-create' : 'routine-save')} blocked={p.busy || !p.online || !p.dirty} testID="companion.automation.save" /></Section> : null}
+      {detail.editable ? <Section><Action label={tr('save')} onPress={() => p.onAct(p.selected === 'new' ? 'routine-create' : 'routine-save')} blocked={p.busy || p.loading || !p.online || !p.dirty || !getRoutineActionId(p.resource, p.selected === 'new' ? 'routine-create' : 'routine-save')} testID="companion.automation.save" /></Section> : null}
       {p.selected !== 'new' ? <>
         {getRoutineActionId(p.resource, 'routine-run') ? <Section><Action label={tr(p.dirty ? 'saveAndRun' : 'run')} onPress={() => p.onAct('routine-run')} blocked={p.busy || !p.online || detail.history.some(r => r.status === 'running' || r.status === 'queued')} /></Section> : null}
         <Section title={tr('history')}>{detail.history.length ? detail.history.map(run => <VStack key={run.id} alignment="leading" spacing={spacing.sm}>
