@@ -1383,6 +1383,38 @@ describe('new session model', () => {
     expect(ancestors.map(node => node.openingElement.tagName.getText(source)))
       .not.toContain('ScrollView');
     expect(ancestors[0].openingElement.getText(source)).toContain('ref={workspacePickerHostRef}');
+    expect(ancestors[0].getText(source)).not.toContain('testID="newSession.backButton"');
+  });
+
+  it('scrolls every workspace action together so fixed rows cannot consume a short viewport', () => {
+    const source = ts.createSourceFile('new.tsx', readTextLf(
+      resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8',
+    ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const actionIds = new Set([
+      'newSession.workspaceDialogueOption',
+      'newSession.workspaceProjectOption',
+      'newSession.workspaceBrowseOption',
+    ]);
+    const scrollParents: ts.JsxElement[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxElement(node) && node.openingElement.attributes.properties.some(
+        prop => ts.isJsxAttribute(prop) && prop.name.getText(source) === 'testID'
+          && prop.initializer && ts.isStringLiteral(prop.initializer)
+          && actionIds.has(prop.initializer.text),
+      )) {
+        for (let parent = node.parent; parent; parent = parent.parent) {
+          if (ts.isJsxElement(parent) && parent.openingElement.tagName.getText(source) === 'ScrollView') {
+            scrollParents.push(parent);
+            break;
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(scrollParents).toHaveLength(3);
+    expect(new Set(scrollParents).size).toBe(1);
+    expect(scrollParents[0].openingElement.getText(source)).toContain('styles.workspaceProjectList');
   });
 
   it('builds recent workspace quick picks from mirrored remote sessions', () => {

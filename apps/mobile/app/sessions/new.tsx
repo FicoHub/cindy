@@ -7,6 +7,7 @@ import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
 import { takeRefinementContextTail } from '@cindy/voice-input-core';
 import { Stack, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { NewTaskSelectionSheet } from '@/session/NewTaskSelectionSheet';
+import { resolveWorkspacePickerFrame, type WorkspacePickerFrame } from '@/session/workspacePickerPlacement';
 import { simpleScreenSafeAreaEdges } from '@/platform/chrome/SimpleStackHeader';
 import Constants from 'expo-constants';
 import { MOBILE_VISUAL_MOCK_ENABLED } from '@/config/env';
@@ -546,17 +547,16 @@ export default function NewRemoteSessionScreen() {
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const workspacePickerHostRef = useRef<View>(null);
   const workspacePickerAnchorRef = useRef<View>(null);
-  const [workspacePickerFrame, setWorkspacePickerFrame] = useState<{
-    left: number; bottom: number; width: number; maxHeight: number;
-  } | null>(null);
+  const [workspacePickerFrame, setWorkspacePickerFrame] = useState<WorkspacePickerFrame | null>(null);
   const measureWorkspacePicker = useCallback(() => {
     if (nativeSelectionSheet || !workspacePickerOpen) return;
-    workspacePickerAnchorRef.current?.measureInWindow((x, y, width) => {
-      workspacePickerHostRef.current?.measureInWindow((hostX, hostY, _width, height) => {
-        setWorkspacePickerFrame({
-          left: x - hostX, bottom: hostY + height - y, width,
-          maxHeight: Math.max(0, y - hostY - spacing.xs),
-        });
+    workspacePickerAnchorRef.current?.measureInWindow((x, y, width, height) => {
+      workspacePickerHostRef.current?.measureInWindow((hostX, hostY, hostWidth, hostHeight) => {
+        setWorkspacePickerFrame(resolveWorkspacePickerFrame(
+          { x, y, width, height },
+          { x: hostX, y: hostY, width: hostWidth, height: hostHeight },
+          spacing.xs,
+        ));
       });
     });
   }, [nativeSelectionSheet, workspacePickerOpen]);
@@ -5499,7 +5499,7 @@ export default function NewRemoteSessionScreen() {
         )}
         style={styles.keyboard}
       >
-        <View ref={workspacePickerHostRef} collapsable={false} onLayout={measureWorkspacePicker} style={styles.screen}>
+        <View style={styles.screen}>
           {Platform.OS !== 'ios' || buildLabel || creating ? <View style={styles.topBar}>
             {Platform.OS !== 'ios' ? <ScreenBackButton
               hitSlop={12}
@@ -5513,6 +5513,7 @@ export default function NewRemoteSessionScreen() {
             {creating ? <ActivityIndicator color={colors.textSecondary} /> : null}
           </View> : null}
 
+          <View ref={workspacePickerHostRef} collapsable={false} onLayout={measureWorkspacePicker} style={{ flex: 1 }}>
           <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.bottomCluster}
             onScrollBeginDrag={() => setWorkspacePickerOpen(false)}
             keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
@@ -6012,6 +6013,12 @@ export default function NewRemoteSessionScreen() {
           {/* Keep the floating panel inside its native touch bounds on Android. */}
           {!nativeSelectionSheet && workspacePickerOpen && workspacePickerFrame ? (
             <View style={[styles.workspacePickerPanel, workspacePickerFrame]} testID="newSession.workspacePickerPanel">
+              <ScrollView
+                nestedScrollEnabled
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator
+                style={styles.workspaceProjectList}
+              >
               <Pressable
                 accessibilityLabel={t('session.new.dialogueNoProject')}
                 accessibilityRole="button"
@@ -6028,12 +6035,7 @@ export default function NewRemoteSessionScreen() {
               </Pressable>
               <View style={styles.workspacePickerDivider} />
               {recentWorkspaces.length > 0 ? (
-                <ScrollView
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator
-                  style={styles.workspaceProjectList}
-                >
+                <View>
                   {recentWorkspaces.map((workspace) => {
                     const selected = draft.workspaceKind === 'project'
                       && draft.workingDir.trim() === workspace.workingDir;
@@ -6059,7 +6061,7 @@ export default function NewRemoteSessionScreen() {
                       </Pressable>
                     );
                   })}
-                </ScrollView>
+                </View>
               ) : (
                 <Text style={styles.workspaceEmptyText}>{t('session.new.noProjects')}</Text>
               )}
@@ -6075,8 +6077,10 @@ export default function NewRemoteSessionScreen() {
                 <FolderPlus color={colors.textSecondary} size={iconSize.action} strokeWidth={iconStroke.regular} />
                 <Text style={styles.workspaceOptionText} numberOfLines={1}>{t('session.new.chooseOtherFolder')}</Text>
               </Pressable>
+              </ScrollView>
             </View>
           ) : null}
+          </View>
         </View>
       </ComposerKeyboardAvoidingView>
       <ContextSheet
@@ -6589,12 +6593,11 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     zIndex: 20,
   },
   workspacePickerPanel: {
-    // Anchored above the selector in the screen's native touch hierarchy.
+    // Positioned within the visible content host, outside the page ScrollView.
     backgroundColor: colors.surfaceElevated,
     borderColor: colors.border,
     borderRadius: radius.container,
     borderWidth: StyleSheet.hairlineWidth,
-    marginBottom: spacing.xs,
     padding: spacing.xs,
     position: 'absolute',
     zIndex: 20,
@@ -6607,7 +6610,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
   workspaceProjectList: {
     flexShrink: 1,
-    maxHeight: 220,
   },
   workspaceOptionRow: {
     alignItems: 'center',
