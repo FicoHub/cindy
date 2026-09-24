@@ -6,7 +6,6 @@ import { ModelSelector } from '@/components/new-chat/ModelSelector';
 import type { AgentKind } from '@/hooks/useAgentCapabilities';
 import { useAvailableAgents } from '@/hooks/useAvailableAgents';
 import type { MakerVendor } from '@/lib/ccAgent.types';
-import { cn } from '@/lib/utils';
 import {
   BOT_MODEL_CHAIN_MAX,
   type BotHarness,
