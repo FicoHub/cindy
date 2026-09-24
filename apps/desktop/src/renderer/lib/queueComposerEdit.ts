@@ -6,7 +6,8 @@ import { formatQuoteForSend, parseChatQuoteSegments, type ChatQuoteSegment } fro
 import { COMPOSER_QUOTE_NODE_TYPE } from '@/lib/composerQuoteDocument';
 import { normalizeComposerDocumentJSON } from '@/lib/composerListDocument';
 import { extractExt, getMimeType, type AttachedFile } from '@/lib/fileTypes';
-import type { QueuedMessage } from '@/lib/makerChatStore';
+import type { QueuedMessage, QueueItemContentUpdate } from '@/lib/makerChatStore';
+import { rebaseInlineRangesAfterSlashCommandRewrite } from '@/lib/slashCommands';
 import { formatMentionRef } from '@/lib/mentionRefFormat';
 import type { AgentInputMention, AgentInputReference } from '../../shared/agentInputQueue';
 
@@ -21,6 +22,31 @@ export interface QueueComposerEditState {
   clientId: string;
   draftKey: string;
   originalAttachmentIds: string[];
+}
+
+export function rebaseQueueComposerEditContentAfterSlashCommandRewrite<
+  T extends QueueItemContentUpdate['content'],
+>(content: T, rewrittenText: string): T {
+  if (rewrittenText === content.text) return content;
+  return {
+    ...content,
+    text: rewrittenText,
+    agentReferences: rebaseInlineRangesAfterSlashCommandRewrite(
+      content.agentReferences,
+      content.text,
+      rewrittenText,
+    ),
+    pastedTextRanges: rebaseInlineRangesAfterSlashCommandRewrite(
+      content.pastedTextRanges,
+      content.text,
+      rewrittenText,
+    ),
+    slashCommandRanges: rebaseInlineRangesAfterSlashCommandRewrite(
+      content.slashCommandRanges,
+      content.text,
+      rewrittenText,
+    ),
+  };
 }
 
 export function isQueueComposerEditCurrent(

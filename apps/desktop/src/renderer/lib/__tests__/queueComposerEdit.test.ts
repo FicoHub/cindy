@@ -5,6 +5,7 @@ import {
   isQueueComposerEditCurrent,
   queueComposerEditDraftKey,
   queueMessageToComposerEditDraft,
+  rebaseQueueComposerEditContentAfterSlashCommandRewrite,
 } from '@/lib/queueComposerEdit';
 
 function queuedMessage(): QueuedMessage {
@@ -210,5 +211,37 @@ describe('isQueueComposerEditCurrent', () => {
       ),
     ).toBe(false);
     expect(isQueueComposerEditCurrent(edit, 'session-1', edit)).toBe(true);
+  });
+});
+
+describe('rebaseQueueComposerEditContentAfterSlashCommandRewrite', () => {
+  it('preserves Pi runtime skill aliases and rebases inline ranges before saving', () => {
+    const content = {
+      text: '/git inspect pasted',
+      mentions: [],
+      hasQuotes: false,
+      agentReferences: [{
+        kind: 'session' as const,
+        start: 13,
+        end: 19,
+        href: 'cindy://session/source',
+        sessionId: 'source',
+      }],
+      pastedTextRanges: [{ start: 13, end: 19, display: 'selection' }],
+      slashCommandRanges: [{ start: 0, end: 4 }],
+    };
+
+    expect(
+      rebaseQueueComposerEditContentAfterSlashCommandRewrite(
+        content,
+        '/skill:git inspect pasted',
+      ),
+    ).toEqual({
+      ...content,
+      text: '/skill:git inspect pasted',
+      agentReferences: [{ ...content.agentReferences[0], start: 19, end: 25 }],
+      pastedTextRanges: [{ start: 19, end: 25, display: 'selection' }],
+      slashCommandRanges: [{ start: 0, end: 10 }],
+    });
   });
 });

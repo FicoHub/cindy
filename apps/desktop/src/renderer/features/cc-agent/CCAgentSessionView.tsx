@@ -245,6 +245,7 @@ import { cleanupStagedChatAttachmentFiles } from '@/lib/chatAttachmentStageClean
 import {
   isQueueComposerEditCurrent,
   queueMessageToComposerEditDraft,
+  rebaseQueueComposerEditContentAfterSlashCommandRewrite,
   type QueueComposerEditState,
 } from '@/lib/queueComposerEdit';
 import type { SerializedComposerContent } from '@/components/new-chat/composerContentSerialization';
@@ -1867,61 +1868,6 @@ export function CCAgentSessionView({
     isCurrentQueueComposerEdit,
   ]);
 
-  const submitQueueComposerEdit = useCallback(
-    async (clientId: string, content: SerializedComposerContent, files: AttachedFile[]) => {
-      const edit = activeQueueComposerEdit;
-      if (!edit || edit.clientId !== clientId || queueComposerEditSavingRef.current) return false;
-      queueComposerEditSavingRef.current = true;
-      let rowDisappeared = false;
-      let updateSucceeded = false;
-      try {
-        const updated = await updateQueueItemContent(clientId, { content, files });
-        if (!updated) {
-          rowDisappeared = !makerChatStore
-            .getSnapshot(edit.sessionId)
-            .pendingQueue.some((entry) => entry.clientId === clientId);
-          return false;
-        }
-        updateSucceeded = true;
-        clearComposerDraftAndNotify(edit.draftKey);
-        if (!isCurrentQueueComposerEdit(edit)) return true;
-        attachmentState.clearFiles();
-        queueComposerEditRef.current = null;
-        setQueueComposerEdit(null);
-        return true;
-      } finally {
-        queueComposerEditSavingRef.current = false;
-        const pendingCleanup =
-          queueComposerEditCleanupRef.current?.edit.draftKey === edit.draftKey
-            ? queueComposerEditCleanupRef.current
-            : null;
-        if (pendingCleanup) queueComposerEditCleanupRef.current = null;
-        if (!updateSucceeded && pendingCleanup) {
-          queueMicrotask(() =>
-            clearQueueComposerEditDraftWithFiles(edit, [...pendingCleanup.files, ...files]),
-          );
-        } else if (rowDisappeared && !pendingCleanup) {
-          queueMicrotask(() => {
-            if (isCurrentQueueComposerEdit(edit)) {
-              cancelQueueComposerEdit();
-              return;
-            }
-            clearQueueComposerEditDraftWithFiles(edit, files);
-          });
-        }
-      }
-    },
-    [
-      activeQueueComposerEdit,
-      attachmentState,
-      cancelQueueComposerEdit,
-      clearQueueComposerEditDraft,
-      clearQueueComposerEditDraftWithFiles,
-      isCurrentQueueComposerEdit,
-      updateQueueItemContent,
-    ],
-  );
-
   useEffect(() => {
     return () => {
       const edit = queueComposerEditRef.current;
@@ -3390,6 +3336,69 @@ export function CCAgentSessionView({
       sessionId,
       remoteDeviceId,
       t,
+    ],
+  );
+
+  const submitQueueComposerEdit = useCallback(
+    async (clientId: string, content: SerializedComposerContent, files: AttachedFile[]) => {
+      const edit = activeQueueComposerEdit;
+      if (!edit || edit.clientId !== clientId || queueComposerEditSavingRef.current) return false;
+      queueComposerEditSavingRef.current = true;
+      let rowDisappeared = false;
+      let updateSucceeded = false;
+      try {
+        const slashDispatch = await maybeDispatchDesktopSlashCommand(content.text, files, {
+          allowDesktopDispatch: false,
+          piRuntimeRetryDelaysMs: PI_RUNTIME_SKILL_RETRY_DELAYS_MS,
+        });
+        const contentForSave = rebaseQueueComposerEditContentAfterSlashCommandRewrite(
+          content,
+          slashDispatch.message,
+        );
+        const updated = await updateQueueItemContent(clientId, { content: contentForSave, files });
+        if (!updated) {
+          rowDisappeared = !makerChatStore
+            .getSnapshot(edit.sessionId)
+            .pendingQueue.some((entry) => entry.clientId === clientId);
+          return false;
+        }
+        updateSucceeded = true;
+        clearComposerDraftAndNotify(edit.draftKey);
+        if (!isCurrentQueueComposerEdit(edit)) return true;
+        attachmentState.clearFiles();
+        queueComposerEditRef.current = null;
+        setQueueComposerEdit(null);
+        return true;
+      } finally {
+        queueComposerEditSavingRef.current = false;
+        const pendingCleanup =
+          queueComposerEditCleanupRef.current?.edit.draftKey === edit.draftKey
+            ? queueComposerEditCleanupRef.current
+            : null;
+        if (pendingCleanup) queueComposerEditCleanupRef.current = null;
+        if (!updateSucceeded && pendingCleanup) {
+          queueMicrotask(() =>
+            clearQueueComposerEditDraftWithFiles(edit, [...pendingCleanup.files, ...files]),
+          );
+        } else if (rowDisappeared && !pendingCleanup) {
+          queueMicrotask(() => {
+            if (isCurrentQueueComposerEdit(edit)) {
+              cancelQueueComposerEdit();
+              return;
+            }
+            clearQueueComposerEditDraftWithFiles(edit, files);
+          });
+        }
+      }
+    },
+    [
+      activeQueueComposerEdit,
+      attachmentState,
+      cancelQueueComposerEdit,
+      clearQueueComposerEditDraftWithFiles,
+      isCurrentQueueComposerEdit,
+      maybeDispatchDesktopSlashCommand,
+      updateQueueItemContent,
     ],
   );
 
