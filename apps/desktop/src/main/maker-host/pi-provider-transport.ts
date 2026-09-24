@@ -12,12 +12,13 @@ import * as googleVertex from '@earendil-works/pi-ai/api/google-vertex';
 import * as azureOpenaiResponses from '@earendil-works/pi-ai/api/azure-openai-responses';
 import * as bedrockConverseStream from '@earendil-works/pi-ai/api/bedrock-converse-stream';
 import * as mistralConversations from '@earendil-works/pi-ai/api/mistral-conversations';
-import { PI_REASONING_EFFORTS, PROVIDER_MODEL_CATALOG, providerEndpointBindings, providerModelRecord, providerModelAdapterId, providerPresetModelRecord, type CatalogModel, type ProviderModelRecord, type PiModelApi } from '@cindy/model-providers';
+import { PI_REASONING_EFFORTS, PROVIDER_MODEL_CATALOG, providerEndpointBindings, providerModelRecord, providerModelGenerationRecord, providerModelAdapterId, providerPresetModelRecord, type CatalogModel, type ProviderModelRecord, type PiModelApi } from '@cindy/model-providers';
 
 export function invocationModelRecord(model: CatalogModel, upstream: string, api?: PiModelApi): ProviderModelRecord | undefined {
   const selected = model.api ?? api;
   const known = providerModelRecord(model.id, upstream, selected)
-    ?? (selected ? providerPresetModelRecord(model.catalogPresetId, model.id, selected) : undefined);
+    ?? (selected ? providerPresetModelRecord(model.catalogPresetId, model.id, selected) : undefined)
+    ?? providerModelGenerationRecord(model.id, upstream, selected, model.catalogPresetId);
   if (!selected && !known) return undefined;
   return {
     ...(known ?? {}), id: model.id, name: model.name, upstream,
@@ -25,6 +26,7 @@ export function invocationModelRecord(model: CatalogModel, upstream: string, api
     maxOutput: model.maxOutput ?? known?.maxOutput,
     modalities: model.modalities ?? known?.modalities ?? { input: ['text'], output: ['text'] },
     supportsImageInput: model.supportsImageInput ?? known?.supportsImageInput ?? false,
+    supportsFastMode: model.supportsFastMode,
     reasoning: model.efforts.length > 0, efforts: model.efforts, defaultEffort: model.defaultEffort,
     execution: { pi: { ...known?.execution.pi, api: selected ?? known!.execution.pi.api,
       thinkingLevelMap: { ...known?.execution.pi.thinkingLevelMap, ...(model.reasoningRequired ? { off: null } : {}) },
@@ -270,6 +272,10 @@ export function createPiProviderFetch(options: PiProviderTransportOptions): type
       ...(!['google-generative-ai', 'google-vertex', 'bedrock-converse-stream'].includes(model.api)
         ? { fetch: diagnosticFetch } : {}),
       signal, maxRetries: 0,
+      ...(options.row.supportsFastMode === true && request.service_tier === 'priority' &&
+        ['openai-responses', 'azure-openai-responses', 'openai-completions'].includes(model.api)
+        ? { onPayload: (payload: unknown) => payload && typeof payload === 'object' && !Array.isArray(payload)
+          ? { ...payload, service_tier: 'priority' } : payload } : {}),
       reasoning: reconcileOutboundReasoningEffort(request.reasoning?.effort, options.row.efforts) as ThinkingLevel | undefined,
       maxTokens: typeof request.max_output_tokens === 'number' ? Math.min(request.max_output_tokens, model.maxTokens) : model.maxTokens,
     });

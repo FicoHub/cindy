@@ -28,6 +28,26 @@ import {
   CINDY_PI_BASH_MAX_TIMEOUT_SECONDS,
 } from '../cindy-bridge-source.js';
 
+it('strips Fast control paths from shell environments without mutating the runner environment', () => {
+  const source = CINDY_BRIDGE_EXTENSION_SOURCE;
+  const start = source.indexOf('const SECRET_ENV_NAMES =');
+  const end = source.indexOf('function isolatedBashEnvironment', start);
+  const compiled = ts.transpileModule(source.slice(start, end) + '\nresult = withoutPiSecrets(input);', {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const input = { PATH: '/fixture/bin', CINDY_PI_MODEL_REQUEST_PREFS_FILE: '/fixture/prefs.json' };
+  const sandbox = {
+    process: { env: {} }, input, result: undefined,
+    PI_PACKAGE_MANAGEMENT_ENV: 'CINDY_PI_PACKAGE_MANAGEMENT',
+    PI_BASH_PACKAGE_HOME_ENV: 'CINDY_PI_BASH_PACKAGE_HOME',
+    MANAGED_RG_PATH_ENV: 'CINDY_PI_MANAGED_RG_PATH',
+    SUBAGENT_RUN_DIR_ENV: 'CINDY_PI_SUBAGENT_RUN_DIR',
+  };
+  runInNewContext(compiled, sandbox);
+  expect(sandbox.result).toEqual({ PATH: '/fixture/bin' });
+  expect(input.CINDY_PI_MODEL_REQUEST_PREFS_FILE).toBe('/fixture/prefs.json');
+});
+
 it('keeps text-only policy local and ordinary tools independent of host UI failures', async () => {
   const source = CINDY_BRIDGE_EXTENSION_SOURCE;
   const helperStart = source.indexOf('let textOnlyTurnActive = false');
@@ -2306,4 +2326,26 @@ describe('Pi same-turn library native mapping', () => {
     permission = { ...permission, reviewOnly: true };
     expect(await callback!(event)).toBeUndefined();
   });
+});
+
+
+it('applies native Fast only to the exact declared connection and follows preference changes', () => {
+  const start = CINDY_BRIDGE_EXTENSION_SOURCE.indexOf('function nativeFastPayload(');
+  const end = CINDY_BRIDGE_EXTENSION_SOURCE.indexOf('export default async function cindyBridge');
+  const helpers = ts.transpileModule(CINDY_BRIDGE_EXTENSION_SOURCE.slice(start, end), {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  let fast = true;
+  const read = () => JSON.stringify({ fast, models: [{ provider: 'relay-a', id: 'gpt-6-sol' }] });
+  const adapt = new Function('readFileSync', 'process', `${helpers}; return nativeFastPayload;`)(
+    read, { env: { CINDY_PI_MODEL_REQUEST_PREFS_FILE: '/fixture/prefs.json' } });
+  const original = { model: 'gpt-6-sol', reasoning: { effort: 'high' }, input: 'hello' };
+  const model = { provider: 'relay-a', id: 'gpt-6-sol', api: 'openai-responses' };
+  expect(adapt(original, model)).toEqual({ ...original, service_tier: 'priority' });
+  expect(adapt(original, { ...model, provider: 'relay-b' })).toBeUndefined();
+  expect(adapt(original, { ...model, id: 'other-model' })).toBeUndefined();
+  expect(adapt(original, { ...model, api: 'anthropic-messages' })).toBeUndefined();
+  fast = false;
+  expect(adapt({ ...original, service_tier: 'priority' }, model)).toEqual(original);
+  expect(original).not.toHaveProperty('service_tier');
 });
