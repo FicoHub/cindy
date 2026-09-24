@@ -13860,6 +13860,9 @@ async function updateQueueItemContent(
       createdAt: queued.chatMessage.createdAt ?? new Date().toISOString(),
     },
   );
+  const replacementSessionRefs = extractSessionRefs(content.text, queued.sessionRefs);
+  if (replacementSessionRefs.length > 0) replacement.sessionRefs = replacementSessionRefs;
+  else delete replacement.sessionRefs;
   const boundaryOpts = getRemoteInputClearBoundaryOpts(sessionId);
   let projection: AgentInputProjection;
   try {

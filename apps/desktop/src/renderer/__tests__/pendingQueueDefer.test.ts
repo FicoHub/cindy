@@ -905,6 +905,44 @@ describe('renderer input queue facade', () => {
     }]);
   });
 
+  it('preserves queued source device hints in composer queue edits', async () => {
+    const sid = `content-ref-${Math.random().toString(36).slice(2, 8)}`;
+    const item = queued('q-content-ref', 'compare cindy://session/source?message=old-anchor');
+    item.sessionRefs = [
+      { sessionId: 'source', messageClientId: 'old-anchor', deviceId: 'source-device' },
+    ];
+
+    makerChatStore.initGlobalListeners();
+    projectionHandler?.(projection(sid, { pendingQueue: [item] }));
+
+    const saved = await makerChatStore.updateQueueItemContent(sid, item.clientId, {
+      content: {
+        text: 'edited cindy://session/source?message=new-anchor',
+        mentions: [],
+        hasQuotes: false,
+        agentReferences: [],
+        pastedTextRanges: [],
+        slashCommandRanges: [],
+      },
+      files: [],
+    });
+
+    expect(saved).toBe(true);
+    expect(input.updateContent).toHaveBeenCalledWith(
+      sid,
+      item.clientId,
+      expect.objectContaining({
+        sessionRefs: [
+          {
+            sessionId: 'source',
+            messageClientId: 'new-anchor',
+            deviceId: 'source-device',
+          },
+        ],
+      }),
+    );
+  });
+
   it('delegates composer steer, stop, resume and retry to main input intents', async () => {
     const sid = `intents-${Math.random().toString(36).slice(2, 8)}`;
 
