@@ -2757,9 +2757,14 @@ export class GhostManager {
       } catch (error) {
         // rename 没成功就没有发布任何字节(#5026):此时若留下 install journal 与内存
         // 隔离标记,之后每次审批检查都会判 invalid、插件停在停用态,且用户手工放入
-        // 目录也没有正常入口恢复。只有确认 finalDir 确实不存在才能清;万一目录已
-        // 出现(rename 半途成功),保留 journal 交给启动恢复,与更新路径的口径一致。
-        if (!fs.existsSync(finalDir)) {
+        // 目录也没有正常入口恢复。只有 lstat 明确 ENOENT 才能清;目录已出现(rename
+        // 半途成功)或 lstat 本身报权限/IO 错误时都保留 journal 交给启动恢复——journal
+        // 正是用来阻止无 receipt 的目录被迁移当作存量批准,不能凭"看不见"就清。
+        const finalDirAbsent = await fs.promises
+          .lstat(finalDir)
+          .then(() => false)
+          .catch((statError) => (statError as NodeJS.ErrnoException).code === 'ENOENT');
+        if (finalDirAbsent) {
           try {
             await this.receiptStore.clearPendingMutation(manifest.id);
             this.untrustedApprovals.delete(this.isolationKey(manifest.id));

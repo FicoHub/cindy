@@ -1616,6 +1616,105 @@ describe('GhostManager · 安装事务目录 rename 失败(#5026)', () => {
     expect(fs.existsSync(pendingMarkerPath())).toBe(false);
   });
 
+  it('新装 rename 失败后目录状态查不清(lstat 非 ENOENT)时保留 journal,不误清隔离标记', async () => {
+    const local = managerWithRenameRetry({ enabled: false });
+    const finalDir = path.join(rootDir, 'hello');
+    const realRename = fs.promises.rename;
+    const realLstat = fs.promises.lstat;
+    const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.resolve(String(to)) === path.resolve(finalDir)) {
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      }
+      return realRename(from as never, to as never);
+    });
+    const lstatSpy = vi.spyOn(fs.promises, 'lstat').mockImplementation(async (target, ...rest) => {
+      if (path.resolve(String(target)) === path.resolve(finalDir)) {
+        throw Object.assign(new Error('EACCES: permission denied, lstat'), { code: 'EACCES' });
+      }
+      return (realLstat as (...a: unknown[]) => Promise<fs.Stats>)(target, ...rest);
+    });
+    try {
+      await expectRejection(await local.install(await makeCindy('a.cindy', goodManifest())), 'io');
+    } finally {
+      renameSpy.mockRestore();
+      lstatSpy.mockRestore();
+    }
+    // 看不清 finalDir 是否已出现:journal 必须留给启动恢复,不能当作"没发布"清掉。
+    expect(fs.existsSync(pendingMarkerPath())).toBe(true);
+  });
+
+  it('更新放置 rename 吃到瞬时 EPERM 时重试成功,新版本就位且备份已回收', async () => {
+    const local = managerWithRenameRetry({ enabled: true, delaysMs: [1, 1, 1] });
+    await local.install(await makeCindy('a.cindy', goodManifest()));
+    const finalDir = path.join(rootDir, 'hello');
+    const realRename = fs.promises.rename;
+    let placementAttempts = 0;
+    const spy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (
+        path.resolve(String(to)) === path.resolve(finalDir) &&
+        path.basename(String(from)).startsWith('.cindy-installing-')
+      ) {
+        placementAttempts += 1;
+        if (placementAttempts <= 2) {
+          throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+        }
+      }
+      return realRename(from as never, to as never);
+    });
+    try {
+      const bumped = await makeCindy('b.cindy', { ...goodManifest(), version: '1.0.1' });
+      const result = await local.update(bumped, {
+        expectedInstalledApproval: ghostInstallApprovalToken(local.list()[0]?.approval),
+      });
+      expect('rejection' in result).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(placementAttempts).toBe(3);
+    expect(local.list()[0]).toMatchObject({
+      manifest: { version: '1.0.1' },
+      approval: { state: 'approved' },
+    });
+    expect(fs.existsSync(pendingMarkerPath())).toBe(false);
+    expect(fs.readdirSync(rootDir).filter((name) => name.startsWith('.cindy-'))).toEqual([]);
+  });
+
+  it('更新放置 rename 重试耗尽后回滚到旧版本,journal 清空且不报 rollbackFailed', async () => {
+    const local = managerWithRenameRetry({ enabled: true, delaysMs: [1, 1] });
+    await local.install(await makeCindy('a.cindy', goodManifest()));
+    const finalDir = path.join(rootDir, 'hello');
+    const realRename = fs.promises.rename;
+    let placementAttempts = 0;
+    const spy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (
+        path.resolve(String(to)) === path.resolve(finalDir) &&
+        path.basename(String(from)).startsWith('.cindy-installing-')
+      ) {
+        placementAttempts += 1;
+        throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+      }
+      return realRename(from as never, to as never);
+    });
+    try {
+      const bumped = await makeCindy('b.cindy', { ...goodManifest(), version: '1.0.1' });
+      const result = await local.update(bumped, {
+        expectedInstalledApproval: ghostInstallApprovalToken(local.list()[0]?.approval),
+      });
+      await expectRejection(result, 'io');
+      expect((result as { rejection: { rollbackFailed?: boolean } }).rejection.rollbackFailed).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(placementAttempts).toBe(3);
+    // 旧版本从备份位滚回,事务标记清空,没有遗留 staging/backup 目录。
+    expect(local.list()[0]).toMatchObject({
+      manifest: { version: '1.0.0' },
+      approval: { state: 'approved' },
+    });
+    expect(fs.existsSync(pendingMarkerPath())).toBe(false);
+    expect(fs.readdirSync(rootDir).filter((name) => name.startsWith('.cindy-'))).toEqual([]);
+  });
+
   it('非瞬时错误码不重试,重试耗尽后仍如实返回 io 拒绝', async () => {
     const local = managerWithRenameRetry({ enabled: true, delaysMs: [1, 1] });
     const finalDir = path.join(rootDir, 'hello');
