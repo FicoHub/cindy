@@ -1348,6 +1348,18 @@ describe('new session model', () => {
     expect(parseNewSessionDeviceOptions('')).toEqual([]);
   });
 
+  it('keeps the recent-project list nested-scrollable with a visible scroll indicator (#5013)', () => {
+    const source = readTextLf(resolve(process.cwd(), 'app/sessions/new.tsx'), 'utf8');
+    // Scope the guard to this list: the remote directory FlatList already has
+    // these props, so checking the whole page would miss the Android regression.
+    // Native gesture dispatch still needs Android emulator/device verification.
+    const lists = source.match(/<ScrollView\b[^>]*style=\{styles\.workspaceProjectList\}[^>]*>/g);
+    expect(lists).toHaveLength(1);
+    expect(lists![0]).toMatch(/\bnestedScrollEnabled(?:\s|=\{true\})/);
+    expect(lists![0]).toMatch(/\bshowsVerticalScrollIndicator(?:\s|=\{true\})/);
+    expect(lists![0]).toContain('keyboardShouldPersistTaps="handled"');
+  });
+
   it('builds recent workspace quick picks from mirrored remote sessions', () => {
     const options = buildRecentWorkspaceOptions([
       remoteSession('old', {

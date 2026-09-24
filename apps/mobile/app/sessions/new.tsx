@@ -5638,8 +5638,9 @@ export default function NewRemoteSessionScreen() {
                     <View style={styles.workspacePickerDivider} />
                     {recentWorkspaces.length > 0 ? (
                       <ScrollView
+                        nestedScrollEnabled
                         keyboardShouldPersistTaps="handled"
-                        showsVerticalScrollIndicator={false}
+                        showsVerticalScrollIndicator
                         style={styles.workspaceProjectList}
                       >
                         {recentWorkspaces.map((workspace) => {
