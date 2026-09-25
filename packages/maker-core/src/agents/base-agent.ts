@@ -87,6 +87,12 @@ import type { AutoReviewDelegate, AutoReviewDecision, AutoReviewRequest } from '
 import type { ReviewableAction } from './shared/auto-review.js';
 import type { ClaudeSubagentModelAccessResult } from './claude-code/subagent-model-access.js';
 
+export type CodexLocalAuthPolicyResolution = 'isolated' | 'legacy-shared' | {
+  policy: 'isolated' | 'legacy-shared';
+  /** Synchronous check of the host routing transaction that produced this policy. */
+  isCurrent: () => boolean;
+};
+
 export interface AgentCapabilityAdditions {
   /** Extra models exposed by the host for this agent. Existing built-in ids are ignored. */
   availableModels?: readonly ModelDescriptor[];
@@ -218,6 +224,8 @@ export interface PiNativeModelCost {
 
 /** BYOM:写进 pi models.json 的一个模型(原生 provider 块内)。 */
 export interface PiNativeModelSpec {
+  /** Current connection's explicit support for OpenAI priority service tier. */
+  supportsFastMode?: boolean;
   /** Cindy/public model id used by provider-aware routing and the UI. */
   id: string;
   /** PI provider's native model id; omitted when it is identical to id. */
@@ -460,6 +468,8 @@ export interface LocalAgentProcessRegistration {
 }
 
 export interface CodexLocalCredentialModeSwitchContext {
+  /** Exact local host being replaced; omitted by legacy hosts. */
+  hostKey?: string;
   fromMode?: AgentCredentialMode;
   /**
    * 当前 host 的归一化生效形态(createHost 时按 auth fallback 推出并登记)。
@@ -706,6 +716,8 @@ export interface AgentDeps {
    * 缺省 / 返回 undefined → 回退到全局 process.env.XDT_CC_DEBUG_FILE。
    */
   resolveCcDebugFile?: (sessionId?: string) => string | undefined;
+  /** Register one local debug writer; the returned disposer runs on process exit/error. */
+  trackCcDebugFile?: (filePath: string, sessionId?: string) => () => void;
 
   /**
    * MCP server 提供者列表（host 注入）。agent 在 startSession 时按上下文挑选
@@ -965,6 +977,13 @@ export interface AgentDeps {
     modelId: string,
   ) => number | null;
 
+  /** Local disk-auth policy, independent of the actual Provider credential mode. */
+  resolveCodexLocalAuthPolicy?: (
+    providerId: string | null | undefined,
+    modelId: string,
+    signal?: AbortSignal,
+  ) => CodexLocalAuthPolicyResolution | Promise<CodexLocalAuthPolicyResolution>;
+
   /**
    * Per-model requested context window (user override first, explicit provider default second).
    * A one-session native catalog permits this window without changing sibling routes.
@@ -1006,6 +1025,9 @@ export interface AgentDeps {
       accountHostKey?: string;
       remoteHostId?: string;
       credentialMode?: AgentCredentialMode;
+      /** Frozen disk OAuth policy; independent of the actual Provider credential. */
+      localAuthPolicy?: 'isolated' | 'legacy-shared';
+      hostScopeKey?: string;
       /** Original session request when the shared host was upgraded to a credential superset. */
       requestedCredentialMode?: AgentCredentialMode;
       /** Marks app-server work that must not share the normal local task host. */
@@ -1297,7 +1319,7 @@ export interface AgentDeps {
    */
   prepareCodexResumeSession?: (threadId: string, context?: { codexHome: string; providerId?: string }) => Promise<string | void>;
   recordCodexThreadLocation?: (threadId: string, codexHome: string, rolloutPath?: string) => Promise<void>;
-  resolveCodexThreadStorage?: (threadId: string) => Promise<{ historyHome: string; sqliteHome: string } | undefined>;
+  resolveCodexThreadStorage?: (threadId: string) => Promise<{ historyHome: string; sqliteHome: string; rolloutPath?: string } | undefined>;
   /** Freeze the owner/account scope before async host startup; never expose tokens to the renderer. */
   createCodexAuthTokenReader?: (providerId?: string) => () => Promise<import('./codex/app-server/external-auth.js').CodexChatgptTokens>;
 
@@ -1783,6 +1805,13 @@ export interface StartSessionOptions {
    * prices already-started requests with the tariff they actually used.
    */
   getPriceVariant?: () => 'standard' | 'priority';
+  /** Match completed proxy usage to its actual execution tariff, before preference-based pricing. */
+  resolveUsagePriceVariant?: (usage: {
+    threadId?: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+  }) => 'standard' | 'priority' | undefined;
   /** Pi + thinking-toggle 模型：false 时启动即关思考。缺省保持模型默认（开）。 */
   thinkingEnabled?: boolean;
   /**
@@ -2143,6 +2172,8 @@ export interface AgentSessionHandle {
   ): () => void;
   /** Codex-only: 当前会话绑定的 app-server host 是否经 loopback proxy 出口。 */
   readonly codexProxyActive?: boolean;
+  /** Local runtime identity, never serialized to the remote wire protocol. */
+  readonly codexHostKey?: string;
   /**
    * Codex-only: thread/start 或 thread/resume 响应确认的实际 model provider。
    * 这是 thread 级冻结身份，不随 thread/settings/update 的模型切换改变。
@@ -2603,6 +2634,13 @@ export abstract class BaseAgent {
   async forkSdkSession(opts: ForkSdkSessionOptions): Promise<ForkSdkSessionResult> {
     void opts;
     return this.throwNotSupported('forkSdkSession', 'sdk-missing');
+  }
+
+  async requiresCodexThreadHostTransfer(
+    opts: Pick<StartSessionOptions, 'sessionId' | 'model' | 'providerId' | 'reviewMode' | 'remoteHostId'> & { threadId: string },
+  ): Promise<boolean> {
+    void opts;
+    return false;
   }
 
   // ── Auth 透传到 deps.auth ────────────────────────────────────────────────

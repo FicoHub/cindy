@@ -74,6 +74,17 @@ vi.mock('../../serverApiClient', () => ({
   serverApiFetch: vi.fn(),
   ServerApiError: class ServerApiError extends Error {},
 }));
+// Authorization bridge dependencies are outside the mirror-cache IPC boundary.
+// Keep registration in memory without loading the real credential/runtime stack.
+vi.mock('../../authManager.js', () => ({
+  getAccessToken: vi.fn(),
+  getCurrentUserId: vi.fn(),
+  getDeviceId: vi.fn(),
+  getActiveAuthRealm: vi.fn(),
+}));
+vi.mock('../../clientEndpointsService.js', () => ({
+  getClientEndpoint: vi.fn(),
+}));
 vi.mock('../index', () => ({
   getDeviceLinkStatus: () => 'online',
   getDeviceLinkConnectionIssue: () => null,
@@ -103,7 +114,11 @@ vi.mock('../index', () => ({
   }),
 }));
 vi.mock('../dispatch', () => ({ getActiveControllers: () => [] }));
-vi.mock('../outboundMedia', () => ({ rewriteOutboundMedia: vi.fn(async (_c, a) => a) }));
+vi.mock('../filePeer', () => ({ tryUploadPeerAttachment: vi.fn(async () => null) }));
+vi.mock('../outboundMedia', () => ({
+  rewriteOutboundMedia: vi.fn(async (_c, a) => a),
+  withPeerAttachmentUpload: (_upload: unknown, operation: () => unknown) => operation(),
+}));
 vi.mock('../outboundSessionReferences', () => ({
   outboundSessionReferencesRequested: () => false,
   rewriteOutboundSessionReferences: vi.fn(async (_c, a) => a),

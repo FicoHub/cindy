@@ -1,6 +1,7 @@
 import { simplifyBotRenderItems } from '@/features/bots/botConversationPresentation';
 export { simplifyBotRenderItems } from '@/features/bots/botConversationPresentation';
 import { placeBotTaskCardsAfterIntroduction } from '@cindy/maker-shared/botCollaboration';
+import { describeToolUse, sourcePathCandidatesFromDescriptor } from '@cindy/maker-shared/tool-use-descriptor';
 /**
  * MessageStream
  * ---------------------------------------------------------------------------
@@ -36,6 +37,7 @@ import {
   renderHistoryView,
   historyPrefetchThreshold,
   historyViewLeaves,
+  historyWorkSummaries,
 } from '@cindy/maker-shared/message-window';
 import {
   getRemoteHistoryView,
@@ -83,6 +85,8 @@ import type {
   ChatMessage,
   ContinuationInFlightProjectionCapability,
 } from '@/hooks/useCCAgentChat';
+import { findLastUserInputClientId, isAutoResumeRowInFlight } from '@/lib/autoResumePresentation';
+export { findLastUserInputClientId, isAutoResumeRowInFlight } from '@/lib/autoResumePresentation';
 import { Spinner } from '@/components/ui/spinner';
 import { useMessageNavRailPreference } from '@/hooks/useMessageNavRailPreference';
 import { HISTORY_GAP_SPLIT_MS } from '@/lib/historyGap';
@@ -825,51 +829,6 @@ export function findLastUserMessageClientId(messages: readonly ChatMessage[]): s
   return null;
 }
 
-/**
- * 最后一条「用户侧输入」的 clientId —— **含**合成行（自动续跑指令本身）。
- *
- * 与上面的 `findLastUserMessageClientId` 的区别就在这里：那份服务于「编辑最后一条消息」
- * 这个**可见** affordance，刻意跳过渲染成 null 的合成行；本份要回答的是「此刻正在跑的
- * 这个 turn 是不是自动续跑发起的」——合成行恰恰是那个 turn 的发起者，跳过就答不了。
- *
- * 用途：自愈重连行判断自己是不是"仍在飞"。用户在续跑之后又自己发了消息时，最后一条用户
- * 侧输入就换成他那条，旧的重连行随之停转（正在跑的已经是另一个 turn 了）。
- */
-export function findLastUserInputClientId(messages: readonly ChatMessage[]): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    // **插话（`delivery === 'steer'`）不算新 turn 的发起者** —— 它是同一个正在跑的 turn 内
-    // 的追加输入。算进来的话，用户在自愈 turn 里插一句，正在跑的重连行会立刻被"夺走归属"、
-    // 提前停转退回静态（codex P2 / greptile P1）。本文件里其它 turn 边界判断（见上方
-    // `hasFollowingUserTurn` 等）也都显式排除 steer，此处保持一致。
-    //
-    // 首选判据直接使用 main 投影的 vendor-turn owner；旧被控端缺省 owner 字段时，
-    // 才由下面的兼容分支按最后一条非 steer 用户输入兜底。
-    if (messages[i].role === 'user' && messages[i].delivery !== 'steer') {
-      return messages[i].clientId;
-    }
-  }
-  return null;
-}
-
-/**
- * 自愈落库行是否仍属于当前运行中的续跑 turn。
- *
- * 新端以 main 持有的 vendor-turn owner 做精确关联；只有 wire 上确实缺省 owner 字段的旧
- * 被控端才恢复历史启发式。旧端无法区分自动续跑与不落 user 行的 Goal turn，这是协议信息
- * 不足时的兼容降级，不能扩散到 supported / unknown 两种状态。
- */
-export function isAutoResumeRowInFlight(args: {
-  isContinuationTurnOwner: boolean;
-  sessionRunning: boolean;
-  isLastUserInput: boolean;
-  projectionCapability: ContinuationInFlightProjectionCapability;
-}): boolean {
-  return (
-    args.isContinuationTurnOwner ||
-    (args.projectionCapability === 'legacy' && args.sessionRunning && args.isLastUserInput)
-  );
-}
-
 export function shouldBlockAssistantFork(
   isSessionStreaming: boolean,
   message: ChatMessage,
@@ -1494,6 +1453,7 @@ export function buildRenderItems(
     turnChangeSets?: readonly TurnChangeSetSummary[];
     /** Session working directory for opaque generated-file fallback chips. */
     workingDir?: string;
+    historyArtifacts?: readonly import('@cindy/maker-shared/message-window').HistoryFileArtifact[];
     /** Bot-owned Session: show newly created files as deliverables, not an engineering diff card. */
     botSessionId?: string;
     /** Reuse image Markdown extraction for completed assistant messages across stream batches. */
@@ -1855,10 +1815,40 @@ export function buildRenderItems(
     }
     const workingDir = opts?.workingDir ?? '';
     if (workingDir) {
+      const start = Date.parse(messages[lo]?.createdAt ?? '');
+      const end = Date.parse(messages[hi]?.createdAt ?? '');
+      const artifacts = (opts?.historyArtifacts ?? []).filter((artifact) => {
+        const time = Date.parse(artifact.createdAt);
+        return !(Number.isFinite(start) && time < start || Number.isFinite(end) && time >= end);
+      });
+      const editedPaths = new Set(artifacts.filter((file) => file.exclude && file.ready)
+        .map((file) => pathKey(resolveToolFilePath(file.path, workingDir))));
+      for (const artifact of artifacts) {
+        const path = resolveToolFilePath(artifact.path, workingDir);
+        const normalized = pathKey(path);
+        if (artifact.exclude) {
+          if (artifact.exclude === 'all' && artifact.ready) generatedByPath.delete(normalized);
+          continue;
+        }
+        if (artifact.source === 'command' && editedPaths.has(normalized)) continue;
+        if (exactPaths.has(normalized) && changeSets.length > 0) continue;
+        const previous = generatedByPath.get(normalized);
+        if (previous?.source === 'tool' && artifact.source === 'command') continue;
+        generatedByPath.set(normalized, { path, name: basename(path), source: artifact.source, ready: artifact.ready });
+      }
       for (const file of collectCachedGeneratedFiles(slice, workingDir)) {
         const normalized = pathKey(file.path);
         if (exactPaths.has(normalized) && changeSets.length > 0) continue;
         generatedByPath.set(normalized, file);
+      }
+      // Delivery tools stay as visible source rows. Preserve their existing
+      // intermediate-file suppression for paths produced by deferred tools too.
+      for (const message of slice) {
+        if (message.role !== 'tool_use') continue;
+        const descriptor = describeToolUse(message.toolName ?? '', message.toolInput);
+        for (const path of sourcePathCandidatesFromDescriptor(descriptor)) {
+          generatedByPath.delete(pathKey(resolveToolFilePath(path, workingDir)));
+        }
       }
     }
     const generatedFiles = [...generatedByPath.values()];
@@ -2859,10 +2849,11 @@ export function MessageStream({
           (row.isPendingPersist === true ||
             !!row.blockedByGhost ||
             !!row.localSendPrecedingClientIds),
-        build: (rows) => {
+        build: (rows, _streaming, historyArtifacts) => {
           // History chunks are freshly assembled arrays, not reusable source snapshots.
           const chunk = buildRenderItems([...rows], taskUpdates, ghostCardSnapshot, {
             historyWindowIncomplete: true,
+            historyArtifacts,
             workingDir,
             botSessionId: simplifiedBotConversation ? sessionId : undefined,
             markdownImageTargetCache: markdownImageTargetCacheRef.current,
@@ -2943,7 +2934,15 @@ export function MessageStream({
   );
   // subagent-model-chip: parentToolUseId(Agent/Task 行 id)→ 子代理模型,
   // 供 AgentActionsBlock 给 Agent/Task 行反查并渲染模型 chip。
-  const subagentModelByToolUseId = useMemo(() => buildSubagentModelMap(messages), [messages]);
+  const subagentModelByToolUseId = useMemo(() => {
+    const models = buildSubagentModelMap(messages);
+    for (const summary of historyWorkSummaries(historySnapshot?.items ?? [])) {
+      if (summary.parentToolUseId && summary.model && !models.has(summary.parentToolUseId)) {
+        models.set(summary.parentToolUseId, summary.model);
+      }
+    }
+    return models;
+  }, [messages, historySnapshot?.items]);
 
   // work-group pass:把最终回答前的工作过程折叠成 work_group,无最终回答时
   // 继续走旧的 tool_segment + thinking 折叠兼容路径。
@@ -6417,6 +6416,7 @@ const MessageItem = memo(function MessageItem({
     case 'user':
       return (
         <UserMessage
+          sharedAuthorName={message.sharedAuthorName}
           workingDir={workingDir}
           content={message.content}
           sessionReferences={message.sessionReferences}

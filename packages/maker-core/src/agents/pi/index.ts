@@ -119,6 +119,9 @@ import {
   listPiSubagentRunDiagnostics,
   listPiSubagentRunDirectoryIds,
   listPiSubagentRuns,
+  scanPiSubagentRuns,
+  PI_SUBAGENT_ACTIVE_POLL_MS,
+  PI_SUBAGENT_IDLE_POLL_MS,
   piSubagentRunRoot,
   piSubagentApprovalScope,
   piSubagentRuntimeOwnerId,
@@ -1897,9 +1900,8 @@ export class PiAgent extends BaseAgent {
     return {
       switchModel: { supported: true },
       availableModels: [],
-      // Pi 的 ChatGPT 模型经 Desktop responses bridge 调用。Fast 状态由 host 按
-      // sessionId 注入 bridge prefs,再映射为 Codex `service_tier: priority`；实际
-      // 是否显示开关仍由目录里该 (provider, model, pi) 的 supportsFastMode 门控。
+      // ChatGPT 订阅由 Desktop bridge 注入 Fast；自定义直连由原生请求钩子读取
+      // 本运行时偏好，映射 service_tier: priority。两者均由该连接的能力声明门控。
       hasFastMode: true,
       effort: { supported: true },
       effortLevels: [
@@ -2257,7 +2259,9 @@ export class PiAgent extends BaseAgent {
       }
       const modelBaseUrl = endpoint ? piGatewayModelBaseUrl(endpoint, api) : undefined;
       gatewayApiByModel.set(m.id, api);
-      const supportsImageInput = m.supportsImageInput === true;
+      // Missing capability metadata must not disable newly discovered vision models.
+      // Explicit text-only declarations still take precedence over this default.
+      const supportsImageInput = m.supportsImageInput !== false;
       gatewayImageInputByModel.set(m.id, supportsImageInput);
       const thinkingLevelMap = gatewayThinkingLevelMap(m.efforts, resolvedSpec?.thinkingLevelMap);
       return [{
@@ -2336,7 +2340,7 @@ export class PiAgent extends BaseAgent {
           ...(m.api ? { api: m.api } : {}),
           reasoning: m.reasoning ?? false,
           ...(m.thinkingLevelMap ? { thinkingLevelMap: { ...m.thinkingLevelMap } } : {}),
-          input: m.input ?? ['text'],
+          input: m.input ?? ['text', 'image'],
           contextWindow,
           maxTokens: m.maxTokens && m.maxTokens > 0 ? m.maxTokens : piMaxTokensFallback(contextWindow),
           ...(m.cost ? { cost: structuredClone(m.cost) } : {}),
@@ -3226,6 +3230,17 @@ export class PiAgent extends BaseAgent {
       runtimeDir,
       `perm-${sid ?? `anon-${process.pid}-${Date.now()}`}-${runtimeInstanceId}${remote ? `-${permissionSnapshotHash}` : ''}.json`,
     );
+    const fastModels = nativeProviders.flatMap(provider => provider.models
+      .filter(model => model.supportsFastMode === true)
+      .map(model => ({ provider: provider.id, id: model.wireId ?? model.id })));
+    // Fast is host-owned state. The bridge reads it over RPC; no writable file
+    // (or replayable snapshot) can authorize a paid request tier.
+    let requestPrefsClosed = false;
+    let nativeFastEnabled = opts.getPriceVariant?.() === 'priority';
+    const updateRequestPrefs = (fast = opts.getPriceVariant ? opts.getPriceVariant() === 'priority' : nativeFastEnabled): void => {
+      if (requestPrefsClosed) throw new Error('Pi request preferences are closed');
+      nativeFastEnabled = fast;
+    };
     let activeToolsDisabled = false;
     let textOnlyPolicyReady = false;
     const textOnlyInput = (text: string): string => {
@@ -3249,6 +3264,7 @@ export class PiAgent extends BaseAgent {
     const cleanupRuntimeFiles = (): void => {
       if (runtimeFilesCleaned) return;
       runtimeFilesCleaned = true;
+      requestPrefsClosed = true;
       void rmPath(permissionFile);
       void rmPath(subagentRuntimeFile);
     };
@@ -3356,6 +3372,7 @@ export class PiAgent extends BaseAgent {
       return run;
     };
     await writePermissionFile(requestedPermissionSnapshot);
+    updateRequestPrefs();
 
     // 子代理运行期快照的写入:代际串行,最新意图胜出(理由同权限档 —— 并发/连续 setModel
     // 时无串行的 writeFile 可能让较早的模型写在较新的之后落盘,子代理就会读到过期模型)。
@@ -3773,6 +3790,7 @@ export class PiAgent extends BaseAgent {
     const queue: AsyncQueue<AgentEvent> = createAsyncQueue<AgentEvent>();
     const ctx: PiTranslateContext = createPiTranslateContext(this.deps.logger);
     ctx.getPriceVariant = opts.getPriceVariant;
+    ctx.resolveUsagePriceVariant = opts.resolveUsagePriceVariant;
     ctx.workingContextWindow = startupWorkingContextWindow;
     const contextModeRoot = findContextModePackageRoot([
       ...nativePackageRoots,
@@ -3973,7 +3991,9 @@ export class PiAgent extends BaseAgent {
      * approvals.
      */
     let piProcessExited = false;
-    const piSubagentStatuses = new Map<string, PiSubagentRunStatus>();
+    type PiSubagentStatusSummary = Pick<PiSubagentRunStatus,
+      'runId' | 'taskId' | 'state' | 'startedAt' | 'updatedAt' | 'title' | 'description'>;
+    const piSubagentStatuses = new Map<string, PiSubagentStatusSummary>();
     const piSubagentFingerprints = new Map<string, string>();
     const piSubagentApprovalRequests = new Set<string>();
     const piSubagentApprovalDeliveries = new Set<string>();
@@ -4031,6 +4051,8 @@ export class PiAgent extends BaseAgent {
       }
     };
     let piSubagentRefreshInFlight = false;
+    let piSubagentNextRefreshAt = 0;
+    let piSubagentRefreshGeneration = 0;
     // Approval delivery belongs to the *detached run* lifecycle, not to the
     // parent handle. After a navigation close the foreground refresh timer is
     // gone, but `deferProxyDisposalForDetachedRuns` keeps polling durable status
@@ -4074,7 +4096,7 @@ export class PiAgent extends BaseAgent {
       const taskId = status.taskId;
       const projectedStatus = status.state === 'queued' ? 'running' : status.state;
       if (isPiSubagentTerminal(status.state)) clearPiSubagentApprovalState(status.runId);
-      const fingerprint = JSON.stringify([
+      const fingerprint = createHash('sha256').update(JSON.stringify([
         status.runId,
         status.state,
         status.totalTokens,
@@ -4088,7 +4110,7 @@ export class PiAgent extends BaseAgent {
           task.error,
           task.pendingApproval?.id,
         ]),
-      ]);
+      ])).digest('hex');
       if (piSubagentFingerprints.get(taskId) === fingerprint) return;
       piSubagentFingerprints.set(taskId, fingerprint);
       const taskModels = new Set(status.tasks.map((task) => task.model ?? null));
@@ -4164,7 +4186,7 @@ export class PiAgent extends BaseAgent {
      * that is merely unreadable is held, not buried.
      */
     const emitPiSubagentDiagnostic = (
-      previous: PiSubagentRunStatus,
+      previous: PiSubagentStatusSummary,
       diagnostic: PiSubagentRunDiagnostic,
     ): void => {
       queue.push({
@@ -4623,16 +4645,28 @@ export class PiAgent extends BaseAgent {
     };
     const refreshPiSubagentRuns = async (): Promise<void> => {
       if (closed || piSubagentRefreshInFlight) return;
+      const generation = piSubagentRefreshGeneration;
+      const refreshStartedAt = Date.now();
       piSubagentRefreshInFlight = true;
+      let active = false;
+      let succeeded = false;
       try {
-        const statuses = await listPiSubagentRuns(subagentRunRoot);
-        if (closed) return;
-        const newestTaskIds = new Set<string>();
-        for (const status of statuses) {
+        const seenRunIds = new Set<string>();
+        for await (const status of scanPiSubagentRuns(subagentRunRoot, { latestPerTask: true })) {
           if (closed) break;
-          if (newestTaskIds.has(status.taskId)) continue;
-          newestTaskIds.add(status.taskId);
-          piSubagentStatuses.set(status.taskId, status);
+          seenRunIds.add(status.runId);
+          const previous = piSubagentStatuses.get(status.taskId);
+          if (previous && (previous.startedAt > status.startedAt
+            || (previous.startedAt === status.startedAt && previous.runId.localeCompare(status.runId) > 0))) continue;
+          const terminal = isPiSubagentTerminal(status.state);
+          if (!terminal) active = true;
+          // Disk/DB remain the history source. Output is delivered below, but
+          // never pinned by this live handle's discovery or fingerprint cache.
+          piSubagentStatuses.set(status.taskId, {
+            runId: status.runId, taskId: status.taskId, state: status.state,
+            startedAt: status.startedAt, updatedAt: status.updatedAt,
+            ...(!terminal ? { title: status.title, description: status.description } : {}),
+          });
           emitPiSubagentStatus(status);
           for (const task of status.tasks) dispatchPiSubagentApproval(status, task);
         }
@@ -4642,7 +4676,7 @@ export class PiAgent extends BaseAgent {
         // deleted the approval dedupe state, so the same pendingApproval was
         // offered again the instant the file parsed and two decisions raced for
         // one request. Ask the directory set what actually happened.
-        const missing = [...piSubagentStatuses].filter(([taskId]) => !newestTaskIds.has(taskId));
+        const missing = [...piSubagentStatuses].filter(([, status]) => !seenRunIds.has(status.runId));
         if (missing.length > 0) {
           const [runIds, diagnostics] = await Promise.all([
             listPiSubagentRunDirectoryIds(subagentRunRoot),
@@ -4671,18 +4705,31 @@ export class PiAgent extends BaseAgent {
             if (stale) emitPiSubagentDiagnostic(previous, stale);
           }
         }
+        // Unreadable statuses are not proof that a previously active run ended.
+        active ||= [...piSubagentStatuses.values()].some((status) => !isPiSubagentTerminal(status.state));
+        succeeded = true;
       } catch (error) {
         deps.logger.warn('pi subagent durable status refresh failed', {
           message: error instanceof Error ? error.message : String(error),
         });
       } finally {
         piSubagentRefreshInFlight = false;
+        if (generation === piSubagentRefreshGeneration) {
+          piSubagentNextRefreshAt = refreshStartedAt + (succeeded && !active
+            ? PI_SUBAGENT_IDLE_POLL_MS : PI_SUBAGENT_ACTIVE_POLL_MS);
+        }
       }
+    };
+    const requestPiSubagentRefresh = async (): Promise<void> => {
+      piSubagentRefreshGeneration++;
+      piSubagentNextRefreshAt = 0;
+      await refreshPiSubagentRuns();
     };
     const piSubagentRefreshTimer = localSubagentSupported
       ? setInterval(() => {
+          if (Date.now() < piSubagentNextRefreshAt) return;
           void refreshPiSubagentRuns();
-        }, 500)
+        }, PI_SUBAGENT_ACTIVE_POLL_MS)
       : null;
     let piSubagentRefreshTimerCleared = false;
     const clearPiSubagentRefreshTimer = (): void => {
@@ -4691,7 +4738,7 @@ export class PiAgent extends BaseAgent {
       if (piSubagentRefreshTimer) clearInterval(piSubagentRefreshTimer);
     };
     piSubagentRefreshTimer?.unref?.();
-    if (localSubagentSupported) void refreshPiSubagentRuns();
+    if (localSubagentSupported) void requestPiSubagentRefresh();
     // Cindy 侧对 pi plan 模式的镜像态;setPlanMode 经 /plan toggle 驱动,与 pi 内部
     // planModeEnabled 保持一致(RPC 下 Execute/Refine 选择框被 auto-cancel,pi 不会自行
     // 翻转,故镜像不漂移)。
@@ -4968,19 +5015,26 @@ export class PiAgent extends BaseAgent {
           // cannot rule out a launch already in flight inside it, even if the
           // process exits before the scan returns.
           const scanFollowsExit = piProcessExited;
-          const [directoryCount, statuses] = await Promise.all([
+          const [directoryCount, inspected] = await Promise.all([
             countPiSubagentRunDirectories(subagentRunRoot),
-            listPiSubagentRuns(subagentRunRoot),
+            (async () => {
+              let readable = 0;
+              const activeStatuses: PiSubagentRunStatus[] = [];
+              for await (const status of scanPiSubagentRuns(subagentRunRoot)) {
+                readable++;
+                if (!isPiSubagentTerminal(status.state)) activeStatuses.push(status);
+              }
+              return { readable, activeStatuses };
+            })(),
           ]);
-          const active = statuses.some((status) => !isPiSubagentTerminal(status.state));
-          const allDirectoriesReadable = statuses.length === directoryCount;
+          const active = inspected.activeStatuses.length > 0;
+          const allDirectoriesReadable = inspected.readable === directoryCount;
           settleInitialInspection();
           // Approval delivery keeps running while any detached run is live. The
           // decision/delivery dedupe sets are the same ones the foreground timer
           // used, so a request already answered before close is never re-asked.
           if (localSubagentSupported && !leaseDisposed) {
-            for (const status of statuses) {
-              if (isPiSubagentTerminal(status.state)) continue;
+            for (const status of inspected.activeStatuses) {
               for (const task of status.tasks) dispatchPiSubagentApproval(status, task);
             }
           }
@@ -5076,6 +5130,7 @@ export class PiAgent extends BaseAgent {
         // 扩展照旧现读快照,能力不受影响。
         CINDY_SUBAGENT_ENV.runtimeFile,
         CINDY_SUBAGENT_ENV.ownerId,
+        'CINDY_PI_MODEL_REQUEST_PREFS_FILE',
         // 受管工具路径同属控制面：不得让获批 bash 改写/替换后影响后续自动放行的 grep/find。
         ...(managedRipgrepPath ? [PI_MANAGED_RG_PATH_ENV] : []),
       ]));
@@ -5112,6 +5167,7 @@ export class PiAgent extends BaseAgent {
         PI_CODING_AGENT_DIR: configHome,
         [PI_BASH_PACKAGE_HOME_ENV]: bashPackageHome,
         CINDY_PI_PERMISSION_FILE: permissionFile,
+        ...(fastModels.length > 0 ? { CINDY_PI_FAST_MODELS: JSON.stringify(fastModels) } : {}),
         CINDY_PI_TURN_TOOL_POLICY: remote ? '' : runtimeInstanceId,
         ...(allowPiPackageManagement ? { [PI_PACKAGE_MANAGEMENT_ENV]: piPackageManagementToken } : {}),
         // 轮 40-w4-t12 HIGH-1:review-only 启动标记 —— 独立于权限文件(文件损坏/
@@ -5208,6 +5264,8 @@ export class PiAgent extends BaseAgent {
               resolver: interactionResolver,
               permissionMode,
               currentModelIds: [mutableModel, mutableWireModel],
+              readNativeFast: (provider, model) => !requestPrefsClosed && nativeFastEnabled &&
+                fastModels.some(candidate => candidate.provider === provider && candidate.id === model),
               workspaceRoots: [opts.workingDir],
               readRoots: [opts.workingDir, ...mutableExtraDirs, ...mutableWritableDirs],
               writableRoots: [opts.workingDir, ...mutableWritableDirs],
@@ -5279,6 +5337,7 @@ export class PiAgent extends BaseAgent {
                       'PI Subagent runner request is unavailable',
                     );
                 }
+                void requestPiSubagentRefresh();
                 return true;
               },
               emitExtensionNotification: (message, event) => {
@@ -5294,8 +5353,13 @@ export class PiAgent extends BaseAgent {
                 }
                 const notification: AgentEvent = {
                   type: 'text',
-                  data: { text, isFinal: false },
+                  data: { text, isFinal: true },
                   source: 'pi',
+                  standaloneText: true,
+                  turnScope: 'background',
+                  // Freeze the notice's origin before the async queue: a later
+                  // /clear must discard it even when delivery happens afterward.
+                  backgroundTurnStartedAt: Date.now(),
                 };
                 queue.push(notification);
                 return notification;
@@ -5940,13 +6004,13 @@ export class PiAgent extends BaseAgent {
 
     const assertImageInputSupported = (images: readonly PiPromptImage[]): void => {
       if (images.length === 0) return;
+      const nativeModel = nativeProviderById
+        .get(mutablePiProviderId)
+        ?.models.find((candidate) => candidate.id === resolveNativeModelId(mutablePiProviderId, mutableModel));
       const supportsImageInput =
         mutablePiProviderId === PI_PROVIDER_ID
           ? gatewayImageInputByModel.get(mutableModel) === true
-          : nativeProviderById
-              .get(mutablePiProviderId)
-              ?.models.find((candidate) => candidate.id === resolveNativeModelId(mutablePiProviderId, mutableModel))
-              ?.input?.includes('image') === true;
+          : nativeModel !== undefined && (nativeModel.input ?? ['text', 'image']).includes('image');
       if (supportsImageInput) return;
       throw new PiImageInputUnsupportedError();
     };
@@ -6589,6 +6653,7 @@ export class PiAgent extends BaseAgent {
       async send(message: UserMessage, sendOpts?: SendOptions): Promise<void> {
         rejectIfCancelled(sendOpts, 'send');
         await waitForSessionRpcIdle();
+        updateRequestPrefs();
         rejectIfCancelled(sendOpts, 'send');
         if (sendOpts) handle.validateSendOptions?.(sendOpts);
         // 本轮策略覆盖:无策略显式清 null,不继承上一轮渠道策略(§7.2.5);内部续跑
@@ -6926,7 +6991,7 @@ export class PiAgent extends BaseAgent {
         await controlPiSubagentRuns(subagentRunRoot, taskId, 'stop', {
           runtimeOwnerId: subagentRuntimeOwnerId,
         });
-        await refreshPiSubagentRuns();
+        await requestPiSubagentRefresh();
       },
 
       async resumeBackgroundTask(taskId: string, message: string, childId?: string): Promise<void> {
@@ -6955,7 +7020,7 @@ export class PiAgent extends BaseAgent {
             runtimeSnapshot: { modelsJson, bridgeSource, runnerSource },
           }, childId);
           if (!runId) throw new Error('No terminal PI Subagent run is available to resume.');
-          await refreshPiSubagentRuns();
+          await requestPiSubagentRefresh();
         })();
         // close() waits for every resume that entered while this handle was
         // live before inspecting durable runs and transferring the proxy-token
@@ -7132,6 +7197,11 @@ export class PiAgent extends BaseAgent {
           () => {},
         );
         return run;
+      },
+
+      async setFastMode(enabled: boolean): Promise<void> {
+        if (reviewMode) return;
+        updateRequestPrefs(enabled);
       },
 
       async setEffort(effort: Effort): Promise<void> {
@@ -7760,6 +7830,7 @@ export class PiAgent extends BaseAgent {
       resolver: InteractionResolver | null;
       permissionMode: 'ask' | 'auto' | 'bypassPermissions';
       currentModelIds: readonly string[];
+      readNativeFast?: (provider: string, model: string) => boolean;
       workspaceRoots: string[];
       readRoots: string[];
       writableRoots: string[];
@@ -7826,6 +7897,22 @@ export class PiAgent extends BaseAgent {
         message.slice(0, MAX_PI_EXTENSION_NOTIFICATION_LENGTH),
         event,
       );
+      return;
+    }
+
+    // Internal, read-only query over the existing stdio/SSH RPC response channel.
+    // Caller input selects an exact model; it can never supply or update Fast intent.
+    if (method === 'input' && event.title === 'cindy:request-preferences') {
+      const context = getPermissionCtx();
+      let fast = false;
+      try {
+        const requested = JSON.parse(typeof event.placeholder === 'string' ? event.placeholder : '');
+        if (!context.isPermissionContextClosed() && !context.isAccountBoundaryTornDown() &&
+            typeof requested?.provider === 'string' && typeof requested?.model === 'string') {
+          fast = context.readNativeFast?.(requested.provider, requested.model) === true;
+        }
+      } catch { /* Invalid queries never enable a paid tier. */ }
+      proc.send({ type: 'extension_ui_response', id, value: JSON.stringify({ fast }) });
       return;
     }
 

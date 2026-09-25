@@ -2,6 +2,8 @@ import type { WorktreeRecycleAction, WorktreeRecycleStatus } from '../shared/wor
 import { FAVORITE_HOST_READY, FAVORITE_HOST_REQUEST, FAVORITE_HOST_REPLY, FAVORITE_HOST_CHANGED, type ModelFavoritesHostApi } from '../shared/modelFavoritesSync';
 import { invokeOpenPath } from './openPath';
 import { COPY_PNG_TO_CLIPBOARD_CHANNEL, type CopyPngToClipboardParams } from '../shared/pngClipboard';
+import type { ByokStatus } from '../shared/modelAccess.js';
+import type { LocalPluginOauthRequest, LocalPluginSecretRequest } from '../shared/pluginOauth';
 import { REMOTE_VIEWER } from '../shared/remoteDesktopViewer';
 import type { RoutineInput } from '@cindy/maker-scheduler';
 import {
@@ -561,6 +563,9 @@ const fanOutCorruptionRestored = createIpcFanOut('local-db:corruption-restored')
 const fanOutPluginRemovalNoticeAvailable = createIpcFanOut(
   'plugin-market:removal-notice-available',
 );
+const fanOutPluginUpdateConsentHoldsChanged = createIpcFanOut(
+  'plugin-market:update-consent-holds-changed',
+);
 // #37: release 端检测到 schema drift 时一次性 toast 提示开发者切回 dev 自动修复
 const fanOutSchemaDriftWarning = createIpcFanOut('local-db:schema-drift-warning');
 const fanOutProjectAliasesChanged = createIpcFanOut('local-db:project-aliases:changed');
@@ -700,6 +705,9 @@ const fanOutGhostUnreadSnapshot = createIpcFanOut('ghosts:unread-snapshot');
 // main 只投单个窗口(不广播),所以这里落地的窗口就是该弹框的唯一归属。
 const fanOutGhostConfirmRequest = createIpcFanOut('ghosts:confirm-request');
 const fanOutForgeOidcInstallConfirmRequest = createIpcFanOut('forge-oidc-install:confirm-request');
+// 插件安装／更新确认(main 只投给发起安装的那个窗口;超时或取消时再发 dismissed 收起)。
+const fanOutGhostInstallConsentRequest = createIpcFanOut('ghosts:install-consent:request');
+const fanOutGhostInstallConsentDismissed = createIpcFanOut('ghosts:install-consent:dismissed');
 // 插件预览开页(preview 槽:renderer 在右侧栏开 web-browser 标签)。
 const fanOutGhostPreviewOpen = createIpcFanOut('ghosts:preview-open');
 // 插件自动化草稿(agent 槽 schedule 加档:renderer 开自动化创建面板并预填)。
@@ -944,6 +952,8 @@ interface ComputerDriverStatus {
 }
 
 interface ComputerDriverStatusOptions {
+  /** False keeps background page reads from broadcasting into the permission guide. */
+  refreshPermissionGuide?: boolean;
   includeDoctor?: boolean;
   forcePermissionProbe?: boolean;
   skipPermissionProbe?: boolean;
@@ -1391,6 +1401,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       confirmed: boolean,
     ): Promise<{ handled: boolean }> =>
       ipcRenderer.invoke('forge-oidc-install:resolve-confirm', { requestId, confirmed }),
+    onInstallConsentRequest: fanOutGhostInstallConsentRequest,
+    onInstallConsentDismissed: fanOutGhostInstallConsentDismissed,
+    resolveInstallConsent: (
+      requestId: string,
+      confirmed: boolean,
+    ): Promise<{ handled: boolean }> =>
+      ipcRenderer.invoke('ghosts:install-consent:resolve', { requestId, confirmed }),
     onPreviewOpen: fanOutGhostPreviewOpen,
     onScheduleDraft: fanOutGhostScheduleDraft,
     getCard: (
@@ -1495,6 +1512,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       import('../shared/pluginMarket').PluginRemovalUserNotice | null
     > => ipcRenderer.invoke('plugin-market:consume-removal-notice'),
     onRemovalNoticeAvailable: fanOutPluginRemovalNoticeAvailable,
+    onUpdateConsentHoldsChanged: fanOutPluginUpdateConsentHoldsChanged,
     listSources: (): Promise<import('../shared/pluginMarket').MarketSourceSummary[]> =>
       ipcRenderer.invoke('plugin-market:list-sources'),
     pickLocalSource: (
@@ -2007,6 +2025,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── 网关凭据自动下发(model-access,shared/modelAccess.ts) ──
   modelAccess: {
+    getByokStatus: (): Promise<ByokStatus> => ipcRenderer.invoke('model-access:byok-status'),
+    retryByok: (): Promise<ByokStatus> => ipcRenderer.invoke('model-access:byok-retry'),
     getStatus: (): Promise<ModelAccessStatusPayload> =>
       ipcRenderer.invoke('model-access:get-status'),
     retry: (): Promise<ModelAccessStatusPayload> => ipcRenderer.invoke('model-access:retry'),
@@ -2611,6 +2631,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     isCustomized?: boolean;
   }> => ipcRenderer.invoke('update-channel-settings-reset'),
   relaunchForChannelChange: (): Promise<void> => ipcRenderer.invoke('update-channel-relaunch'),
+  /** Restart once; the next startup refreshes only the confirmed managed harness first. */
+  relaunchForHarnessUpdate: (kind: 'claude-code' | 'codex'): Promise<{ accepted: true }> =>
+    ipcRenderer.invoke('update-harness-relaunch', kind),
   probeBetaChannel: (): Promise<{ available: boolean }> =>
     ipcRenderer.invoke('update-channel-probe-beta'),
   setUpdateRelaunchTheme: (theme: 'light' | 'dark'): void => {
@@ -2864,6 +2887,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       origin: { kind: 'device'; deviceId: string } | { kind: 'ssh'; remoteHostId: string };
       workdir: string;
       absPath: string;
+      modifiedWindow?: { startMs: number; endMs: number | null };
     }): Promise<{ verdict: 'file' | 'directory' | 'nonfile' | 'unknown' }> =>
       ipcRenderer.invoke('maker:chat-file:stat', params),
   },
@@ -3307,6 +3331,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // 计算本地 skill 文件夹 hash（30s 缓存在 renderer 侧）
     // manifest 是参与 hash 的文件清单(path + sha256),用于 dirty 排查
+    comparePublished: (params: import('../shared/skillhubPublishComparison').SkillhubPublishComparisonParams): Promise<import('../shared/skillhubPublishComparison').SkillhubPublishComparison> => ipcRenderer.invoke('skillhub:compare-published', params),
+
     getFolderHash: (
       absolutePath: string,
     ): Promise<{
@@ -3445,7 +3471,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     uninstall: (
       absolutePath: string,
       skillId?: string,
-    ): Promise<{ success: true; cleanupToken?: string } | { success: false; errorCode: string; message: string }> =>
+    ): Promise<
+      | { success: true; cleanupToken?: string } | { success: false; errorCode: string; message: string }> =>
       ipcRenderer.invoke('skillhub:uninstall', { absolutePath, skillId }),
 
     retryUninstallCleanup: (token: string): Promise<{ complete: boolean }> =>
@@ -3863,6 +3890,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     input: import('../shared/cindyMakeMerge').CindyMakeMergeRequest,
   ): Promise<import('../shared/cindyMakeMerge').CindyMakeMergeState | undefined> =>
     ipcRenderer.invoke('app:cindy-make-merge', input),
+  getCindyMakeSettings: (): Promise<import('../shared/cindyMakeSettings').CindyMakeSettings> =>
+    ipcRenderer.invoke('app:get-cindy-make-settings'),
+  setCindyMakeSyncLatestBeforeBuild: (
+    enabled: boolean,
+  ): Promise<import('../shared/cindyMakeSettings').CindyMakeSettings> =>
+    ipcRenderer.invoke('app:set-cindy-make-sync-latest-before-build', enabled),
   getCindyMakeHistory: (
     selected?: string,
   ): Promise<import('../shared/cindyMakeHistory').CindyMakeHistoryState> =>
@@ -3872,9 +3905,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     action: import('../shared/cindyMakeHistory').MakeHistoryAction,
   ): Promise<import('../shared/cindyMakeHistory').CindyMakeHistoryState> =>
     ipcRenderer.invoke('app:cindy-make-history-action', runId, action),
-  generateCindyMakePersonal: (): Promise<
-    import('../shared/cindyMakeHistory').CindyMakeHistoryState
-  > => ipcRenderer.invoke('app:cindy-make-history-build'),
+  generateCindyMakePersonal: (
+    selection?: import('../shared/cindyMakeHistory').MakeHistoryBuildSelection[],
+  ): Promise<import('../shared/cindyMakeHistory').CindyMakeHistoryState> =>
+    ipcRenderer.invoke('app:cindy-make-history-build', selection),
   cancelCindyMakePersonal: (
     buildId: string,
   ): Promise<import('../shared/cindyMakeHistory').CindyMakeHistoryState> =>
@@ -3909,6 +3943,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ) => listener(state);
     ipcRenderer.on('maker:cindy-make:state-changed', wrapped);
     return () => ipcRenderer.removeListener('maker:cindy-make:state-changed', wrapped);
+  },
+  onCindyMakeHistoryChanged: (
+    listener: (ownerStamp?: DataOwnerPushStamp) => void,
+  ): (() => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, ownerStamp: unknown) => {
+      if (ownerStamp === undefined || isDataOwnerPushStamp(ownerStamp)) listener(ownerStamp);
+    };
+    ipcRenderer.on('cindy-make:history-changed', wrapped);
+    return () => ipcRenderer.removeListener('cindy-make:history-changed', wrapped);
   },
 
   openCindyMakeSourceDir: (): Promise<{ success: boolean }> =>
@@ -3946,7 +3989,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('log-upload:settings-get'),
   setLogUploadCrashAuto: (enabled: boolean): Promise<LogUploadSettingsPayload> =>
     ipcRenderer.invoke('log-upload:set-crash-auto', enabled === true),
-  /** 恢复默认:删掉开关 override,重新跟随当前版本默认值(默认关闭)。 */
+  /** 恢复默认:删掉 override,重新跟随当前版本默认的“已有 Git 项目”模式。 */
   resetLogUploadCrashAuto: (): Promise<LogUploadSettingsPayload> =>
     ipcRenderer.invoke('log-upload:reset-crash-auto'),
   /** 手动上传一次。失败以 IPC 错误码返回(LOG_UPLOAD_* / PRIVACY_CONSENT_REQUIRED)。 */
@@ -4378,6 +4421,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     windowsSupport: (enabled) => ipcRenderer.invoke(DESKTOP_LOCAL.WINDOWS_SUPPORT, enabled),
     stop: () => ipcRenderer.invoke(DESKTOP_LOCAL.STOP),
   } satisfies RemoteDesktopApi,
+  sharedTask: {
+    host: (command: import('@cindy/device-link').SharedTaskHostCommand): Promise<unknown> =>
+      ipcRenderer.invoke('maker:shared-task', command),
+    account: (command: import('@cindy/device-link').SharedTaskAccountCommand): Promise<unknown> =>
+      ipcRenderer.invoke('shared-task:account', command),
+  },
   deviceLink: {
     getState: (): Promise<{
       remoteControlEnabled: boolean;
@@ -4737,6 +4786,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Two-step UX: check first (so renderer can build the right confirm
     // dialog), then sync explicitly after user confirmation. The renderer
     // is the trust boundary — sync handler does NOT itself prompt.
+    listCodexModels: (id: string): Promise<import('@cindy/model-providers').ProviderView[]> =>
+      ipcRenderer.invoke('maker:remote-ssh:list-codex-models', { id }),
     checkCodexAuth: (
       id: string,
     ): Promise<{
@@ -5374,6 +5425,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('local-db:bots:create-canonical-session', body),
       history: (botId: string): Promise<unknown[]> =>
         ipcRenderer.invoke('local-db:bots:history', botId),
+      memory: {
+        list: (botId: string, query?: string): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:memory:list', botId, query),
+        read: (botId: string, filename: string): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:memory:read', botId, filename),
+        update: (body: unknown): Promise<unknown> =>
+          ipcRenderer.invoke('local-db:bots:memory:update', body),
+        delete: (body: unknown): Promise<void> =>
+          ipcRenderer.invoke('local-db:bots:memory:delete', body),
+      },
     },
     conversations: {
       search: (request: unknown): Promise<unknown> =>
@@ -5431,6 +5492,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ): Promise<unknown> => ipcRenderer.invoke('local-db:subagent-runs:transcript', input),
       /** Small invalidation push; consumers re-read through list/detail. */
       onChanged: createIpcFanOut('local-db:subagent-runs:changed'),
+    },
+    taskTags: {
+      onChanged: createIpcFanOut('local-db:task-tags:changed'),
+      execute: (
+        request: import('@cindy/maker-shared').TaskTagRequest,
+      ): Promise<import('@cindy/maker-shared').TaskTagResult> =>
+        ipcRenderer.invoke('local-db:task-tags:execute', request),
     },
     projectAliases: {
       list: (): Promise<unknown> => ipcRenderer.invoke('local-db:project-aliases:list'),
@@ -5529,6 +5597,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('maker:collaboration-settings:reset'),
     },
     messages: {
+      historyView: (sessionId: string, opts?: { before?: string | null; lazyDetails?: boolean }): Promise<unknown> =>
+        ipcRenderer.invoke('local-db:messages:view', sessionId, opts),
+      workDetails: (sessionId: string, ref: unknown, opts?: { after?: string | null }): Promise<unknown> =>
+        ipcRenderer.invoke('local-db:messages:work-details', sessionId, ref, opts),
       list: (
         sessionId: string,
         opts?: { limit?: number; before?: string; beforeTs?: number },
@@ -5977,7 +6049,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /** 通用 OAuth 供应商（目录 auth.oauth 描述符驱动）登录 / 登出 / 取消。 */
     providerOAuthLogin: (
       providerId: string,
-      options?: { ownerId?: string },
+      options?: { ownerId?: string; method?: 'browser' | 'device' },
     ): Promise<{ ok: boolean; reason?: string }> =>
       ipcRenderer.invoke('maker:provider:oauth:login', providerId, options),
     providerOAuthLogout: (providerId: string, ownerScope?: { dataOwnerId: string | null; ownerGeneration: number }, options?: CustomProviderUpdateOptions): Promise<CustomProviderUpdateResult> =>
@@ -6522,6 +6594,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ): Promise<{ accepted: boolean }> =>
       ipcRenderer.invoke('maker:resolve-interaction', requestId, decision),
 
+    /** Opens a remote Host's registered OAuth transaction. Returns no authorization material. */
+    assistPluginOauth: (request: LocalPluginOauthRequest): Promise<{ accepted: boolean }> =>
+      ipcRenderer.invoke('plugin-oauth:assist', request),
+    /** Dedicated signed input transport; never uses the ordinary remote invoke API. */
+    submitRemotePluginSecret: (request: LocalPluginSecretRequest): Promise<{ accepted: boolean }> =>
+      ipcRenderer.invoke('plugin-oauth:submit-secret', request),
+    submitRemotePluginConnection: (request: import('../shared/pluginOauth').LocalPluginConnectionRequest): Promise<{ accepted: boolean }> =>
+      ipcRenderer.invoke('plugin-oauth:submit-connection', request),
+
+    /** Ephemeral user-entered device code for this frame's active card; no callback code or token. */
+    pluginOauthDeviceCode: (request: import('../shared/pluginOauthDeviceCode').PluginOauthDeviceCodeRequest): Promise<import('../shared/pluginOauthDeviceCode').PluginOauthDeviceCodeView | null> =>
+      ipcRenderer.invoke('plugin-oauth:device-code', request),
+
     /** Local-only Secret handoff; Main verifies this is Cindy's trusted top-level frame. */
     submitPluginSetupInline: (request: {
       requestId: string;
@@ -6882,22 +6967,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }> => ipcRenderer.invoke('maker:chat-embedding:reset', owner),
 
     // Git safety workflow —— 控制 turn end 自动 XDT snapshot commit。
-    // 默认 false; Codex rewind 按钮跟随该开关显示。
+    // 三态默认只覆盖已有 Git 项目；Codex 对话编辑不依赖此开关。
     gitSafetyGet: (): Promise<{
+      mode: 'off' | 'existing-git' | 'all-projects';
       autoSnapshotEnabled: boolean;
+      autoInitProjectGit: boolean;
       isCustomized: boolean;
+      defaultMode: 'off' | 'existing-git' | 'all-projects';
       defaultAutoSnapshotEnabled: boolean;
     }> => ipcRenderer.invoke('maker:git-safety:get'),
     gitSafetySet: (
-      enabled: boolean,
+      mode: 'off' | 'existing-git' | 'all-projects' | boolean,
     ): Promise<{
+      mode: 'off' | 'existing-git' | 'all-projects';
       autoSnapshotEnabled: boolean;
+      autoInitProjectGit: boolean;
       isCustomized: boolean;
+      defaultMode: 'off' | 'existing-git' | 'all-projects';
       defaultAutoSnapshotEnabled: boolean;
-    }> => ipcRenderer.invoke('maker:git-safety:set', enabled),
+    }> => ipcRenderer.invoke('maker:git-safety:set', mode),
     gitSafetyReset: (): Promise<{
+      mode: 'off' | 'existing-git' | 'all-projects';
       autoSnapshotEnabled: boolean;
+      autoInitProjectGit: boolean;
       isCustomized: boolean;
+      defaultMode: 'off' | 'existing-git' | 'all-projects';
       defaultAutoSnapshotEnabled: boolean;
     }> => ipcRenderer.invoke('maker:git-safety:reset'),
 
@@ -6993,8 +7087,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:claude-oauth:cancel', loginKey),
 
     // xAI(SuperGrok 订阅)OAuth —— 与 claudeOAuth* 同形态。
-    xaiOAuthLogin: (): Promise<{ ok: boolean; authorized: boolean; reason?: string }> =>
-      ipcRenderer.invoke('maker:xai-oauth:login'),
+    xaiOAuthLogin: (method?: 'browser' | 'device'): Promise<{ ok: boolean; authorized: boolean; reason?: string }> =>
+      ipcRenderer.invoke('maker:xai-oauth:login', method),
     xaiOAuthLogout: (ownerScope?: { dataOwnerId: string | null; ownerGeneration: number }): Promise<{ authorized: boolean }> =>
       ipcRenderer.invoke('maker:xai-oauth:logout', ownerScope),
     xaiOAuthCancel: (): Promise<{ authorized: boolean }> =>
@@ -7106,6 +7200,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
           trustedContexts,
           opts,
         ),
+      updateContent: (
+        sessionId: string,
+        clientId: string,
+        item: import('../shared/agentInputQueue').AgentInputQueuedMessage,
+        opts?: { expectedClearBoundaryMs?: number | null },
+      ): Promise<import('../shared/agentInputQueue').AgentInputProjection> =>
+        ipcRenderer.invoke('maker:input:update-content', sessionId, clientId, item, opts),
       move: (
         sessionId: string,
         clientId: string,
@@ -7218,7 +7319,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     rewindCommit: (
       sessionId: string,
       clientId: string,
-      opts?: { requireLatestUser?: boolean; stopIfRunning?: boolean },
+      opts?: { requireLatestUser?: boolean; stopIfRunning?: boolean; allowFileRestore?: boolean },
     ): Promise<unknown> => ipcRenderer.invoke('maker:rewind:commit', sessionId, clientId, opts),
     fork: (sourceSessionId: string, messageClientId: string): Promise<unknown> =>
       ipcRenderer.invoke('maker:fork', sourceSessionId, messageClientId),
@@ -7243,6 +7344,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       onLoginProgress: fanOutMakerAuthLoginProgress,
     },
 
+    piKernel: {
+      getState: (check = false): Promise<import('../shared/piKernel').PiKernelState> =>
+        ipcRenderer.invoke('maker:agent:pi-kernel-state', check),
+      install: (request: import('../shared/piKernel').PiKernelInstallRequest): Promise<import('../shared/piKernel').PiKernelState> =>
+        ipcRenderer.invoke('maker:agent:pi-kernel-install', request),
+    },
+
     // ── Agent 联合状态 (取代老 electronAPI.codex.binary.getStatus) ──────────
     agent: {
       getStatus: (agentKind: 'claude-code' | 'codex' | 'pi'): Promise<unknown> =>
@@ -7250,12 +7358,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** spawn 当前应用使用的 binary `--version`, 进程内缓存。About 面板用。 */
       getBinaryVersion: (
         agentKind: 'claude-code' | 'codex' | 'pi',
+        options?: { checkLatest?: boolean },
       ): Promise<{
         kind: 'claude-code' | 'codex' | 'pi';
         binaryPath: string | null;
         version: string | null;
+        latestVersion: string | null;
+        updateAvailable: boolean;
+        latestCheckFailed: boolean;
         error?: string;
-      }> => ipcRenderer.invoke('maker:agent:binary-version', agentKind),
+      }> => ipcRenderer.invoke('maker:agent:binary-version', agentKind, options),
     },
 
     // ── Agent 今日累计 (取代老 electronAPI.codex.usage.* + electronAPI.onUsageTodaySpendChanged) ─
