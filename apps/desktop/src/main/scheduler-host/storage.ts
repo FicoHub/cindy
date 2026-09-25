@@ -559,6 +559,22 @@ export class DrizzleScheduleStorage implements ScheduleStorage {
     return row ? scheduleRunToCamel(row) : null;
   }
 
+  /** Same failure stays quiet until the existing recovery contract observes success. */
+  async hasUnrecoveredMatchingFailure(run: ScheduleRun): Promise<boolean> {
+    if (!run.errorMsg) return false;
+    const rows = await this.getDb().select({ id: scheduleRuns.id }).from(scheduleRuns).where(sql`
+      ${scheduleRuns.scheduleId} = ${run.scheduleId}
+      AND ${scheduleRuns.id} != ${run.id}
+      AND ${scheduleRuns.status} IN ('failed', 'interrupted')
+      AND ${scheduleRuns.errorMsg} = ${run.errorMsg}
+      AND COALESCE(CASE WHEN json_valid(${scheduleRuns.preRunHookResult})
+        THEN json_extract(${scheduleRuns.preRunHookResult}, '$.stderr') END, '') = ${run.preRunHookResult?.stderr ?? ''}
+      AND ${scheduleRuns.firedAt} <= ${run.firedAt}
+      AND NOT ${failureRecoveredSql('schedule_runs')}
+    `).limit(1);
+    return rows.length > 0;
+  }
+
   async listRuns(scheduleId: string, limit?: number): Promise<ScheduleRun[]> {
     const db = this.getDb();
     const cap = typeof limit === 'number' && limit > 0 ? Math.floor(limit) : 50;
@@ -612,18 +628,12 @@ export class DrizzleScheduleStorage implements ScheduleStorage {
       return runs;
     }
 
-    const rows = (
-      await Promise.all(
-        chunkArray([...sessionIds], SQLITE_IN_CHUNK_SIZE).map((sessionIdChunk) =>
-          db
-            .select({ agentMeta: messages.agentMeta })
-            .from(messages)
-            .where(
-              and(inArray(messages.sessionId, sessionIdChunk), eq(messages.role, 'assistant')),
-            ),
-        ),
-      )
-    ).flat();
+    const rows: { agentMeta: string | null }[] = [];
+    // Chunking bind parameters must also bound RPC fan-out for large histories.
+    for (const sessionIdChunk of chunkArray([...sessionIds], SQLITE_IN_CHUNK_SIZE)) {
+      rows.push(...await db.select({ agentMeta: messages.agentMeta }).from(messages)
+        .where(and(inArray(messages.sessionId, sessionIdChunk), eq(messages.role, 'assistant'))));
+    }
     const ledger = new Map<
       string,
       { costValues: RegionalMoney[]; estimatedValues: RegionalMoney[]; totalTokens: number }
@@ -897,38 +907,25 @@ export class DrizzleScheduleStorage implements ScheduleStorage {
       linkedScheduleIds.add(schedule.id);
     }
 
-    const messageRows =
-      scanSessionIds.size === 0
-        ? []
-        : (
-            await Promise.all(
-              chunkArray([...scanSessionIds], SQLITE_IN_CHUNK_SIZE).map((sessionIdChunk) =>
-                db
-                  .select({
-                    sessionId: messages.sessionId,
-                    role: messages.role,
-                    agentMeta: messages.agentMeta,
-                    createdAt: messages.createdAt,
-                    id: messages.id,
-                  })
-                  .from(messages)
-                  .where(
-                    and(
-                      inArray(messages.sessionId, sessionIdChunk),
-                      inArray(messages.role, ['user', 'assistant']),
-                    ),
-                  )
-                  .orderBy(
-                    messages.sessionId,
-                    messages.createdAt,
-                    // If a scheduler user message and its assistant result land in the
-                    // same millisecond, the user row must establish activeScheduleId first.
-                    sql`case ${messages.role} when 'user' then 0 else 1 end`,
-                    messages.id,
-                  ),
-              ),
-            )
-          ).flat();
+    const messageRows: Pick<typeof messages.$inferSelect, 'sessionId' | 'role' | 'agentMeta' | 'createdAt' | 'id'>[] = [];
+    for (const sessionIdChunk of chunkArray([...scanSessionIds], SQLITE_IN_CHUNK_SIZE)) {
+      messageRows.push(...await db.select({
+        sessionId: messages.sessionId,
+        role: messages.role,
+        agentMeta: messages.agentMeta,
+        createdAt: messages.createdAt,
+        id: messages.id,
+      }).from(messages).where(and(
+        inArray(messages.sessionId, sessionIdChunk),
+        inArray(messages.role, ['user', 'assistant']),
+      )).orderBy(
+        messages.sessionId,
+        messages.createdAt,
+        // Same-millisecond user rows establish attribution before assistant costs.
+        sql`case ${messages.role} when 'user' then 0 else 1 end`,
+        messages.id,
+      ));
+    }
 
     let activeSessionId: string | null = null;
     let activeScheduleId: string | null = null;

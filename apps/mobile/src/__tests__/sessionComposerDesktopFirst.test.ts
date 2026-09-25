@@ -146,10 +146,10 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('PaperPlaneIcon');
     expect(source).toContain('Camera');
     expect(source).toContain('Settings');
-    // Context 面板「添加」分组的四个入口 icon(照片 / 截图 / 拍照 / 文件)。
+    // 「添加」保留照片 / 拍照 / 文件，不再提供单独截图入口。
     expect(source).toContain('<Image color={colors.textPrimary}');
     expect(source).toContain('<Camera color={colors.textPrimary}');
-    expect(source).toContain('<Scan color={colors.textPrimary}');
+    expect(source).not.toContain('session.contextSheetScreenshotsRow');
     expect(source).toContain('<Folder color={colors.textPrimary}');
     expect(composerInputSource).toContain('cardActive={composerCardActive}');
     expect(composerInputSource).toContain('leading={controls.leading}');
@@ -205,7 +205,7 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('testID="session.contextSheet"');
     expect(attachmentButtonSource).toContain('setContextSheetOpen(true)');
     expect(source).toContain("<ContextSheetGroup label={t('session.common.groupMode')}>");
-    expect(source).toContain("<ContextSheetGroup label={t('session.common.groupAdd')}>");
+    expect(source).toContain("<ContextSheetGroup label={Platform.OS === 'ios' && contextSheetMediaLibraryEnabled ? '' : t('session.common.groupAdd')}>");
     expect(source).not.toContain('testID="session.attachmentPathPanel"');
     expect(source).not.toContain('被控电脑上的文件路径');
     expect(source).toContain('testID="session.composerActivityStatus"');
@@ -223,13 +223,18 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('reconnectAttempt={remoteSessionRunStatus.reconnectAttempt}');
     expect(source).toContain('sideTaskRunning={remoteSessionRunStatus.sideTaskRunning}');
     expect(source).toContain('startedAt={composerActivityStartedAtMs}');
+    expect(source).toContain('rateStartedAt={remoteSessionRunStatus.startedAt}');
+    expect(source).toContain('streaming={isSessionStreaming}');
+    expect(source).toContain('startedAt: samplerStartedAt,');
     expect(source).toContain('tokenUsage={composerActivityTokenUsage}');
     expect(source).toContain('outputTokens={remoteSessionRunStatus.outputTokens}');
     expect(source).toContain('generationDurationMs={remoteSessionRunStatus.generationDurationMs}');
     expect(source).toContain('ArrowDown');
-    expect(source).toContain('{!sideTaskRunning && showUsageMeta ? (');
+    expect(source).toContain('const showElapsedOnly = sideTaskRunning || Boolean(reconnectAttempt);');
+    expect(source).toContain('const canShowRateDetails = !showElapsedOnly');
+    expect(source).toContain('enabled={canShowRateDetails}');
     expect(source).toContain('generationActive={remoteSessionRunStatus.generationActive}');
-    expect(source).toContain('const showUsageMeta = Boolean(rateText) || tokenUsage > 0;');
+    expect(source).toContain('const showUsageMeta = !showElapsedOnly && (Boolean(rateText) || tokenUsage > 0);');
     expect(source).toContain("t('session.screen.tokenCount'");
     expect(source).toContain("t('session.screen.tokenCountFull'");
     expect(source).toContain("t('session.screen.tokenRate'");
@@ -244,7 +249,8 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('composerActivityMetaText');
     expect(source).toContain('composerActivityFrame');
     expect(source).toContain('marginTop: spacing.lg');
-    expect(source).toContain('height: 25');
+    // The formerly passive rate is now a touch target, with a full 44pt status row.
+    expect(source).toMatch(/composerActivityStatus: \{[^}]*minHeight: 44/s);
     expect(source).toContain('composerActivityStatusText');
     expect(source).toContain('composerActivityProgressText');
     expect(composerStatusCallIndex).toBeGreaterThan(-1);
@@ -254,9 +260,9 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('color: colors.statusAccent');
     expect(source).not.toContain("import { BlurView } from 'expo-blur';");
     expect(source).toContain("import { BlurBackdrop } from '@/session/BlurBackdrop';");
-    expect(source).toContain("function TranslucentBackdrop()");
-    expect(source).toContain("<TranslucentBackdrop />");
-    expect(source).toContain('return <BlurBackdrop intensity={40} overlayColor={colors.chatHeaderSurface} style={styles.translucentBackdrop} />;');
+    expect(source).toContain('<SessionHeaderNativeBlur height=');
+    expect(source).toMatch(/<SessionHeaderNativeTitle\s+title=\{sharedTaskEnded \? t\('sharedTask.ended'\) : title\}/);
+    expect(source).toContain('<SessionHeaderNativeActions');
     expect(source).toContain("sessionHeaderBar: {\n    alignItems: 'center',\n    backgroundColor: 'transparent'");
     expect(source).toContain('sessionBottomLayer: {\n    backgroundColor: colors.surface');
     expect(source).not.toContain("colors.glassTint");
@@ -380,6 +386,7 @@ describe('mobile session composer desktop-first surface', () => {
     expect(source).toContain('onLayout={handleBottomOverlayLayout}');
     expect(source).toContain('bottomOverlayHeight={bottomOverlayHeight}');
     expect(source).toContain('styles.sessionBottomLayer,');
+    expect(source).toContain("sessionOperationLayout.composerSlot === 'editable' && { overflow: 'visible' }");
     expect(source).toContain('testID="session.bottomLayer"');
     expect(source).toContain('testID="session.bottomContent"');
     expect(source).toContain("paddingBottom: sessionOperationLayout.composerSlot === 'pending-interaction'");

@@ -18,6 +18,49 @@ function parsePayload(result: unknown): Record<string, unknown> {
 }
 
 describe("cindy_helper MCP server", () => {
+  it('lets a remote agent start only the scoped Grok device login and returns no credential', async () => {
+    let current = true;
+    const start = vi.fn(async () => ({
+      status: 'pending' as const,
+      verificationUrl: 'https://auth.x.ai/device',
+      userCode: 'ABCD-1234',
+      expiresAt: Date.now() + 120_000,
+    }));
+    const server = createXdtHelperMcpServer({
+      resolveSurface: async () => 'default',
+      grokLogin: { start, status: async () => ({ status: 'idle' }), cancel: async () => ({ status: 'idle' }) },
+    }, {
+      agentKind: 'codex', workingDir: '', remoteHostId: 'remote-host',
+      getSessionContext: () => current ? {
+        agentKind: 'codex', workingDir: '/remote', remoteHostId: 'remote-host',
+        sessionId: 'remote-session', sessionInstanceId: 'instance-1',
+      } : undefined,
+    });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'grok-remote-auth-test', version: '0.0.0' });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    try {
+      const overview = parsePayload(await client.callTool({ name: 'list_tools', arguments: {} }));
+      expect(overview.categories).toEqual([{ name: 'auth', tool_count: 3 }]);
+      const result = parsePayload(await client.callTool({
+        name: 'call_tool', arguments: { name: 'start_grok_device_login', args: {} },
+      }));
+      expect(result).toMatchObject({ status: 'pending', userCode: 'ABCD-1234' });
+      expect(JSON.stringify(result)).not.toContain('access_token');
+      expect(start).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'remote-session', sessionInstanceId: 'instance-1', remoteHostId: 'remote-host',
+      }));
+      current = false;
+      const stale = parsePayload(await client.callTool({
+        name: 'call_tool', arguments: { name: 'start_grok_device_login', args: {} },
+      }));
+      expect(stale).toMatchObject({ ok: false, errorCode: 'NO_SESSION_CONTEXT' });
+      expect(start).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
   it("creates a teammate through the scoped helper entry", async () => {
     const create = vi.fn(async () => ({
       ok: true as const,
@@ -163,6 +206,14 @@ describe("cindy_helper MCP server", () => {
       delegationId: "session-task-1",
       childSessionId: "desktop-child-session",
     }));
+    const inspectSessionTaskRoute = vi.fn(async () => ({
+      ok: true as const,
+      generation: 3,
+      current: { agentKind: 'codex', model: 'model-a', providerId: 'subscription', effort: null, fastMode: false },
+      next: { agentKind: 'codex', model: 'model-a', providerId: 'paid', effort: null, fastMode: false },
+      selectionToken: 'a'.repeat(64),
+    }));
+    const advanceSessionTaskRoute = vi.fn(async () => ({ ok: true as const, status: 'applied', generation: 4 }));
     const server = createXdtHelperMcpServer(
       { resolveSurface: async () => "bot",
         sessionTasks: {
@@ -170,6 +221,8 @@ describe("cindy_helper MCP server", () => {
           messageSessionTask,
           getSessionTask,
           stopSessionTask,
+          inspectSessionTaskRoute,
+          advanceSessionTaskRoute,
         },
       },
       {
@@ -191,6 +244,8 @@ describe("cindy_helper MCP server", () => {
           "check_session_task",
           "message_session_task",
           "stop_session_task",
+          "inspect_session_task_route",
+          "advance_session_task_route",
         ]),
       );
       expect(tools.map((tool) => tool.name)).not.toContain("collaborate_with_bot");
@@ -287,6 +342,18 @@ describe("cindy_helper MCP server", () => {
         callerSessionId: "bot-parent-session",
         taskId: "session-task-1",
       });
+      expect(parsePayload(await client.callTool({ name: 'call_tool', arguments: {
+        name: 'inspect_session_task_route', args: { task_id: 'session-task-1' },
+      } }))).toMatchObject({ ok: true, generation: 3, next: { providerId: 'paid' }, selection_token: 'a'.repeat(64) });
+      expect(inspectSessionTaskRoute).toHaveBeenCalledWith({
+        callerSessionId: 'bot-parent-session', taskId: 'session-task-1',
+      });
+      expect(parsePayload(await client.callTool({ name: 'call_tool', arguments: {
+        name: 'advance_session_task_route', args: { task_id: 'session-task-1', expected_generation: 3, selection_token: 'a'.repeat(64) },
+      } }))).toMatchObject({ ok: true, status: 'applied', generation: 4 });
+      expect(advanceSessionTaskRoute).toHaveBeenCalledWith({
+        callerSessionId: 'bot-parent-session', taskId: 'session-task-1', expectedGeneration: 3, selectionToken: 'a'.repeat(64),
+      });
 
       const stopped = parsePayload(
         await client.callTool({ name: "call_tool", arguments: { name: "stop_session_task", args: { task_id: "session-task-1" } } }),
@@ -319,9 +386,14 @@ describe("cindy_helper MCP server", () => {
       targetBotName: "Dash Bot",
       targetSessionId: "bot-b-main",
       wakeKind: "queued" as const,
+      messageId: "message-1", transport: "remote-conversation" as const,
     }));
+    const checkMessage = vi.fn(async () => ({ ok: true as const, source: 'remote-conversation', replied: true,
+      replies: [{ id: 'old-reply', content: 'Ordinary response' }] }));
     const server = createXdtHelperMcpServer(
-      { resolveSurface: async () => "bot", botMessaging: { messageAgent } },
+      { resolveSurface: async () => "bot", botMessaging: { messageAgent, checkMessage,
+        listAgents: async () => ({ ok: true as const, agents: [{ id: 'studio::bot-b', name: 'Mimi', deviceName: 'Studio' }], unavailableDevices: [] }),
+      } },
       {
         agentKind: "claude-code",
         workingDir: "/repo",
@@ -342,7 +414,9 @@ describe("cindy_helper MCP server", () => {
       expect(notified).toMatchObject({
         ok: true,
         action: "send_to_agent",
-        delivered: true,
+        accepted: true,
+        delivered: false,
+        replied: false,
       });
       expect(messageAgent).toHaveBeenCalledWith({
         callerSessionId: "bot-a-main",
@@ -355,6 +429,20 @@ describe("cindy_helper MCP server", () => {
       );
       expect(discovered).toMatchObject({ ok: true, category: "bots" });
       expect((discovered.tools as unknown[]).length).toBeGreaterThan(0);
+      expect(notified).toMatchObject({ transport: 'remote-conversation', replied: false, message_id: 'message-1' });
+      const reply = parsePayload(await client.callTool({ name: 'check_agent_message', arguments: { message_id: 'message-1' } }));
+      expect(reply).toMatchObject({ source: 'remote-conversation', replied: true, replies: [{ id: 'old-reply', content: 'Ordinary response' }] });
+      expect(checkMessage).toHaveBeenCalledWith({ callerSessionId: 'bot-a-main', messageId: 'message-1' });
+      const roster = parsePayload(await client.callTool({ name: 'list_agents', arguments: {} }));
+      expect(roster).toMatchObject({ ok: true, agents: [{ id: 'studio::bot-b', name: 'Mimi', deviceName: 'Studio' }] });
+      const longTarget = 'd'.repeat(80) + '::' + 'b'.repeat(128);
+      expect(parsePayload(await client.callTool({ name: 'call_tool', arguments: { name: 'send_to_agent',
+        args: { target_id: longTarget, message: 'Full-length identity' } } }))).toMatchObject({ ok: true });
+      expect(messageAgent).toHaveBeenLastCalledWith({ callerSessionId: 'bot-a-main', targetBotId: longTarget, message: 'Full-length identity' });
+      expect(parsePayload(await client.callTool({ name: 'call_tool', arguments: { name: 'send_to_agent',
+        args: { target_id: longTarget + 'b', message: 'Too long' } } }))).toMatchObject({ ok: false, errorCode: 'INVALID_ARGS' });
+      expect(messageAgent).toHaveBeenCalledTimes(2);
+
     } finally {
       await client.close();
       await server.close();
@@ -513,7 +601,7 @@ describe("cindy_helper MCP server", () => {
         return surface === "unbound" ? "bot" : surface;
       },
       sessionTasks: { startSessionTask: callback, getSessionTask: callback, messageSessionTask: callback, stopSessionTask: callback },
-      botMessaging: { messageAgent: callback },
+      botMessaging: { messageAgent: callback, checkMessage: callback },
       botProfiles: { create: callback },
     }, { agentKind: "codex", workingDir: "/repo", sessionId: surface === "unbound" ? undefined : "normal-session" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -523,7 +611,7 @@ describe("cindy_helper MCP server", () => {
       expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual(["call_tool", "list_tools"]);
       const discovery = parsePayload(await client.callTool({ name: "list_tools", arguments: { category: "bots" } }));
       expect(discovery).toMatchObject({ ok: false, errorCode: "CAPABILITY_NOT_AVAILABLE" });
-      for (const name of ["start_session_task", "check_session_task", "message_session_task", "stop_session_task", "send_to_agent", "create_teammate"]) {
+      for (const name of ["start_session_task", "check_session_task", "message_session_task", "stop_session_task", "send_to_agent", "check_agent_message", "create_teammate"]) {
         const result = parsePayload(await client.callTool({ name: "call_tool", arguments: { name, args: {} } }));
         expect(result).toMatchObject({ ok: false, errorCode: "CAPABILITY_NOT_AVAILABLE" });
       }

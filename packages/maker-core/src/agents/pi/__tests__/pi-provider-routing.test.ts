@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -21,6 +22,8 @@ const captured = vi.hoisted(() => ({
   args: [] as string[],
   env: {} as Record<string, string | undefined>,
   requests: [] as Array<Record<string, unknown>>,
+  responses: [] as Array<Record<string, unknown>>,
+  onEvent: undefined as undefined | ((event: Record<string, unknown>) => void),
   requestOptions: [] as Array<
     | {
         timeoutMs?: number;
@@ -88,12 +91,14 @@ vi.mock("../rpc-client.js", () => {
     PiRpcProcess: class {
       isClosed = false;
       constructor(opts: {
+        onEvent: (event: Record<string, unknown>) => void;
         onExit: (info: {
           code: number | null;
           signal: NodeJS.Signals | null;
         }) => void;
       }) {
         captured.onExit = opts.onExit;
+        captured.onEvent = opts.onEvent;
       }
       async request(
         command: Record<string, unknown>,
@@ -150,7 +155,7 @@ vi.mock("../rpc-client.js", () => {
         }
         return response;
       }
-      send(): void {}
+      send(command: Record<string, unknown>): void { captured.responses.push(command); }
       async close(): Promise<void> {
         this.isClosed = true;
         captured.closes += 1;
@@ -217,6 +222,8 @@ describe("Pi provider-aware model routing", () => {
   beforeEach(() => {
     captured.args = [];
     captured.requests = [];
+    captured.responses = [];
+    captured.onEvent = undefined;
     captured.requestOptions = [];
     captured.closes = 0;
     captured.onExit = undefined;
@@ -232,6 +239,57 @@ describe("Pi provider-aware model routing", () => {
   afterEach(() => {
     rmSync(agentHome, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("keeps native Fast in the host even when a Full Access shell can rewrite old preference files", async () => {
+    let fast = false;
+    const agent = new PiAgent({
+      auth: { getState: async () => ({ authenticated: true, authSource: 'api-key' as const }),
+        triggerLogin: async () => ({ authenticated: true }), logout: async () => {}, getAuthEnv: async () => ({}) },
+      runtimeConfig: { endpoint: 'http://127.0.0.1:9' }, binaryPath: path.join(agentHome, 'pi'),
+      logger: noopLogger, resolvePiAgentHome: () => agentHome,
+      resolvePiNativeProviders: async () => ({ providers: [{ id: 'relay', name: 'Relay',
+        baseUrl: 'https://relay.example/v1', api: 'openai-responses' as const,
+        models: [{ id: 'private-sol', supportsFastMode: true }, { id: 'no-fast' }] }], env: {} }),
+    });
+    const handle = await agent.startSession({ sessionId: 'native-fast', workingDir: cwd,
+      permissionMode: 'bypassPermissions', model: 'private-sol', providerId: 'relay',
+      getPriceVariant: () => fast ? 'priority' : 'standard' });
+    expect(captured.env.CINDY_PI_MODEL_REQUEST_PREFS_FILE).toBeUndefined();
+    expect(readdirSync(path.join(agentHome, 'runtime')).some(name => name.startsWith('request-prefs-'))).toBe(false);
+    // Even a known/replayed legacy path and attacker-authored fast=true are inert.
+    const file = path.join(agentHome, 'runtime', 'request-prefs-attacker.json');
+    writeFileSync(file, JSON.stringify({ fast: true, models: [{ provider: 'relay', id: 'private-sol' }] }));
+    const source = CINDY_BRIDGE_EXTENSION_SOURCE.slice(
+      CINDY_BRIDGE_EXTENSION_SOURCE.indexOf('async function nativeFastPayload('),
+      CINDY_BRIDGE_EXTENSION_SOURCE.indexOf('export default async function cindyBridge'),
+    );
+    const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText;
+    const adapt = new Function('process', `${js}; return nativeFastPayload;`)({ env: {
+      ...captured.env, CINDY_PI_MODEL_REQUEST_PREFS_FILE: file,
+    } });
+    const query = (payload: unknown) => {
+      captured.onEvent!({ type: 'extension_ui_request', method: 'input', id: 'fast-query',
+        title: 'cindy:request-preferences', placeholder: JSON.stringify(payload) });
+      return captured.responses.at(-1)!.value as string;
+    };
+    const ctx = { ui: { input: async (_title: string, payload: string) => query(JSON.parse(payload)) } };
+    const model = { provider: 'relay', id: 'private-sol', api: 'openai-responses' };
+    const payload = { model: 'private-sol', input: 'hello' };
+    expect(await adapt({ ...payload, service_tier: 'priority' }, model, ctx)).toEqual(payload);
+    expect(JSON.parse(query({ provider: 'relay', model: 'private-sol', fast: true })).fast).toBe(false);
+    await handle.setFastMode!(true);
+    expect(await adapt(payload, model, ctx)).toEqual({ ...payload, service_tier: 'priority' });
+    expect(JSON.parse(query({ provider: 'other', model: 'private-sol' })).fast).toBe(false);
+    expect(JSON.parse(query({ provider: 'relay', model: 'no-fast' })).fast).toBe(false);
+    await handle.setFastMode!(false);
+    expect(await adapt({ ...payload, service_tier: 'priority' }, model, ctx)).toEqual(payload);
+    fast = true;
+    await handle.send({ type: 'user', content: 'hello' });
+    expect(await adapt(payload, model, ctx)).toEqual({ ...payload, service_tier: 'priority' });
+    expect(captured.requests.some(request => request.type === 'set_fast_mode')).toBe(false);
+    await handle.close();
+    expect(JSON.parse(query({ provider: 'relay', model: 'private-sol' })).fast).toBe(false);
   });
 
   it("uses providerId as the primary key when duplicate model ids exist", async () => {
@@ -3974,13 +4032,13 @@ describe("Pi provider-aware model routing", () => {
   it.each([
     { input: ["text", "image"] as Array<"text" | "image">, supported: true },
     { input: ["text"] as Array<"text" | "image">, supported: false },
-    { input: undefined, supported: false },
-  ])("uses the native ChatGPT image snapshot for models.json, send and steer: $input", async ({ input, supported }) => {
+    { input: undefined, supported: true },
+  ].flatMap((row) => [true, false].map((inheritModels) => ({ ...row, inheritModels }))))("uses the native image snapshot for models.json, send and steer: $input, inherit=$inheritModels", async ({ input, supported, inheritModels }) => {
     const modelId = "chatgpt/gpt-5.6-sol";
     const agent = new PiAgent(byomDeps(async () => ({
       providers: [{
         id: "openai-codex", sourceProviderId: "openai", name: "ChatGPT",
-        baseUrl: "http://127.0.0.1:9", inheritModels: true,
+        baseUrl: "http://127.0.0.1:9", api: "openai-codex-responses", inheritModels,
         models: [{
           id: modelId, wireId: "gpt-5.6-sol", api: "openai-codex-responses", input,
         }],
@@ -3999,7 +4057,7 @@ describe("Pi provider-aware model routing", () => {
       ));
       expect(config.providers["openai-codex"].models).toEqual([
         expect.objectContaining({
-          id: "gpt-5.6-sol", api: "openai-codex-responses", input: input ?? ["text"],
+          id: "gpt-5.6-sol", api: "openai-codex-responses", input: input ?? ["text", "image"],
         }),
       ]);
       const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -4154,7 +4212,7 @@ describe("Pi provider-aware model routing", () => {
           id: "gateway-vision",
           input: ["text", "image"],
         }),
-        expect.objectContaining({ id: "gateway-unknown", input: ["text"] }),
+        expect.objectContaining({ id: "gateway-unknown", input: ["text", "image"] }),
       ]),
     );
 
@@ -4227,11 +4285,17 @@ describe("Pi provider-aware model routing", () => {
       ),
     ).toBe(false);
 
-    // 能力未知同样 fail closed；活动会话只认启动时写入 models.json 的能力快照。
+    // 未声明能力默认放行图片；活动会话仍只认启动时写入 models.json 的能力快照。
     await handle.setModel!("gateway-unknown", { providerId: null });
-    await expect(handle.send(imageMessage)).rejects.toMatchObject({
-      code: "PI_IMAGE_INPUT_UNSUPPORTED",
-    });
+    captured.requests.length = 0;
+    await handle.send(imageMessage);
+    await handle.steer!(imageMessage);
+    for (const type of ["prompt", "steer"]) {
+      expect(captured.requests).toContainEqual(expect.objectContaining({
+        type,
+        images: [expect.objectContaining({ type: "image", mimeType: "image/png" })],
+      }));
+    }
     gatewayModels[0]!.supportsImageInput = true;
     await handle.setModel!("gateway-text", { providerId: null });
     await expect(handle.send(imageMessage)).rejects.toMatchObject({
@@ -4477,6 +4541,32 @@ describe("Pi provider-aware model routing", () => {
       await handle.close();
     },
   );
+
+  it("projects only the persisted task library grant into native read context", async () => {
+    const handle = await new PiAgent(byomDeps(async () => ({ providers: [], env: {} }))).startSession({
+      sessionId: "library-native-context", workingDir: cwd, model: "local-model", permissionMode: "ask",
+    });
+    const ref = `library:assets/aa/${"a".repeat(64)}/blob.png`;
+    await handle.setExtraDirs!(["/refs/user", "/refs/library-a"], "/refs/library-a");
+    captured.requests.length = 0;
+    await handle.send({ type: "user", content: ref });
+    const first = String(captured.requests.find((r) => r.type === "prompt")?.message);
+    expect(first).toContain('"libraryRoot":"/refs/library-a"');
+    expect(first).toContain(JSON.stringify({ ref, path: path.join("/refs/library-a", "assets", "aa", "a".repeat(64), "blob.png") }));
+    await handle.setExtraDirs!(["/refs/user", "/refs/library-b"], "/refs/library-b");
+    captured.requests.length = 0;
+    await handle.send({ type: "user", content: ref });
+    const second = String(captured.requests.find((r) => r.type === "prompt")?.message);
+    expect(second).toContain('"libraryRoot":"/refs/library-b"');
+    expect(second).not.toContain("/refs/library-a");
+    await handle.setExtraDirs!(["/refs/user"], null);
+    captured.requests.length = 0;
+    await handle.send({ type: "user", content: ref });
+    const revoked = String(captured.requests.find((r) => r.type === "prompt")?.message);
+    expect(revoked).toContain('"libraryRoot":null');
+    expect(revoked).not.toContain("/refs/library-b");
+    await handle.close();
+  });
 
   it("keeps a leading /skill: command at the prompt start even when Extra Dirs are configured", async () => {
     const agent = new PiAgent(

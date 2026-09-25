@@ -25,15 +25,22 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
   **不得**用凭证路径 / `/proc/*/environ` 文本硬拦拒绝原生允许的读、搜、bash。Ask/Auto
   仍把这类调用升级为审批;Full access 选择即接受父进程环境里的代理 token / 网关 key /
   BYOM key / 外部 MCP header **可能被读取**。允许保留的机械隔离仅限 Cindy 自身运行所必需:
-  模型不得写 agent home(`models.json` / 权限档),Extra Dirs 的结构化写工具保持只读。
+  模型写 agent home(`models.json` / 权限档 / subagent 快照)必须强制用户确认,即使
+  Full Access 也不得静默放行或静默拒绝。Extra Dirs 的结构化写跟随会话权限:本地
+  Full Access 放行,Auto 交审阅,Ask 确认,禁止再在 bridge 里悄悄硬断。
   bash 写入 Extra Dirs 仍非 OS 强制。真正的强隔离需要 OS 级手段(macOS `sandbox-exec`、
   Linux 只读 bind mount / seccomp),**本阶段未接入**。需要硬边界时用 ask/auto 档,或等 OS
   沙箱落地。改动权限相关代码时不要再堆「看起来能拦」的正则并当成安全边界。
   与 Claude Code／Codex 一致，Pi 会话的 Full Access 也会让插件 `ghost_call` 的
-  `attachments`／`dir`／`save_dir` 在 Host 侧免去额外过户确认；实现必须现读活跃 Session
+  `attachments`／`dir`／`save_dir`，以及 Forge 在工作目录外的 scaffold／pack／install
+  在 Host 侧免去额外确认；实现必须现读活跃 Session
   的稳定状态并同时匹配其 runtime instance identity；权限切换或关闭在途、远程／缺会话／
   实例不匹配／查询失败均 fail closed。工作区草稿、工作目录写入和媒体路径揭示等操作审批
-  同样沿用会话权限；MCP 逐次审批标记不得覆盖 Full Access。Setup、OAuth、Secret 的信息
+  同样沿用会话权限；MCP 逐次审批标记不得覆盖 Full Access。Host 已按当前档位放行后，
+  不得再因「不在会话工作目录内」悄悄硬断，把 Agent 晾在空转里。  cindy-docs 与电脑截图 /
+  录制路径同样走这条会话权限，不得在工具层再静默 PATH_NOT_ALLOWED。  授权卡片与后续
+  I/O 绑定已解析的规范路径，工作目录里的 symlink 不能把越界目标藏成相对路径。电脑
+  驱动契约只丢掉 Cindy 后加的兼容字段（目前是 `delivery_mode`），其它未知参数仍拒。Setup、OAuth、Secret 的信息
   输入与安装／更新策略保持原边界。instance 仅作为 opaque query 写入 Host 生成的 Pi MCP URL；桥接
   注册表不匹配时返回 401。旧 URL 缺 instance 时可兼容普通会话工具，但必须向工具隐藏
   instance，使 Full Access 自动交接保持 fail closed。
@@ -58,9 +65,24 @@ Cindy 以 `pi --mode rpc` spawn pi 二进制(JSONL/stdio),`translator.ts` 把 pi
   正文。取消只中止本次 HTTP 等待，不承诺撤销服务端已执行的动作。网络错误只附白名单错误码，
   仅 JSON-RPC `-32602` 明确参数错误附 schema，工具业务错误保留原反馈。
 - **plan 模式**:挂 pi 自带 plan-mode 扩展,`/plan` toggle 驱动;Cindy 维护镜像态并在 resume
-  时从 `get_entries` 校正。
+  时从本机 session JSONL 校正（只打开启动时 `--session-dir` 真身内的普通文件，
+  并有字节/时间预算，超限回退 RPC）；远端仍走 `get_entries`。
+
+### 原生请求 Fast 偏好
+
+支持 Fast 的原生模型在 `before_provider_request` 中经现有 RPC 通道发出
+`cindy:request-preferences` 只读查询。宿主按当前运行实例、精确 provider/model 与
+内存中的 Fast 开关返回结果，不接受查询传入的开关值；不弹用户确认，不增加模型工具。
+开关不再写入 `runtime/request-prefs-*.json`，遗留文件不参与判定。关闭实例、查询失败、
+超时或回复无效时使用普通档；已开启的正常请求仍发送 `service_tier: priority`。
+这修复偏好文件被改写或重放的路径，不改变 Pi Full Access 的原生 shell 权限边界。
 
 ## 2. 配置面:Cindy 显式设置 vs 放任 pi 默认
+
+图片能力未声明时，Pi 的模型配置与发送校验默认允许图片输入，不因新型号缺少能力资料而
+提前拦截。目录、原生模型资料或用户配置明确声明 `supportsImageInput: false` / `input: ['text']`
+时仍保持仅文本；此默认值不写回用户配置，也不代表上游接口保证支持图片。活动任务沿用启动时
+能力快照。回归见 `pi-provider-routing.test.ts` 与 `piNativeProviders.test.ts`。
 
 Cindy 显式设置:models.json、`settings.json` 的 `transport:sse` 与 `retry.maxRetries=6`
 （`retry.provider.maxRetries` 保持 0）、`--append-system-prompt`、`--session-dir`、启动时 RPC
@@ -268,6 +290,12 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
   改判成失败，provider continuation claim 也不能被当作最终结束。
 - Pi 的 `Request was aborted` 只在无当前 generation 的 Host Stop 时归入请求断流失败；
   无错误正文的 bare abort 仍保持取消。复用既有错误收口及重试预算，不重放包命令或工具。
+- Pi 未归类的缺码临时服务故障（如 `Service temporarily unavailable` 或明确的模型
+  availability degraded）由 Cindy 的既有有界续跑守卫兜底；结构化状态／错误类别优先，
+  不把裸 `unavailable`／`degraded` 当重试依据，不伪造 HTTP 503。已有正文或工具结果时
+  发送续跑指令，保留已有结果；用户 Stop 取消待续跑。Pi `auto_retry_end(success=false)`
+  已用尽原生预算时保持 `pi-gateway-drop` 终态，不再叠加 Host 重试。本规则不修改受管
+  Pi 二进制、版本或原生重试上限；原生分类兼容需由 Pi 上游独立修正。
 - SDK 成功与正文入库／交付分开取证。只见 JSONL 成功但 SQLite 缺正文时，不能自动重跑
   已成功的工作；应沿 RPC → translator → Session → persistence 查丢失边界。
 
@@ -311,7 +339,9 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
       最终启动 smoke 仍由对应发布 runner 执行。2026-08 起 pi 与 cc/codex 一样只走
       CDN 运行时分发链(`agent-binaries` + splash prepare):CDN manifest 的可选 `pi`
       字段指向整包 tar.gz(归档根即完整目录分发,SHA256 为 tar.gz 的),启动时按
-      manifest 版本下载到 `userData/pi/<version>/` 并清理更旧版本；prepare 会先对所有带
+      manifest 版本下载到 `userData/pi/<version>/` 并清理更旧版本。用户通过 About／受管
+      命令选择版本后，`pi/selected.json` 的显式选择优先于 manifest 版本与高版本残留；
+      该路径不清理旧目录，不改变下面的联网启动边界。没有显式选择时，prepare 会先对所有带
       `.verified` 的本地候选执行有界 `--version` 探针，真实 semver 不低于 manifest 时直接
       保留该安装（包括原地自更新后目录名仍旧的情况），不下载也不清理。只有 manifest
       版本更高，或探针没有得到可用候选时，才沿用原 CDN 安装流程。正式安装包不内置 Pi；
@@ -374,7 +404,8 @@ Pi home 复用。settings/packages/extensions 仍属于后续独立安全评审�
   user-provider 派生 → pi-host `resolvePiNativeProviders` → PiAgent writeModelsJson 原生块 +
   provider 感知 setModel。真二进制测试证明直连原生端点、网关零请求。
 - ✅ **统一会话树**(已交付):Cindy session fork 与 Pi append-only entry tree 的后端/
-  对话框实现仍在。头部 overflow「任务分支」只在存在 Cindy 分叉家族时显示,不再单凭
-  `agentKind=pi` 露出。支持原生分支切换、可选分支摘要、选中 user entry 回填原 prompt、
+  对话框实现仍在。桌面头部 overflow「任务分支」只在存在 Cindy 分叉家族时显示,不再单凭
+  `agentKind=pi` 露出；手机版暂隐 Pi「任务分支」入口，保留树组件与 transport 能力。
+  入口呈现见 `apps/mobile/src/session/SessionMenuSheet.tsx`。支持原生分支切换、可选分支摘要、选中 user entry 回填原 prompt、
   SQLite 可见时间线原子重投影与上下文 usage 恢复;device-link / mobile transport
   contract 同步开放。切换不回滚工作区文件。

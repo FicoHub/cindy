@@ -39,6 +39,7 @@ const project = (result: unknown) =>
   __testing.projectInvokeResultForTunnel('maker:provider:list', result) as {
     providers: Record<string, unknown>[];
     modelVisibilityOverrides?: Record<string, boolean>;
+    providerOrder?: string[];
   };
 const projectForCurrentController = (result: unknown) =>
   __testing.projectInvokeResultForTunnel('maker:provider:list', result, true) as {
@@ -365,6 +366,40 @@ describe('active runtime summary projection', () => {
     expect(rows[0].capabilities.availableModels[0].description).toHaveLength(120_000);
   });
 
+  it('keeps only the canonical activity flags needed to clear stale mobile dots', () => {
+    const projected = __testing.projectInvokeResultForTunnel(
+      'maker:list-active', [{
+        ...rows[0], activityPhase: 'running', activityAttention: false,
+      }, {
+        ...rows[1], activityPhase: 'idle', activityAttention: false,
+      }], false, [{ summary: true }],
+    );
+    expect(projected).toEqual([{
+      sessionId: 'session-0', isTurnRunning: true,
+      activityPhase: 'running', activityAttention: false,
+    }, {
+      sessionId: 'session-1', isTurnRunning: false,
+      activityPhase: 'idle', activityAttention: false,
+    }]);
+  });
+
+  it('preserves the opt-in complete snapshot envelope while projecting its runtime rows', () => {
+    const projected = __testing.projectInvokeResultForTunnel(
+      'maker:list-active', { format: 'active-sessions-v2', sessions: rows },
+      false, [{ summary: true, snapshotVersion: 2 }],
+    );
+    expect(projected).toEqual({ format: 'active-sessions-v2', sessions: [
+      { sessionId: 'session-0', isTurnRunning: true },
+      { sessionId: 'session-1', isTurnRunning: false },
+    ] });
+    expect(__testing.projectInvokeResultForTunnel(
+      'maker:list-active', rows, false, [{ summary: true, snapshotVersion: 2 }],
+    )).toEqual([
+      { sessionId: 'session-0', isTurnRunning: true },
+      { sessionId: 'session-1', isTurnRunning: false },
+    ]);
+  });
+
   it.each([[], [null], [{ summary: false }], [{ summary: 'true' }]])(
     'preserves the complete response for legacy or non-opt-in callers (%j)', (...args) => {
       expect(__testing.projectInvokeResultForTunnel('maker:list-active', rows, false, args))
@@ -373,10 +408,17 @@ describe('active runtime summary projection', () => {
   );
 });
 
+it('preserves host display order without changing catalog order', () => {
+  const result = project({ providers: [{ id: 'a' }, { id: 'b' }], providerOrder: ['b', 'a', 'b', null, 42] });
+  expect(result.providerOrder).toEqual(['b', 'a']);
+  expect(result.providers.map(p => p.id)).toEqual(['a', 'b']);
+  expect(project({ providers: [] }).providerOrder).toBeUndefined();
+});
+
 describe('schedule sidebar index tunnel cap', () => {
   it('coalesces the schedule index channel with other listing reads', () => {
-    expect(__testing.coalesceRemoteInvokeChannels.has('maker:schedule:list-sidebar-index-runs')).toBe(true);
-    expect(__testing.coalesceRemoteInvokeChannels.has('local-db:sessions:list')).toBe(true);
+    expect(__testing.canCoalesceRemoteListing({ channel: 'maker:schedule:list-sidebar-index-runs', args: [] })).toBe(true);
+    expect(__testing.canCoalesceRemoteListing({ channel: 'local-db:sessions:list', args: [] })).toBe(true);
   });
 
   it('keeps the newest mapping when the snapshot exceeds the tunnel budget', () => {

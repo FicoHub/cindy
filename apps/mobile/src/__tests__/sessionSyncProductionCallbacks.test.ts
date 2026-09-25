@@ -58,6 +58,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     captureSessionMessageAuthority: () => ({ generation: 1 }),
     isSessionMessageAuthorityCurrent: () => true,
     upsertDeviceSession: vi.fn(),
+    getSessionDeviceId: vi.fn((): string | undefined => undefined),
     getMessages: () => state.rows,
     getSessions: () => reopen ? [session] : [],
     captureActiveSessionSnapshotEpoch: () => 0,
@@ -79,6 +80,7 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
     listActiveSessions: vi.fn(async () => []),
   };
   const bindings = {
+    params: { resourceKind: '' }, readRouteParam: (value: string) => value, t: (key: string) => key,
     mobileDebugLog: vi.fn(),
     remoteHistoryAvailable,
     deviceId: 'd1', deviceName: 'test', sessionId: 's1',
@@ -128,6 +130,15 @@ function fixture(reopen = false, remoteHistoryAvailable = true) {
 }
 
 describe('production session recovery callbacks', () => {
+  it.each(['id', 'source', 'host'])('rejects a roster-linked task with the wrong %s before authorizing controls', async (mismatch) => {
+    const f = fixture(); f.bindings.params.resourceKind = 'bot';
+    f.maker.getSession.mockResolvedValue({ ...session, id: mismatch === 'id' ? 'other' : 's1', source: mismatch === 'source' ? 'manual' : 'bot' } as typeof session);
+    if (mismatch === 'host') f.store.getSessionDeviceId.mockReturnValue('another-device');
+    await expect(f.sync()).rejects.toThrow('devices.resources.noConversation');
+    expect(f.store.upsertDeviceSession).not.toHaveBeenCalled();
+    expect(f.bindings.setSessionMetadataSyncedKey).not.toHaveBeenCalled();
+    expect(f.state.syncError).toContain('devices.resources.noConversation');
+  });
   it('keeps cached rows offline without fetching metadata, projection, history or earlier pages', async () => {
     const f = fixture(true, false);
     const rows = f.state.rows;
@@ -214,7 +225,21 @@ describe('production session recovery callbacks', () => {
     expect(screen).toContain('const bannerRetriesHistory = connectionRecoveryError === null && historyError !== null;');
     expect(screen).toContain('requestErrorAutoRecovering={bannerRetriesHistory ? false : undefined}');
     expect(screen).toContain('loading={loading || loadingEarlier}');
-    expect(screen).toMatch(/onSync=\{\(\) => bannerRetriesHistory\s+\? void loadEarlierMessages\(\)\s+: void requestSync\(/);
+    let onSync: ts.Expression | undefined;
+    const find = (node: ts.Node) => {
+      if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === 'ConnectionBanner') {
+        const prop = node.attributes.properties.find(p => ts.isJsxAttribute(p) && p.name.getText(source) === 'onSync') as ts.JsxAttribute;
+        onSync = (prop.initializer as ts.JsxExpression).expression;
+      }
+      ts.forEachChild(node, find);
+    };
+    find(source); if (!onSync) throw new Error('Missing banner retry');
+    const loadEarlierMessages = vi.fn(), requestSync = vi.fn(), retry = vi.fn();
+    const run = new Function('bannerRetriesHistory', 'companionEntry', 'loadEarlierMessages', 'requestSync', `return (${onSync.getText(source)})();`);
+    run(true, { error: null, retry }, loadEarlierMessages, requestSync);
+    expect(loadEarlierMessages).toHaveBeenCalledOnce(); expect(requestSync).not.toHaveBeenCalled(); expect(retry).not.toHaveBeenCalled();
+    run(false, { error: 'lookup failed', retry }, loadEarlierMessages, requestSync);
+    expect(retry).toHaveBeenCalledOnce(); expect(requestSync).toHaveBeenCalledExactlyOnceWith({ reason: 'manual', replaceMessages: false });
     const errorSources = screen.slice(screen.indexOf('const connectionError ='), screen.indexOf('const bannerError ='));
     expect(errorSources).not.toContain('historyError');
   });
@@ -374,7 +399,14 @@ describe('destructive remote history pushes', () => {
   // Delete (including initial-page races) is exercised through the real store in remoteHistoryReentry.test.ts.
   it.each(['clear', 'archive'])('retires old pages on %s without an unrelated activity event', async (operation) => {
     const context = readFileSync(resolve(process.cwd(), 'src/device-link/DeviceLinkContext.tsx'), 'utf8');
-    const body = context.slice(context.indexOf('  const historySessionId ='), context.indexOf('/** provider revision')).trim().slice(0, -1);
+    const parsed = ts.createSourceFile('context.tsx', context, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const routeFunction = parsed.statements.find((node): node is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(node) && node.name?.text === 'routeFrame');
+    if (!routeFunction?.body) throw new Error('Missing production routeFrame body');
+    const routeBody = routeFunction.body.getText(parsed).slice(1, -1);
+    const historyStart = routeBody.indexOf('  const historySessionId =');
+    if (historyStart < 0) throw new Error('Missing production history routing');
+    const body = routeBody.slice(historyStart);
     const stale = { id: 'old', clientId: 'old', role: 'user', content: 'old', createdAt: '2026-09-08T00:00:00Z' };
     const oldPage = { version: 1 as const, items: projectHistoryView([stale], false), hasMore: false, nextCursor: null };
     let reads = 0;

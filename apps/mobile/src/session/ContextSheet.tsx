@@ -44,6 +44,8 @@ export interface ContextSheetProps {
   onBack?: () => void;
   keyboardAvoidingBehavior: 'height' | 'padding' | undefined;
   children: ReactNode;
+  media?: ReactNode;
+  error?: string | null;
   /** 固定在面板底部（滚动区之外）的操作区，如「加入对话」提交按钮。 */
   footer?: ReactNode;
   testID?: string;
@@ -56,10 +58,13 @@ export function ContextSheet({
   onBack,
   keyboardAvoidingBehavior,
   children,
+  media,
+  error,
   footer,
   testID,
 }: ContextSheetProps) {
   const styles = useThemedStyles(makeContextSheetStyles);
+  const { colors } = useTheme();
   const { t } = useTranslation();
   const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -100,7 +105,9 @@ export function ContextSheet({
         testID={testID}
         title={title}
       >
+        {media}
         {children}
+        {error ? <Text style={{ color: colors.errorText }}>{error}</Text> : null}
       </SheetSurface>
     </SheetModal>
   );
@@ -136,6 +143,8 @@ function flattenChildren(children: ReactNode): ReactNode[] {
 }
 
 export interface ContextSheetRowProps {
+  /** Dismiss the iOS sheet before presenting a system picker. */
+  dismissBeforePress?: boolean;
   icon: ReactNode;
   label: string;
   onPress: () => void;
@@ -145,6 +154,8 @@ export interface ContextSheetRowProps {
   busy?: boolean;
   accessibilityHint?: string;
   testID?: string;
+  /** Destructive actions (delete) read in the destructive text color. */
+  destructive?: boolean;
 }
 
 export function ContextSheetRow({
@@ -156,6 +167,7 @@ export function ContextSheetRow({
   busy,
   accessibilityHint,
   testID,
+  destructive = false,
 }: ContextSheetRowProps) {
   const styles = useThemedStyles(makeContextSheetStyles);
   const { colors } = useTheme();
@@ -172,7 +184,7 @@ export function ContextSheetRow({
     >
       <View style={styles.rowLeft}>
         {icon}
-        <Text style={styles.rowLabel}>{label}</Text>
+        <Text style={[styles.rowLabel, destructive && { color: colors.destructive }]}>{label}</Text>
       </View>
       <View style={styles.rowTrailing}>
         {busy ? (
