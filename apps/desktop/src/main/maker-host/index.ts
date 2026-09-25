@@ -16,7 +16,7 @@ import { clearCodexAccountUsageSnapshot } from '../usageBroadcaster.js';
 import { createMediaDownloadContext } from '../cindy-media/mediaDownloadApproval.js';
 import { isCodexAccountProvider, codexAccountHome, setCodexAccountRetirement } from './codex-account-auth.js';
 import { CodexThreadLocations } from './codex-thread-locations.js';
-import { getActiveAppSession } from '../appSessionState.js';
+import { getActiveAppSession, activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { remoteCodexProvider } from './ssh-codex-models.js';
 import { getActiveAuthRealm } from '../authManager.js';
 import { getCustomProvider, updateCustomProviderIfUnchanged } from './custom-provider-store.js';
@@ -107,8 +107,6 @@ import { remoteInvoke } from '../device-link/index.js';
 import { WorktreePool } from '../worktree/index.js';
 import { getReadyBinaryPath, getCachedBinaryStatus } from '../agent-binaries/index.js';
 import {
-  activeOwnerScopeKey,
-  isAppSessionBoundaryPending,
   ownerScopedUserDataPath,
 } from '../appSessionState.js';
 import { getIOSSimulatorPluginAccessDecision } from '../cindy-brain/index.js';
@@ -135,7 +133,7 @@ import {
 import { createToolResultImageDescriptor } from '../vision-bridge/tool-result-image-descriptor.js';
 import * as blobStore from '../cindy-media/blobStore.js';
 import { buildPiVisionBridgeEnv } from '../vision-bridge/pi-vision-bridge-env.js';
-import { resolveVisionBackendRoute, setVisionGatewayKeyReader } from './provider-route.js';
+import { captureCodexLocalAuthPolicy, resolveVisionBackendRoute, setVisionGatewayKeyReader } from './provider-route.js';
 import { resolveSessionCcDebugFile, trackSessionCcDebugFile } from '../logger.js';
 import { resetProviderModelAutoRefreshCooldowns } from './provider-model-auto-refresh.js';
 import { getThinkingEnabledFromMemory } from './newMakerDefaultsCache.js';
@@ -183,7 +181,7 @@ import {
   settleLocalPiPackageRuntimeSnapshot,
   type PiPackageRuntimeInvalidationSnapshot,
 } from './pi-package-runtime-invalidation.js';
-import { clearChatgptBridgeCredentialCache } from './anthropic-responses-bridge-host.js';
+import { clearChatgptBridgeCredentialCache, getChatgptBridgeAuthForDispatch } from './anthropic-responses-bridge-host.js';
 import {
   getDesktopSelectableCatalog,
   getDesktopProviderService,
@@ -229,6 +227,7 @@ import {
   releaseCodexCustomContextProxy,
   setCodexProxyAuthInjection,
   setCodexProxyGatewayKeyReader,
+  setCodexSubagentOAuthReader,
   registerComposed as registerCodexProxyComposed,
   registerChildThread as registerCodexProxyChildThread,
   setCodexAppliedCustomProviderRoutes,
@@ -312,6 +311,7 @@ import {
 import {
   buildCodexCustomProviderArgs,
   deriveCodexCustomProviderRoutes,
+  registerCodexScopedCustomProviderRoutes,
   toCodexCustomProviderHostRoutes,
 } from './codex-custom-provider-route.js';
 import {
@@ -1458,7 +1458,7 @@ export function getMaker(): Maker {
       const providerViews: ProviderView[] =
         await getDesktopProviderService().listProviders({ allowSideEffects: false });
       const candidates = selectCodexSmartSubagentCandidates(providerViews, {
-        allowChatGptOAuth: ctx.credentialMode === 'oauth-bearer',
+        allowChatGptOAuth: ctx.credentialMode !== undefined,
         oauthProviderId: ctx.providerId,
       });
       return codexSmartSubagentRoutingSignature(candidates, getActiveCatalogRevision())
@@ -1543,6 +1543,7 @@ export function getMaker(): Maker {
           resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), 'codex', providerId, modelId), modelId),
       resolveCodexContextWindowInfo: (modelId, config, reportedUsableWindow, codexHome) =>
         readCodexContextWindowInfo({ codexHome: codexHome ?? getCodexHome(), binaryPath: codexPath, modelId, config, reportedUsableWindow }),
+      resolveCodexLocalAuthPolicy: captureCodexLocalAuthPolicy,
       resolveCodexThreadContextWindow: (providerId, modelId) => {
         const source = resolveDesktopModelContextProviderId(getDesktopSelectableCatalog(), 'codex', providerId, modelId);
         const override = source ? readModelContextLimit('codex', source, modelId) : null;
@@ -1596,6 +1597,7 @@ export function getMaker(): Maker {
         await prepareLocalCodexCredentialModeSwitch({
           maker,
           isSessionInTurn,
+          hostKey: ctx.hostKey,
           fromMode: ctx.fromMode,
           fromModeEffective: ctx.fromModeEffective,
           toMode: ctx.toMode,
@@ -1625,17 +1627,18 @@ export function getMaker(): Maker {
         const isControlPlane = ctx.hostPurpose === 'control-plane';
         const isReview = ctx.hostPurpose === 'review';
         const isCustomContext = ctx.hostPurpose === 'custom-context';
-        const customContextHostKey = isCustomContext
-          ? ctx.customContextHostKey?.trim() ?? ''
+        const needsContextScope = isCustomContext || ctx.localAuthPolicy === 'isolated';
+        const customContextHostKey = needsContextScope
+          ? (ctx.hostScopeKey ?? ctx.customContextHostKey)?.trim() ?? ''
           : '';
-        if (isCustomContext && !customContextHostKey) {
+        if (needsContextScope && !customContextHostKey) {
           const error = new Error('custom-context Codex host is missing its runtime scope key');
           (error as { codexSpawnConfigFatal?: boolean }).codexSpawnConfigFatal = true;
           throw error;
         }
         const accountProxyKey = ctx.accountHostKey;
+        const usesScopedProxy = needsContextScope || !!accountProxyKey;
         const scopedProxyKey = accountProxyKey || customContextHostKey;
-        const usesScopedProxy = isCustomContext || !!accountProxyKey;
         const usesIsolatedProxy = isControlPlane || isReview || usesScopedProxy;
         const effectiveCodexHome = ctx.codexHome ?? getCodexHome();
         let mcpExtraArgs: string[] = [];
@@ -1707,6 +1710,8 @@ export function getMaker(): Maker {
           await broadcastCodexRuntimeRoute();
         }
         setCodexProxyGatewayKeyReader(readClaudeApiKey);
+        setCodexSubagentOAuthReader(getChatgptBridgeAuthForDispatch);
+
         const customContextProviderRoutes = usesScopedProxy
           ? deriveCodexCustomProviderRoutes(getActiveCatalog())
           : [];
@@ -1778,7 +1783,7 @@ export function getMaker(): Maker {
             smartSubagentConfig = prepareCodexSmartSubagentConfig({
               codexHome: effectiveCodexHome,
               providerViews,
-              allowChatGptOAuth: authInjection === 'oauth-bearer',
+              allowChatGptOAuth: true,
               oauthProviderId: ctx.providerId,
               catalogRevision: getActiveCatalogRevision(),
             }) ?? undefined;
@@ -1830,6 +1835,9 @@ export function getMaker(): Maker {
           storedSubagentModelSettings,
           smartSubagentConfig,
         );
+        const releaseScopedCapabilities = usesScopedProxy
+          ? registerCodexScopedCustomProviderRoutes(scopedProxyKey, codexCustomProviderRoutes)
+          : undefined;
         return {
           // 默认不碰 Codex 原生 Sol/Terra 调配。用户开启智能调配后才为这个本地
           // app-server 冻结扩展目录与逐模型 Provider 路由。
@@ -1873,8 +1881,10 @@ export function getMaker(): Maker {
             : {}),
           ...(usesScopedProxy
             ? {
-                onHostRetired: () =>
-                  releaseCodexCustomContextProxy(scopedProxyKey),
+                onHostRetired: async () => {
+                  releaseScopedCapabilities?.();
+                  await releaseCodexCustomContextProxy(scopedProxyKey);
+                },
               }
             : {}),
         };
@@ -2069,7 +2079,7 @@ export function getMaker(): Maker {
       resetProviderModelAutoRefreshCooldowns('openai');
       // auth 边界变了:「清单已在场」和「试过几次」都不再适用于下一个账号。
       resetCodexModelBackfillState();
-      await codexAgent.forceDisposeLocalHostForAuthChange('Codex desktop auth logout');
+      await codexAgent.forceDisposeLocalHostForAuthChange('Codex desktop auth logout', { preserveExternalAuth: true });
       clearCodexProxyAuthInjection();
       await broadcastCodexRuntimeRoute();
       // 轮 27 HIGH-1:认证边界变更必须失效 PI MCP bridge —— 否则其 server
@@ -2088,7 +2098,7 @@ export function getMaker(): Maker {
       // 必须在新 app-server 首次 model/list / Responses 请求之前清：bridge 的旧账号
       // accessToken/accountId 有 30s 内存缓存，晚清会让新 host 短暂带旧账号凭证请求。
       clearChatgptBridgeCredentialCache();
-      await codexAgent.forceDisposeLocalHostForAuthChange('Codex desktop auth login');
+      await codexAgent.forceDisposeLocalHostForAuthChange('Codex desktop auth login', { preserveExternalAuth: true });
       await broadcastCodexRuntimeRoute();
       // 轮 27 HIGH-1:登录也是认证边界, 与登出对称失效 PI bridge。
       invalidatePiEnvironment();
@@ -2128,6 +2138,7 @@ export function getMaker(): Maker {
         // 只是这条路径从没让那个校验生效过。退役即补齐对称性，不需要在写入侧再加一层闸门。
         await codexAgent.forceDisposeLocalHostForAuthChange(
           `Codex credential invalidated: ${reason}`,
+          { preserveExternalAuth: true },
         );
         clearChatgptBridgeCredentialCache();
         await refreshDiscoveredCodexModels(false);
@@ -3030,6 +3041,7 @@ export async function prepareCodexForCustomProviderHostChange(): Promise<void> {
   const guard = _codexAgent
     ? await _codexAgent.beginLocalHostCredentialChange(
         'Codex custom Provider route or credential changed',
+        { allLocalHosts: true, forceRetire: true },
       )
     : null;
   let prepared = false;
