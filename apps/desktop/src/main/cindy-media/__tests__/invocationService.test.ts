@@ -737,7 +737,16 @@ describe('Cindy Core media invocation state and security boundary', () => {
       outcomeKnown: true,
     });
     expect(mocks.outboundFetch).not.toHaveBeenCalled();
-    expect(mocks.rows.get(invocationId)?.state).not.toBe('unknown');
+    // 请求从未出站：invocation 回到 prepared，同一 invocation_id 再次 request 可正常发出。
+    expect(mocks.rows.get(invocationId)?.state).toBe('prepared');
+    mocks.failRequestLog = false;
+    mocks.outboundFetch.mockResolvedValue(
+      new Response(JSON.stringify({ data: PNG.toString('base64') }), { status: 200 }),
+    );
+    await expect(
+      callCindyMedia({ action: 'request', invocationId, body: { prompt: 'cat' } }),
+    ).resolves.toMatchObject({ ok: true, status: 'complete' });
+    expect(mocks.outboundFetch).toHaveBeenCalledTimes(1);
   });
 
   it('同步生成成功后下载暂时失败时复用已保存响应，不会再次付费 POST', async () => {

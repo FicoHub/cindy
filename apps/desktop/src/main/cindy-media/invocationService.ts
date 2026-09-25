@@ -1513,20 +1513,26 @@ async function submitInvocation(
     };
   } catch (error) {
     const expected = error instanceof MediaInvocationError ? error : null;
-    await transitionMediaInvocation(
+    // 本地组装失败（#5081）：请求从未出站、无费用，把 invocation 放回 prepared，
+    // 让同一 invocation_id 可以直接再次 request；其余失败仍进入 failed / unknown。
+    const buildFailed = expected?.code === 'REQUEST_BUILD_FAILED';
+    const restored = await transitionMediaInvocation(
       {
         id: invocation.id,
         owner: invocation.owner,
         from: 'submitting',
-        to: expected?.outcomeUnknown ? 'unknown' : 'failed',
+        to: buildFailed ? 'prepared' : expected?.outcomeUnknown ? 'unknown' : 'failed',
       },
       db,
     ).catch(() => false);
     if (expected) {
       if (expected.outcomeUnknown) return submissionOutcomeUnknown(expected.message);
-      // 本地组装失败：请求未发起、无费用，明确告知可重试。
-      const retryable = expected.code === 'REQUEST_BUILD_FAILED';
-      return failure(expected.code, expected.message, retryable, { outcomeKnown: true });
+      if (buildFailed && restored) {
+        return failure(expected.code, `${expected.message}；同一 invocation_id 可直接再次 request`, true, {
+          outcomeKnown: true,
+        });
+      }
+      return failure(expected.code, expected.message, false, { outcomeKnown: true });
     }
     log.warn('media submission failed', {
       error: error instanceof Error ? error.message : String(error),
