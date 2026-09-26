@@ -2343,6 +2343,7 @@ export function registerVoiceInputIpc(): void {
     const controller = new VoiceInputController({
       asr: provider,
       refiner,
+      pauseRefinementEnabled: true,
       logger,
       callbacks: {
         onStateChanged: (state, outcome) => {
