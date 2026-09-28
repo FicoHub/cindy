@@ -21575,32 +21575,44 @@ function armLock() {
   let released = false;
   if (process.platform !== "win32") {
     rec("warn", "lock not effective on non-windows (no FileShare semantics)");
-    return { locked: Promise.resolve(null), release: () => {
-    } };
+    return { ready: Promise.resolve(false), locked: Promise.resolve(null), release: () => {
+    }, exited: Promise.resolve() };
   }
   const pattern = import_node_path8.default.join(rootDir, `.cindy-installing-${ID}-*`, "ghost.json").replace(/'/g, "''");
-  const ps = `$deadline=(Get-Date).AddSeconds(90); while((Get-Date) -lt $deadline){ $t=Get-ChildItem -Path '${pattern}' -ErrorAction SilentlyContinue | Select-Object -First 1; if($t){ try { $f=[System.IO.File]::Open($t.FullName,'Open','Read','Read'); Write-Output ('LOCKED ' + $t.FullName); while($true){Start-Sleep -Milliseconds 100} } catch { Start-Sleep -Milliseconds 5 } } else { Start-Sleep -Milliseconds 5 } }; Write-Output 'LOCK_TIMEOUT'`;
+  const ps = `Write-Output READY; $deadline=(Get-Date).AddSeconds(90); while((Get-Date) -lt $deadline){ $t=Get-ChildItem -Path '${pattern}' -ErrorAction SilentlyContinue | Select-Object -First 1; if($t){ try { $f=[System.IO.File]::Open($t.FullName,'Open','Read','Read'); Write-Output ('LOCKED ' + $t.FullName); while($true){Start-Sleep -Milliseconds 100} } catch { Start-Sleep -Milliseconds 5 } } else { Start-Sleep -Milliseconds 5 } }; Write-Output 'LOCK_TIMEOUT'`;
   child = (0, import_node_child_process.spawn)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], { stdio: ["ignore", "pipe", "inherit"] });
-  const locked = new Promise((res) => {
-    let buf = "";
-    child.stdout.on("data", (b) => {
-      buf += String(b);
-      const m = buf.match(/LOCKED (.+)/);
-      if (m) {
-        rec("info", "harness lock acquired", { target: m[1].trim() });
-        res(m[1].trim());
-      } else if (buf.includes("LOCK_TIMEOUT")) {
-        rec("warn", "staging never appeared; lock not armed");
-        res(null);
-      }
-    });
-    child.on("exit", () => res(null));
+  let buf = "";
+  let resolveReady;
+  let resolveLocked;
+  const ready = new Promise((r) => {
+    resolveReady = r;
   });
-  return { locked, release: () => {
+  const locked = new Promise((r) => {
+    resolveLocked = r;
+  });
+  const exited = new Promise((r) => child.on("exit", () => {
+    resolveReady(false);
+    resolveLocked(null);
+    r();
+  }));
+  child.stdout.on("data", (b) => {
+    buf += String(b);
+    if (buf.includes("READY")) resolveReady(true);
+    const m = buf.match(/LOCKED (.+)/);
+    if (m) {
+      const at = Date.now();
+      rec("info", "harness lock acquired", { target: m[1].trim(), at });
+      resolveLocked({ target: m[1].trim(), at });
+    } else if (buf.includes("LOCK_TIMEOUT")) {
+      rec("warn", "staging never appeared; lock not armed");
+      resolveLocked(null);
+    }
+  });
+  return { ready, locked, exited, release: () => {
     if (child && !released) {
       released = true;
       child.kill("SIGKILL");
-      rec("info", "harness lock released");
+      rec("info", "harness lock released", { at: Date.now() });
     }
   } };
 }
@@ -21613,7 +21625,27 @@ function stagingDirs() {
 }
 function state(m) {
   const g = m.list().find((x) => x.manifest.id === ID);
-  return { installed: !!g, version: g?.manifest.version ?? null, approval: g?.approval.state ?? null, enabled: g?.enabled ?? null, journal: journalFiles(), staging: stagingDirs(), finalDirExists: import_node_fs6.default.existsSync(import_node_path8.default.join(rootDir, ID)) };
+  const receiptPath = import_node_path8.default.join(base, "ghosts-install-state", `${ID}.json`);
+  let receipt = null;
+  try {
+    const r = JSON.parse(import_node_fs6.default.readFileSync(receiptPath, "utf8"));
+    receipt = { packageSha256: r.packageSha256 ?? r.package?.sha256 ?? null, keys: Object.keys(r) };
+  } catch {
+    receipt = null;
+  }
+  const entries = import_node_fs6.default.existsSync(rootDir) ? import_node_fs6.default.readdirSync(rootDir) : [];
+  return {
+    installed: !!g,
+    version: g?.manifest.version ?? null,
+    approval: g?.approval.state ?? null,
+    enabled: g?.enabled ?? null,
+    receiptExists: import_node_fs6.default.existsSync(receiptPath),
+    receipt,
+    journal: journalFiles(),
+    staging: stagingDirs(),
+    backups: entries.filter((n) => n !== ID && !n.startsWith(".cindy-installing-")),
+    finalDirExists: import_node_fs6.default.existsSync(import_node_path8.default.join(rootDir, ID))
+  };
 }
 var results = {};
 (async () => {
@@ -21637,12 +21669,16 @@ var results = {};
   if (only.includes("lock-release")) {
     const p102 = await makeCindy("1.0.2", sizeMb);
     const lock = armLock();
+    const ready = await lock.ready;
+    rec("info", "lock process ready", { ready });
     let attemptsSeen = 0;
+    let firstFailAt = null;
     const origWarn = log.warn;
     log.warn = (msg, d) => {
       origWarn(msg, d);
       if (msg.includes("retrying")) {
         attemptsSeen = d.attempt;
+        if (firstFailAt === null) firstFailAt = Date.now();
         if (attemptsSeen === 5) lock.release();
       }
     };
@@ -21650,33 +21686,55 @@ var results = {};
     const r = await m.update(p102.file, { expectedInstalledApproval: ghostInstallApprovalToken(m.list().find((g) => g.manifest.id === ID)?.approval), expectedPackageSha256: p102.sha256 });
     log.warn = origWarn;
     lock.release();
+    await lock.exited;
+    const lk = await lock.locked;
     const succ = events.find((e) => e.msg === "ghost transaction rename succeeded after transient retry");
-    results["lock-release"] = { ms: Date.now() - t, lockTarget: await lock.locked, rejection: "rejection" in r ? r.rejection : null, retriesObserved: attemptsSeen, succeededAfterAttempts: succ ? succ.data.attempts : null, state: state(m) };
+    const lockBeforeFirstFail = !!lk && firstFailAt !== null && lk.at <= firstFailAt;
+    const coverage = !lk ? "insufficient: lock never acquired" : attemptsSeen === 0 ? "insufficient: no transient rename failure observed" : !lockBeforeFirstFail ? "insufficient: lock acquired after first rename failure" : "ok";
+    results["lock-release"] = { ms: Date.now() - t, lockReady: ready, lockTarget: lk?.target ?? null, lockAt: lk?.at ?? null, firstFailAt, lockBeforeFirstFail, coverage, rejection: "rejection" in r ? r.rejection : null, retriesObserved: attemptsSeen, succeededAfterAttempts: succ ? succ.data.attempts : null, state: state(m) };
     rec("info", "scenario lock-release done", results["lock-release"]);
   }
   if (only.includes("lock-exhaust")) {
     const before = state(m);
     const p103 = await makeCindy("1.0.3", sizeMb);
     const lock = armLock();
+    const ready = await lock.ready;
+    rec("info", "lock process ready", { ready });
+    let attemptsSeen = 0;
+    let firstFailAt = null;
+    let exhausted = false;
     const origWarn = log.warn;
     log.warn = (msg, d) => {
       origWarn(msg, d);
-      if (msg.includes("retry exhausted")) lock.release();
+      if (msg.includes("retrying")) {
+        attemptsSeen = d.attempt;
+        if (firstFailAt === null) firstFailAt = Date.now();
+      }
+      if (msg.includes("retry exhausted")) {
+        exhausted = true;
+        lock.release();
+      }
     };
     const t = Date.now();
     const r = await m.update(p103.file, { expectedInstalledApproval: ghostInstallApprovalToken(m.list().find((g) => g.manifest.id === ID)?.approval), expectedPackageSha256: p103.sha256 });
     log.warn = origWarn;
     lock.release();
+    await lock.exited;
+    const lk = await lock.locked;
     const rej = "rejection" in r ? r.rejection : null;
     const stateNow = state(m);
     const m2 = newManager({ enabled: true });
-    results["lock-exhaust"] = { ms: Date.now() - t, lockTarget: await lock.locked, rejection: rej, hintPresent: !!rej && rej.reason.includes(RENAME_RETRY_EXHAUSTED_HINT), before: { version: before.version }, state: stateNow, afterStartupRecovery: state(m2) };
+    const coverage = !lk ? "insufficient: lock never acquired" : !exhausted ? "insufficient: retry exhaustion not observed" : firstFailAt !== null && lk.at > firstFailAt ? "insufficient: lock acquired after first rename failure" : "ok";
+    results["lock-exhaust"] = { ms: Date.now() - t, lockReady: ready, lockTarget: lk?.target ?? null, lockAt: lk?.at ?? null, firstFailAt, retriesObserved: attemptsSeen, exhausted, coverage, rejection: rej, hintPresent: !!rej && rej.reason.includes(RENAME_RETRY_EXHAUSTED_HINT), before: { version: before.version }, state: stateNow, afterStartupRecovery: state(m2) };
     rec("info", "scenario lock-exhaust done", results["lock-exhaust"]);
   }
   const out = import_node_path8.default.join(base, "harness-summary.json");
   import_node_fs6.default.writeFileSync(out, JSON.stringify({ head: "26aecab85b207f51c7f03448027343a37c0bd4ae", base, platform: `${import_node_os.default.platform()} ${import_node_os.default.release()}`, node: process.version, sizeMb, results, events }, null, 2));
   console.log("SUMMARY_FILE " + out);
-  console.log("CINDY-5028-HARNESS-DONE " + JSON.stringify(Object.fromEntries(Object.entries(results).map(([k, v]) => [k, v.rejection ? "REJECTED" : "OK"]))));
+  console.log("CINDY-5028-HARNESS-DONE " + JSON.stringify(Object.fromEntries(Object.entries(results).map(([k, v]) => {
+    const x = v;
+    return [k, x.coverage && x.coverage !== "ok" ? "COVERAGE_INSUFFICIENT" : x.rejection ? "REJECTED" : "OK"];
+  }))));
 })().catch((e) => {
   console.error("HARNESS_ERROR", e);
   process.exit(1);

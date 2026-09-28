@@ -49,26 +49,42 @@ function newManager(renameRetry?: { enabled: boolean; delaysMs?: readonly number
   });
 }
 /** 锁:等 staging 出现并含 ghost.json 后,用 PowerShell 以 FileShare.Read 打开并持有;返回释放函数。 */
-function armLock(): { release: () => void; locked: Promise<string | null> } {
+type Lock = { ready: Promise<boolean>; locked: Promise<{ target: string; at: number } | null>; release: () => void; exited: Promise<void> };
+function armLock(): Lock {
   let child: ChildProcess | null = null; let released = false;
   if (process.platform !== 'win32') {
     rec('warn', 'lock not effective on non-windows (no FileShare semantics)');
-    return { locked: Promise.resolve(null), release: () => {} };
+    return { ready: Promise.resolve(false), locked: Promise.resolve(null), release: () => {}, exited: Promise.resolve() };
   }
-  // 预先启动 PowerShell,由它自己以 5ms 轮询等待 staging 里的 ghost.json 出现后立刻以
-  // FileShare.Read 打开并持有(允许读、禁止 rename 父目录),避免冷启动慢于解包。
+  // 预先启动 PowerShell:先回 READY(冷启动完成),再以 5ms 轮询等待 staging 里的 ghost.json,
+  // 出现即以 FileShare.Read 打开并持有(允许读、禁止 rename 父目录)。harness 等 READY 后才发起事务。
   const pattern = path.join(rootDir, `.cindy-installing-${ID}-*`, 'ghost.json').replace(/'/g, "''");
-  const ps = `$deadline=(Get-Date).AddSeconds(90); while((Get-Date) -lt $deadline){ $t=Get-ChildItem -Path '${pattern}' -ErrorAction SilentlyContinue | Select-Object -First 1; if($t){ try { $f=[System.IO.File]::Open($t.FullName,'Open','Read','Read'); Write-Output ('LOCKED ' + $t.FullName); while($true){Start-Sleep -Milliseconds 100} } catch { Start-Sleep -Milliseconds 5 } } else { Start-Sleep -Milliseconds 5 } }; Write-Output 'LOCK_TIMEOUT'`;
+  const ps = `Write-Output READY; $deadline=(Get-Date).AddSeconds(90); while((Get-Date) -lt $deadline){ $t=Get-ChildItem -Path '${pattern}' -ErrorAction SilentlyContinue | Select-Object -First 1; if($t){ try { $f=[System.IO.File]::Open($t.FullName,'Open','Read','Read'); Write-Output ('LOCKED ' + $t.FullName); while($true){Start-Sleep -Milliseconds 100} } catch { Start-Sleep -Milliseconds 5 } } else { Start-Sleep -Milliseconds 5 } }; Write-Output 'LOCK_TIMEOUT'`;
   child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: ['ignore', 'pipe', 'inherit'] });
-  const locked = new Promise<string | null>((res) => {
-    let buf = ''; child!.stdout!.on('data', (b) => { buf += String(b); const m = buf.match(/LOCKED (.+)/); if (m) { rec('info', 'harness lock acquired', { target: m[1].trim() }); res(m[1].trim()); } else if (buf.includes('LOCK_TIMEOUT')) { rec('warn', 'staging never appeared; lock not armed'); res(null); } });
-    child!.on('exit', () => res(null));
+  let buf = ''; let resolveReady!: (v: boolean) => void; let resolveLocked!: (v: { target: string; at: number } | null) => void;
+  const ready = new Promise<boolean>((r) => { resolveReady = r; });
+  const locked = new Promise<{ target: string; at: number } | null>((r) => { resolveLocked = r; });
+  const exited = new Promise<void>((r) => child!.on('exit', () => { resolveReady(false); resolveLocked(null); r(); }));
+  child.stdout!.on('data', (b) => {
+    buf += String(b);
+    if (buf.includes('READY')) resolveReady(true);
+    const m = buf.match(/LOCKED (.+)/);
+    if (m) { const at = Date.now(); rec('info', 'harness lock acquired', { target: m[1].trim(), at }); resolveLocked({ target: m[1].trim(), at }); }
+    else if (buf.includes('LOCK_TIMEOUT')) { rec('warn', 'staging never appeared; lock not armed'); resolveLocked(null); }
   });
-  return { locked, release: () => { if (child && !released) { released = true; child.kill('SIGKILL'); rec('info', 'harness lock released'); } } };
+  return { ready, locked, exited, release: () => { if (child && !released) { released = true; child.kill('SIGKILL'); rec('info', 'harness lock released', { at: Date.now() }); } } };
 }
 function journalFiles() { const d = path.join(base, 'ghosts-install-state'); return fs.existsSync(d) ? fs.readdirSync(d).filter((n) => n.startsWith('.pending-')) : []; }
 function stagingDirs() { return fs.existsSync(rootDir) ? fs.readdirSync(rootDir).filter((n) => n.startsWith('.cindy-installing-')) : []; }
-function state(m: GhostManager) { const g = m.list().find((x) => x.manifest.id === ID); return { installed: !!g, version: g?.manifest.version ?? null, approval: g?.approval.state ?? null, enabled: g?.enabled ?? null, journal: journalFiles(), staging: stagingDirs(), finalDirExists: fs.existsSync(path.join(rootDir, ID)) }; }
+function state(m: GhostManager) {
+  const g = m.list().find((x) => x.manifest.id === ID);
+  const receiptPath = path.join(base, 'ghosts-install-state', `${ID}.json`);
+  let receipt: Record<string, unknown> | null = null;
+  try { const r = JSON.parse(fs.readFileSync(receiptPath, 'utf8')); receipt = { packageSha256: r.packageSha256 ?? r.package?.sha256 ?? null, keys: Object.keys(r) }; } catch { receipt = null; }
+  const entries = fs.existsSync(rootDir) ? fs.readdirSync(rootDir) : [];
+  return { installed: !!g, version: g?.manifest.version ?? null, approval: g?.approval.state ?? null, enabled: g?.enabled ?? null,
+    receiptExists: fs.existsSync(receiptPath), receipt, journal: journalFiles(), staging: stagingDirs(), backups: entries.filter((n) => n !== ID && !n.startsWith('.cindy-installing-')), finalDirExists: fs.existsSync(path.join(rootDir, ID)) };
+}
 
 const results: Record<string, unknown> = {};
 (async () => {
@@ -89,31 +105,40 @@ const results: Record<string, unknown> = {};
   }
   if (only.includes('lock-release')) {
     // 更新 1.0.1→1.0.2:锁 staging,rename 第 5 次失败(≈3.75s>原 3.1s 预算)后释放,应在第 6 次(≈6.75s)成功。
-    const p102 = await makeCindy('1.0.2', sizeMb); const lock = armLock(); let attemptsSeen = 0;
-    const origWarn = log.warn; (log as { warn: typeof origWarn }).warn = (msg, d) => { origWarn(msg, d); if (msg.includes('retrying')) { attemptsSeen = (d as { attempt: number }).attempt; if (attemptsSeen === 5) lock.release(); } };
+    const p102 = await makeCindy('1.0.2', sizeMb); const lock = armLock(); const ready = await lock.ready;
+    rec('info', 'lock process ready', { ready });
+    let attemptsSeen = 0; let firstFailAt: number | null = null;
+    const origWarn = log.warn; (log as { warn: typeof origWarn }).warn = (msg, d) => { origWarn(msg, d); if (msg.includes('retrying')) { attemptsSeen = (d as { attempt: number }).attempt; if (firstFailAt === null) firstFailAt = Date.now(); if (attemptsSeen === 5) lock.release(); } };
     const t = Date.now();
     const r = await m.update(p102.file, { expectedInstalledApproval: ghostInstallApprovalToken(m.list().find((g) => g.manifest.id === ID)?.approval), expectedPackageSha256: p102.sha256 });
-    (log as { warn: typeof origWarn }).warn = origWarn; lock.release();
+    (log as { warn: typeof origWarn }).warn = origWarn; lock.release(); await lock.exited;
+    const lk = await lock.locked;
     const succ = events.find((e) => e.msg === 'ghost transaction rename succeeded after transient retry');
-    results['lock-release'] = { ms: Date.now() - t, lockTarget: await lock.locked, rejection: 'rejection' in r ? r.rejection : null, retriesObserved: attemptsSeen, succeededAfterAttempts: succ ? (succ.data as { attempts: number }).attempts : null, state: state(m) };
+    const lockBeforeFirstFail = !!lk && firstFailAt !== null && lk.at <= firstFailAt;
+    const coverage = !lk ? 'insufficient: lock never acquired' : attemptsSeen === 0 ? 'insufficient: no transient rename failure observed' : !lockBeforeFirstFail ? 'insufficient: lock acquired after first rename failure' : 'ok';
+    results['lock-release'] = { ms: Date.now() - t, lockReady: ready, lockTarget: lk?.target ?? null, lockAt: lk?.at ?? null, firstFailAt, lockBeforeFirstFail, coverage, rejection: 'rejection' in r ? r.rejection : null, retriesObserved: attemptsSeen, succeededAfterAttempts: succ ? (succ.data as { attempts: number }).attempts : null, state: state(m) };
     rec('info', 'scenario lock-release done', results['lock-release']);
   }
   if (only.includes('lock-exhaust')) {
-    // 更新 →1.0.3:锁持续到耗尽(≈9.75s 后第 7 次失败),期望 io 拒绝 + 提示,旧版本(1.0.2 或 1.0.1)保留,journal/staging 清空。
-    const before = state(m); const p103 = await makeCindy('1.0.3', sizeMb); const lock = armLock();
-    const origWarn = log.warn; (log as { warn: typeof origWarn }).warn = (msg, d) => { origWarn(msg, d); if (msg.includes('retry exhausted')) lock.release(); };
+    // 更新 →1.0.3:锁持续到耗尽(≈9.75s 后第 7 次失败),期望 io 拒绝 + 提示,旧版本保留,journal 清空。
+    const before = state(m); const p103 = await makeCindy('1.0.3', sizeMb); const lock = armLock(); const ready = await lock.ready;
+    rec('info', 'lock process ready', { ready });
+    let attemptsSeen = 0; let firstFailAt: number | null = null; let exhausted = false;
+    const origWarn = log.warn; (log as { warn: typeof origWarn }).warn = (msg, d) => { origWarn(msg, d); if (msg.includes('retrying')) { attemptsSeen = (d as { attempt: number }).attempt; if (firstFailAt === null) firstFailAt = Date.now(); } if (msg.includes('retry exhausted')) { exhausted = true; lock.release(); } };
     const t = Date.now();
     const r = await m.update(p103.file, { expectedInstalledApproval: ghostInstallApprovalToken(m.list().find((g) => g.manifest.id === ID)?.approval), expectedPackageSha256: p103.sha256 });
-    (log as { warn: typeof origWarn }).warn = origWarn; lock.release();
+    (log as { warn: typeof origWarn }).warn = origWarn; lock.release(); await lock.exited;
+    const lk = await lock.locked;
     const rej = 'rejection' in r ? (r.rejection as { code: string; reason: string; rollbackFailed?: boolean }) : null;
     const stateNow = state(m);
-    // 锁释放晚于事务内的 staging rm,残留 staging 属预期;用新实例跑一次构造期启动恢复再记录。
+    // 锁子进程已退出后再构造新实例跑构造期启动恢复,记录残留清理结果。
     const m2 = newManager({ enabled: true });
-    results['lock-exhaust'] = { ms: Date.now() - t, lockTarget: await lock.locked, rejection: rej, hintPresent: !!rej && rej.reason.includes(RENAME_RETRY_EXHAUSTED_HINT), before: { version: before.version }, state: stateNow, afterStartupRecovery: state(m2) };
+    const coverage = !lk ? 'insufficient: lock never acquired' : !exhausted ? 'insufficient: retry exhaustion not observed' : (firstFailAt !== null && lk.at > firstFailAt) ? 'insufficient: lock acquired after first rename failure' : 'ok';
+    results['lock-exhaust'] = { ms: Date.now() - t, lockReady: ready, lockTarget: lk?.target ?? null, lockAt: lk?.at ?? null, firstFailAt, retriesObserved: attemptsSeen, exhausted, coverage, rejection: rej, hintPresent: !!rej && rej.reason.includes(RENAME_RETRY_EXHAUSTED_HINT), before: { version: before.version }, state: stateNow, afterStartupRecovery: state(m2) };
     rec('info', 'scenario lock-exhaust done', results['lock-exhaust']);
   }
   const out = path.join(base, 'harness-summary.json');
   fs.writeFileSync(out, JSON.stringify({ head: '26aecab85b207f51c7f03448027343a37c0bd4ae', base, platform: `${os.platform()} ${os.release()}`, node: process.version, sizeMb, results, events }, null, 2));
   console.log('SUMMARY_FILE ' + out);
-  console.log('CINDY-5028-HARNESS-DONE ' + JSON.stringify(Object.fromEntries(Object.entries(results).map(([k, v]) => [k, (v as { rejection: unknown }).rejection ? 'REJECTED' : 'OK']))));
+  console.log('CINDY-5028-HARNESS-DONE ' + JSON.stringify(Object.fromEntries(Object.entries(results).map(([k, v]) => { const x = v as { rejection: unknown; coverage?: string }; return [k, x.coverage && x.coverage !== 'ok' ? 'COVERAGE_INSUFFICIENT' : x.rejection ? 'REJECTED' : 'OK']; }))));
 })().catch((e) => { console.error('HARNESS_ERROR', e); process.exit(1); });
