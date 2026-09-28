@@ -227,8 +227,14 @@ export interface GhostManagerOptions {
 
 /** Windows 目录句柄竞争的典型瞬时错误码;其它错误码原样上抛,不重试。 */
 const TRANSIENT_RENAME_ERROR_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES']);
-/** 有界退避:累计约 3s,覆盖 #5026 实测的 5–10s 内非单调句柄释放窗口的大部分场景。 */
-const DEFAULT_RENAME_RETRY_DELAYS_MS: readonly number[] = [100, 200, 400, 800, 1600];
+/**
+ * 有界退避:累计约 9.75s。#5026 的对照实验是「等 5s 失败、等 10s 成功」,且失败与包体量
+ * 强相关(100MB+ 稳定失败,安全软件扫描窗口随解包体量变长),预算需覆盖到 10s 量级。
+ * 等待发生在安装 loading 态、互斥锁内,仍保持有界、只认瞬时码;测试可通过 `renameRetry` 覆盖。
+ */
+export const DEFAULT_RENAME_RETRY_DELAYS_MS: readonly number[] = [250, 500, 1000, 2000, 3000, 3000];
+/** 重试耗尽后附在 io 拒绝原因上的用户提示,否则用户看到的仍是裸 `EPERM`。 */
+export const RENAME_RETRY_EXHAUSTED_HINT = '文件可能被安全软件或其它程序占用,请稍后重试';
 
 /** install / update 的失败分类 —— IPC 层据此映射错误码。 */
 export type InstallRejection =
@@ -565,7 +571,16 @@ export class GhostManager {
         return;
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        if (attempt >= delays.length || !code || !TRANSIENT_RENAME_ERROR_CODES.has(code)) throw error;
+        const transient = Boolean(code && TRANSIENT_RENAME_ERROR_CODES.has(code));
+        if (transient && delays.length > 0 && attempt >= delays.length) {
+          // 重试耗尽:保留 errno code 供调用点分类,只在 message 上附用户提示。
+          this.options.log?.warn('ghost transaction rename retry exhausted', {
+            id, stage, code, attempts: attempt + 1,
+          });
+          (error as Error).message = `${(error as Error).message};${RENAME_RETRY_EXHAUSTED_HINT}`;
+          throw error;
+        }
+        if (attempt >= delays.length || !transient) throw error;
         this.options.log?.warn('ghost transaction rename hit transient error; retrying', {
           id, stage, code, attempt: attempt + 1, delayMs: delays[attempt],
         });
@@ -3293,7 +3308,7 @@ export class GhostManager {
       if (finalKind === 'missing') {
         await this.receiptStore.writePendingMutation(id, { kind: 'install', packageSha256 });
         this.untrustedApprovals.add(this.isolationKey(id));
-        await fs.promises.rename(stagingDir, finalDir);
+        await this.renameManagedDir(stagingDir, finalDir, 'seed install placement', id);
         return;
       }
 
@@ -3304,14 +3319,14 @@ export class GhostManager {
         phase: 'prepared',
       });
       this.untrustedApprovals.add(this.isolationKey(id));
-      await fs.promises.rename(finalDir, backupDir);
+      await this.renameManagedDir(finalDir, backupDir, 'seed update backup', id);
       await this.receiptStore.writePendingMutation(id, {
         kind: 'update',
         packageSha256,
         backupDirName: path.basename(backupDir),
         phase: 'backed-up',
       });
-      await fs.promises.rename(stagingDir, finalDir);
+      await this.renameManagedDir(stagingDir, finalDir, 'seed update placement', id);
       await this.receiptStore.writePendingMutation(id, {
         kind: 'update',
         packageSha256,
@@ -3330,7 +3345,7 @@ export class GhostManager {
       });
       if (backupKind === 'directory' && publishedKind === null) {
         try {
-          await fs.promises.rename(backupDir, finalDir);
+          await this.renameManagedDir(backupDir, finalDir, 'seed update rollback', id);
           await this.receiptStore.clearPendingMutation(id);
           this.untrustedApprovals.delete(this.isolationKey(id));
         } catch {

@@ -13,7 +13,13 @@ import {
   validateGhostManifest,
   type InstalledGhost,
 } from '../../../shared/ghost';
-import { CINDY_OFFICIAL_GHOST_TRUST, GhostManager, readLegacyGhostApprovalProjection } from '../GhostManager';
+import {
+  CINDY_OFFICIAL_GHOST_TRUST,
+  DEFAULT_RENAME_RETRY_DELAYS_MS,
+  GhostManager,
+  RENAME_RETRY_EXHAUSTED_HINT,
+  readLegacyGhostApprovalProjection,
+} from '../GhostManager';
 import {
   installedFileModeFromZip,
   unixPermissionsForRepackedEntry,
@@ -1751,6 +1757,59 @@ describe('GhostManager · 安装事务目录 rename 失败(#5026)', () => {
     }
     expect(placementAttempts).toBe(3);
     expect(fs.existsSync(pendingMarkerPath())).toBe(false);
+  });
+
+  // #5028 review:#5026 对照实验「等 5s 失败、等 10s 成功」且 100MB+ 包稳定失败,
+  // 默认预算必须覆盖到 10s 量级,而不是原先累计 3.1s。
+  it('默认重试预算累计约 10s、仍有界且逐步退避(#5028 review)', () => {
+    const total = DEFAULT_RENAME_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
+    expect(total).toBeGreaterThanOrEqual(9_000);
+    expect(total).toBeLessThanOrEqual(11_000);
+    expect(DEFAULT_RENAME_RETRY_DELAYS_MS.length).toBeLessThanOrEqual(8);
+    for (let i = 1; i < DEFAULT_RENAME_RETRY_DELAYS_MS.length; i += 1) {
+      expect(DEFAULT_RENAME_RETRY_DELAYS_MS[i]).toBeGreaterThanOrEqual(DEFAULT_RENAME_RETRY_DELAYS_MS[i - 1]);
+    }
+  });
+
+  it('重试耗尽后的 io 拒绝附带用户可读提示,并保留原始 errno 信息', async () => {
+    const local = managerWithRenameRetry({ enabled: true, delaysMs: [1, 1] });
+    const finalDir = path.join(rootDir, 'hello');
+    const realRename = fs.promises.rename;
+    const spy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.resolve(String(to)) === path.resolve(finalDir)) {
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      }
+      return realRename(from as never, to as never);
+    });
+    let result: Awaited<ReturnType<GhostManager['install']>>;
+    try {
+      result = await local.install(await makeCindy('a.cindy', goodManifest()));
+    } finally {
+      spy.mockRestore();
+    }
+    expect('rejection' in result).toBe(true);
+    const rejection = (result as { rejection: { code: string; reason: string } }).rejection;
+    expect(rejection.code).toBe('io');
+    expect(rejection.reason).toContain('EPERM');
+    expect(rejection.reason).toContain(RENAME_RETRY_EXHAUSTED_HINT);
+
+    // 未启用重试(非 Windows 缺省)时 EPERM 通常是永久性权限问题,不附「稍后重试」提示。
+    const plain = managerWithRenameRetry({ enabled: false });
+    const spy2 = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.resolve(String(to)) === path.resolve(finalDir)) {
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      }
+      return realRename(from as never, to as never);
+    });
+    let plainResult: Awaited<ReturnType<GhostManager['install']>>;
+    try {
+      plainResult = await plain.install(await makeCindy('b.cindy', goodManifest()));
+    } finally {
+      spy2.mockRestore();
+    }
+    const plainRejection = (plainResult as { rejection: { code: string; reason: string } }).rejection;
+    expect(plainRejection.code).toBe('io');
+    expect(plainRejection.reason).not.toContain(RENAME_RETRY_EXHAUSTED_HINT);
   });
 });
 
