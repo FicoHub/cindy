@@ -895,9 +895,7 @@ export class IOSSimulatorNativeSidecarChannel implements IOSSimulatorNativeSidec
               "Native sidecar closed-stream identity does not match",
             );
           }
-          // The Helper confirmed the stream is over; anything after this is
-          // unsolicited traffic again.
-          closed.lateFrameAllowance = 0;
+          this.#markHelperEnded(end.streamId);
           return;
         }
         this.#bufferEarlyStreamEvent(end.streamId, { kind: "end", end }, 0);
@@ -1040,6 +1038,12 @@ export class IOSSimulatorNativeSidecarChannel implements IOSSimulatorNativeSidec
       );
     }
     state.tail = state.tail.then(() => {
+      if (state.finished) {
+        // A local stop already settled the stream while a frame callback was
+        // still running; the Helper's end still closes the late-frame window.
+        this.#markHelperEnded(state.streamId);
+        return;
+      }
       this.#finishStream(state, end.reason, end.message, {
         helperEnded: true,
       });
@@ -1165,6 +1169,15 @@ export class IOSSimulatorNativeSidecarChannel implements IOSSimulatorNativeSidec
       if (oldest === undefined) break;
       this.#closedStreams.delete(oldest);
     }
+  }
+
+  /**
+   * The Helper confirmed the stream is over; anything after this is
+   * unsolicited traffic again.
+   */
+  #markHelperEnded(streamId: string): void {
+    const closed = this.#closedStreams.get(streamId);
+    if (closed) closed.lateFrameAllowance = 0;
   }
 
   #consumeLateFrameAllowance(

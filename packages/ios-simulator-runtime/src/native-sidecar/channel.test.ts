@@ -714,6 +714,37 @@ describe("IOSSimulatorNativeSidecarChannel", () => {
     await channel.stop();
   });
 
+  it("closes the late-frame window when the Helper end lands behind a local stop in the frame queue (#5253)", async () => {
+    const { channel, processes } = harness();
+    await channel.start();
+    const controller = new AbortController();
+    let releaseFrame!: () => void;
+    const frameGate = new Promise<void>((resolve) => {
+      releaseFrame = resolve;
+    });
+    const streamPromise = channel.streamFrames(command("startStream"), {
+      signal: controller.signal,
+      acknowledgeFrames: true,
+      onFrame: () => frameGate,
+    });
+    processes[0]!.stdout.write(reply("sidecar-1", { streamId: "stream-1" }));
+    // A frame callback is still running when the local stop and then the
+    // Helper's own end are both queued behind it.
+    processes[0]!.stdout.write(streamFrame(1));
+    controller.abort();
+    processes[0]!.stdout.write(streamEnd("aborted"));
+    releaseFrame();
+    await expect(streamPromise).resolves.toMatchObject({
+      endReason: "aborted",
+    });
+
+    // The Helper already confirmed the end, so a further frame is unsolicited.
+    processes[0]!.stdout.write(streamFrame(2));
+    await vi.waitFor(() => expect(channel.state).toBe("failed"));
+    expect(channel.crashCount).toBe(1);
+    await channel.stop();
+  });
+
   it("fails closed when a locally stopped stream keeps emitting beyond the late-frame budget (#5250)", async () => {
     const { channel, processes } = harness();
     await channel.start();
