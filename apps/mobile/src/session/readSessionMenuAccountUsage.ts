@@ -114,7 +114,8 @@ export async function readSessionMenuAccountUsage(
     }
     return result;
   }
-  // Claude/xAI subscription and personal balance reads are not exposed by existing remote APIs.
+  // This task menu does not consume the existing Claude/xAI subscription channels.
+  // Account-level subscription widgets use those channels independently of task routing.
   return empty(
     provider && !["anthropic", "xai", "openai"].includes(provider)
       ? "api"

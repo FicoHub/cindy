@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from Mobile tokens / settings translations. Do not edit. -->
+<resources>
+  <color name="cindy_widget_surface_elevated">#1E1E1E</color>
+  <color name="cindy_widget_text_primary">#EDEDED</color>
+  <color name="cindy_widget_text_secondary">#BDBDBD</color>
+  <color name="cindy_widget_border">#383838</color>
+</resources>

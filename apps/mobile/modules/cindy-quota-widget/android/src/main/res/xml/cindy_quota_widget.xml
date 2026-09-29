@@ -1,0 +1,7 @@
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+  android:minWidth="250dp" android:minHeight="200dp"
+  android:minResizeWidth="140dp" android:minResizeHeight="110dp"
+  android:targetCellWidth="4" android:targetCellHeight="3"
+  android:resizeMode="horizontal|vertical" android:updatePeriodMillis="1800000"
+  android:widgetCategory="home_screen" android:initialLayout="@layout/cindy_quota_widget"
+  android:description="@string/cindy_widget_description" />

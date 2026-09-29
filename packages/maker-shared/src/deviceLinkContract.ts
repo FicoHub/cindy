@@ -319,6 +319,10 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   // Codex app-server 官方控制面:只读额度/reset 次数 + 人工确认后的单次 reset。
   // reset 使用 desktop 预签发、账号绑定的幂等 offer,手机不能自行指定 creditId。
   'maker:usage:codex-rate-limits',
+  // Existing read-only host channels, now consumed by the mobile Home Screen widget projection.
+  'maker:usage:account',
+  'maker:usage:claude-subscription',
+  'maker:usage:xai-subscription',
   'maker:usage:codex-rate-limit-reset',
   // 网关 API key presence-only 探测(只回 boolean;拉不到 → unknown,折扣版不置灰)。
   'maker:api-key:present',

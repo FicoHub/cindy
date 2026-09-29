@@ -1,0 +1,14 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/quota_root" android:layout_width="match_parent" android:layout_height="match_parent"
+  android:orientation="vertical" android:padding="@dimen/cindy_widget_padding" android:background="@drawable/cindy_quota_background">
+  <TextView android:id="@+id/quota_heading" android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:text="Cindy" android:textColor="@color/cindy_widget_text_secondary" android:textSize="@dimen/cindy_widget_caption" android:maxLines="1" />
+  <TextView android:id="@+id/quota_row_0" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+    android:text="@string/cindy_widget_empty" android:textColor="@color/cindy_widget_text_primary" android:textSize="@dimen/cindy_widget_footnote" android:gravity="center_vertical" android:maxLines="4" android:ellipsize="end" />
+  <TextView android:id="@+id/quota_row_1" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+    android:visibility="gone" android:textColor="@color/cindy_widget_text_primary" android:textSize="@dimen/cindy_widget_footnote" android:gravity="center_vertical" android:maxLines="3" android:ellipsize="end" />
+  <TextView android:id="@+id/quota_row_2" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+    android:visibility="gone" android:textColor="@color/cindy_widget_text_primary" android:textSize="@dimen/cindy_widget_footnote" android:gravity="center_vertical" android:maxLines="3" android:ellipsize="end" />
+  <TextView android:id="@+id/quota_updated" android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:textColor="@color/cindy_widget_text_secondary" android:textSize="@dimen/cindy_widget_micro" android:maxLines="1" android:ellipsize="end" />
+</LinearLayout>

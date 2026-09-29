@@ -1,0 +1,26 @@
+{
+  "checkedAt": "2026-09-30",
+  "build": "Xcode 27.0 27A266a / iOS 27.0 simulator SDK",
+  "hostBundleId": "com.xd.cindy",
+  "extensionBundleId": "com.xd.cindy.quota-widget",
+  "appGroup": "group.com.xd.cindy.quota",
+  "extensionArchitectures": "x86_64 arm64",
+  "extensionSHA256": "ac9b91da0dabe8c76ad21b8126e0036304ffc2e19c985f01724f001812fde34e",
+  "nativeIdentity": {
+    "healthy": true,
+    "code": "native-matched",
+    "installedFingerprint": "0187def06e5fa66e6860c7fea4b424d9b39782a3",
+    "expectedFingerprint": "0187def06e5fa66e6860c7fea4b424d9b39782a3"
+  },
+  "runtimeTested": false,
+  "Baguette": "installation declined; not used",
+  "tests": {
+    "mobile": 43,
+    "desktop": 47,
+    "sharedContract": 9,
+    "SwiftFoundation": "pass",
+    "mobileTypecheck": "pass",
+    "desktopTypecheck": "pass",
+    "sharedTypecheck": "8 identical errors reproduced on archived main"
+  }
+}

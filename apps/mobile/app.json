@@ -134,6 +134,7 @@
         }
       ],
       "./plugins/with-incoming-share-files",
+      "./plugins/with-quota-widget",
       "./plugins/with-remote-desktop-presentation",
       "./plugins/with-foreground-only-audio",
       [
