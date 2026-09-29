@@ -56,7 +56,7 @@ PATH="/opt/homebrew/bin:$PATH" pnpm mobile:sim:rebuild -- --build-only --force-b
 
 Mobile43项、Desktop47项（含主动刷新、代理headers与远端owner隔离回归）、共享通道9项及Swift契约通过；Mobile/Desktop类型检查通过。真实Expo autolinking识别 `CindyQuotaWidgetModule`，插件测试覆盖PBX源路径、target依赖、资源、幂等和fingerprint。Swift测试包含缺scope拒绝、每窗口陈旧、reset边界、未知/0、脱敏和v1拒绝。
 
-设置页已纳入正式Mobile界面台账；台账专项52项通过。i18n key、品牌术语、端点与Mobile scope检查通过。根runner本地570项中567通过、2跳过、1因未提交旧设计资料的坏链接失败；该资料不属于PR，未修改。仅含提交内容及台账修正的git archive副本文档契约10项全部通过。CI初轮因遗漏该设置页登记而失败，已修正，最终全仓结果以PR检查为准。
+设置页已纳入正式Mobile界面台账；台账专项52项通过。i18n key、品牌术语、端点与Mobile scope检查通过。根runner本地570项中567通过、2跳过、1因未提交旧设计资料的坏链接失败；该资料不属于PR，未修改。仅含提交内容及台账修正的git archive副本文档契约10项全部通过。CI随后通过runner与全部verify-checks、Desktop Git集成和Linux第二分片。Mobile第一分片检出的通道清单登记与标题行高遗漏已修正，55项定向回归、Mobile类型检查及本地Mobile全量609文件/7745项测试通过。最终远端全仓结果以PR检查为准。
 
 共享包无typecheck脚本，另跑 `pnpm --filter @cindy/maker-shared build`：8条类型错误（brandIdentity测试2、composerPalette测试3、historyView测试1、workRunGrouping2）；在同一主干git archive副本复现相同8条，未扩大本PR修复范围。完整全仓测试交CI，不能把上述定向结果称为全仓通过。
 

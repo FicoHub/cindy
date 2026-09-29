@@ -7,7 +7,7 @@ import type { DeviceView } from '@cindy/device-link';
 import { Text } from '@/components/AppText';
 import { MainWindowActionButton, MainWindowOptionButton } from '@/components/MobilePrimitives';
 import { SimpleStackHeader, simpleScreenSafeAreaEdges } from '@/platform/chrome';
-import { fontWeight, radius, spacing, typeScale, useTheme } from '@/theme';
+import { fontWeight, lineHeight, radius, spacing, typeScale, useTheme } from '@/theme';
 import { goBackGuarded } from '@/utils/backGuard';
 import { useQuotaWidgetRefresh } from '@/widgets/QuotaWidgetBridge';
 import { nativeQuotaWidget, quotaWidgetStore } from '@/widgets/quotaWidgetStore';
@@ -68,7 +68,7 @@ export default function SubscriptionWidgetsScreen() {
 }
 const styles = StyleSheet.create({
   content: { padding: spacing.lg, gap: spacing.md },
-  heading: { fontSize: typeScale.body, fontWeight: fontWeight.medium },
+  heading: { fontSize: typeScale.body, lineHeight: lineHeight.body, fontWeight: fontWeight.medium },
   card: { padding: spacing.md, gap: spacing.sm, borderRadius: radius.container, borderWidth: 1 },
   window: { gap: spacing.xs },
 });
