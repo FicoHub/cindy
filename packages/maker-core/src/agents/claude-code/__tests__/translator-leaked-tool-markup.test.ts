@@ -55,6 +55,24 @@ const CLASS_B_LEAK =
 
 const NON_EMPTY_USAGE = { input_tokens: 1200, output_tokens: 340 };
 
+/**
+ * issue #5304 实测的 DSML 形态(DeepSeek 原生工具调用分隔符经自定义中转泄漏为正文):
+ * 双全角竖线 U+FF5C×2,`DSML` 与标签名之间有一个空格;样本按报告者提供的原始字节还原。
+ */
+const B = '\uFF5C\uFF5C';
+const DSML_LEAK_SINGLE_PARAM =
+  ` <${B}DSML${B} calls>\n<${B}DSML${B} invoke name="Bash">\n<${B}DSML${B} parameter name="command" string="true">cd <WORKDIR> && ls -la</${B}DSML${B} parameter>\n</${B}DSML${B} invoke>\n</${B}DSML${B} calls>`;
+const DSML_LEAK_WITH_PROSE =
+  ` 我看看 <PROJECT> Web 端现在是怎么部署的,才能给出靠谱的自动更新方案。\n\n<${B}DSML${B} calls>\n<${B}DSML${B} invoke name="Skill">\n<${B}DSML${B} parameter name="skill" string="true">claude-api</${B}DSML${B} parameter>\n</${B}DSML${B} invoke>\n</${B}DSML${B} calls>`;
+const DSML_LEAK_MULTI_PARAM =
+  `证书替换那步已经完成了。中断在**dry-run 验证**这一步。\n\n<${B}DSML${B} calls>\n<${B}DSML${B} invoke name="exec">\n<${B}DSML${B} parameter name="command" string="true">ssh -o ConnectTimeout=20 <HOST> 'cat /tmp/dryrun.log 2>&1 | tail -40' 2>&1</${B}DSML${B} parameter>\n<${B}DSML${B} parameter name="cwd" string="true"><WORKDIR></${B}DSML${B} parameter>\n</${B}DSML${B} invoke>\n</${B}DSML${B} calls>`;
+/** 样本 4:泄漏标记被拆到多条消息,本条正文只剩闭标记尾段。 */
+const DSML_LEAK_CLOSING_TAIL =
+  `No output — maybe network blocked for api.github.com, or python parsing failed silently. Let's check raw output.</${B}DSML${B} parameter>\n</${B}DSML${B} invoke>\n</${B}DSML${B} calls>`;
+/** 单全角竖线、无空格的早期 codex 形态。 */
+const DSML_LEAK_SINGLE_BAR =
+  '<\uFF5CDSML\uFF5Ctool_calls>\n<\uFF5CDSML\uFF5Cinvoke name="exec">\n<\uFF5CDSML\uFF5Cparameter name="input" string="true">ls</\uFF5CDSML\uFF5Cparameter>\n</\uFF5CDSML\uFF5Cinvoke>\n</\uFF5CDSML\uFF5Ctool_calls>';
+
 function pushMessageStart(queue: ReturnType<typeof createAsyncQueue<AgentEvent>>, ctx: ReturnType<typeof createCtx>): void {
   translateSdkMessage(
     {
@@ -192,6 +210,38 @@ describe('detectLeakedToolCallMarkup (#2518, narrowed)', () => {
     expect(detectLeakedToolCallMarkup(tabbed)).toEqual({ category: 'invoke-with-parameter' });
   });
 
+  // #5304: DSML 分隔符泄漏(DeepSeek 原生工具调用标记经中转直出为正文)。
+  it.each([
+    ['single parameter, double fullwidth bar', DSML_LEAK_SINGLE_PARAM],
+    ['leading prose before the block', DSML_LEAK_WITH_PROSE],
+    ['multiple parameters', DSML_LEAK_MULTI_PARAM],
+    ['single fullwidth bar without spaces (codex form)', DSML_LEAK_SINGLE_BAR],
+  ])('hits on a leaked DSML invoke block: %s (#5304)', (_label, text) => {
+    expect(detectLeakedToolCallMarkup(text)).toEqual({ category: 'dsml-invoke-with-parameter' });
+  });
+
+  it('hits on a DSML closing-tag tail when the block was split across messages (#5304 sample 4)', () => {
+    expect(detectLeakedToolCallMarkup(DSML_LEAK_CLOSING_TAIL)).toEqual({ category: 'dsml-closing-tail' });
+  });
+
+  it('does not hit on prose that merely mentions DSML or fullwidth bars', () => {
+    expect(
+      detectLeakedToolCallMarkup(
+        'DeepSeek 的 DSML 标记形如 ｜DSML｜,中转层应把它转换成结构化 tool_use;这里只是讨论,没有调用块。',
+      ),
+    ).toBeNull();
+  });
+
+  it('does not hit on a lone DSML invoke opener without a parameter opener after it', () => {
+    expect(detectLeakedToolCallMarkup(`<${B}DSML${B} invoke name="Bash">\n然后就没有下文了,这只是一句解释。`)).toBeNull();
+  });
+
+  it('does not hit on ASCII-pipe lookalikes (not the observed wire bytes)', () => {
+    expect(
+      detectLeakedToolCallMarkup('<||DSML|| invoke name="Bash">\n<||DSML|| parameter name="command" string="true">ls</||DSML|| parameter>'),
+    ).toBeNull();
+  });
+
   it('does not hit on very short text', () => {
     expect(detectLeakedToolCallMarkup('invoke n')).toBeNull();
   });
@@ -226,6 +276,30 @@ describe('Claude Code translator leaked tool markup guard (#2518)', () => {
     );
     expect(warn).toBeDefined();
     expect(JSON.stringify(warn?.[1])).not.toContain('parameter name=');
+  });
+
+  it('emits the same terminal error for a leaked DSML block (#5304)', async () => {
+    const tracker = new UsageTracker();
+    const queue = createAsyncQueue<AgentEvent>();
+    const ctx = createCtx(tracker);
+
+    pushMessageStart(queue, ctx);
+    translateSdkMessage(
+      { type: 'assistant', message: { content: [{ type: 'text', text: DSML_LEAK_WITH_PROSE }] } },
+      queue,
+      ctx,
+    );
+    pushResult(queue, ctx);
+
+    const events = await drain(queue);
+    const err = events.find((e) => e.type === 'error');
+    expect(err?.data).toMatchObject({ reason: 'malformed-tool-markup', isTerminal: true });
+    expect(events.some((e) => e.type === 'done')).toBe(true);
+    const warn = (ctx.log.warn as ReturnType<typeof vi.fn>).mock.calls.find(([m]) =>
+      String(m).includes('leaked malformed tool-call markup'),
+    );
+    expect(warn?.[1]).toMatchObject({ category: 'dsml-invoke-with-parameter' });
+    expect(JSON.stringify(warn?.[1])).not.toContain('DSML');
   });
 
   it('aggregates streaming text deltas for detection', async () => {

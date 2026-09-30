@@ -1,5 +1,5 @@
 /**
- * 泄漏工具调用标记检测(#2518 类 B)—— 临时兜底,收窄版。
+ * 泄漏工具调用标记检测(#2518 类 B;#5304 DSML 分隔符)—— 临时兜底,收窄版。
  *
  * 类 B 实测特征:模型偶发把工具调用块写坏,invoke 开标记丢失前导 `<`
  * (SDK 解析器因此从未进入工具调用状态),损坏的标记连同参数正文以**行首
@@ -43,9 +43,28 @@ const BARE_INVOKE_LINE_RE = /^invoke[ \t]+name="[^"\n]{1,128}"[ \t]*>/m;
 /** 行首 parameter 开标记(实测前导 `<` 保留或缺失均有,两种都认)。 */
 const PARAMETER_LINE_RE = /^<?parameter[ \t]+name="[^"\n]{1,128}"[ \t]*>/m;
 
+/**
+ * DSML 分隔符泄漏(#5304):DeepSeek 系模型的原生工具调用标记经自定义中转直出为
+ * 正文。实测两种字节形态 —— 双全角竖线 `<｜｜DSML｜｜ invoke …>`(`DSML` 与标签名
+ * 之间一个空格,claude-code / codex 正文)与单全角竖线无空格 `<｜DSML｜invoke …>`
+ * (早期 codex),竖线一律是 U+FF5C,ASCII `|` 不是观测到的线上字节、不认。
+ * 该前缀本身就是协议签名,不会出现在普通中英文正文里,因此不要求行首;仍要求
+ * 「invoke 开标记 + 其后的 parameter 开标记」成对,与类 B 同构。
+ */
+const DSML_OPEN = '<\uFF5C{1,2}DSML\uFF5C{1,2}[ \t]?';
+const DSML_CLOSE = '</\uFF5C{1,2}DSML\uFF5C{1,2}[ \t]?';
+const DSML_INVOKE_RE = new RegExp(`${DSML_OPEN}invoke[ \t]+name="[^"\n]{1,128}"[^\n>]{0,256}>`);
+const DSML_PARAMETER_RE = new RegExp(`${DSML_OPEN}parameter[ \t]+name="[^"\n]{1,128}"[^\n>]{0,256}>`);
+/**
+ * 泄漏块可能被拆到多条消息(#5304 样本 4):本条正文只剩 `</…DSML… parameter>` 与
+ * 其后的 `</…DSML… invoke>`。闭标记同样是协议签名,成对出现即命中。
+ */
+const DSML_PARAMETER_CLOSE_RE = new RegExp(`${DSML_CLOSE}parameter>`);
+const DSML_INVOKE_CLOSE_RE = new RegExp(`${DSML_CLOSE}invoke>`);
+
 export interface LeakedToolMarkupHit {
-  /** 命中类别,进结构化日志用;当前只有一类。 */
-  category: 'invoke-with-parameter';
+  /** 命中类别,进结构化日志用。 */
+  category: 'invoke-with-parameter' | 'dsml-invoke-with-parameter' | 'dsml-closing-tail';
 }
 
 /**
@@ -55,7 +74,19 @@ export interface LeakedToolMarkupHit {
 export function detectLeakedToolCallMarkup(rawText: string): LeakedToolMarkupHit | null {
   if (!rawText || rawText.length < 16) return null;
   const invoke = BARE_INVOKE_LINE_RE.exec(rawText);
-  if (!invoke) return null;
-  if (!PARAMETER_LINE_RE.test(rawText.slice(invoke.index + invoke[0].length))) return null;
-  return { category: 'invoke-with-parameter' };
+  if (invoke && PARAMETER_LINE_RE.test(rawText.slice(invoke.index + invoke[0].length))) {
+    return { category: 'invoke-with-parameter' };
+  }
+  const dsmlInvoke = DSML_INVOKE_RE.exec(rawText);
+  if (dsmlInvoke && DSML_PARAMETER_RE.test(rawText.slice(dsmlInvoke.index + dsmlInvoke[0].length))) {
+    return { category: 'dsml-invoke-with-parameter' };
+  }
+  const dsmlParameterClose = DSML_PARAMETER_CLOSE_RE.exec(rawText);
+  if (
+    dsmlParameterClose &&
+    DSML_INVOKE_CLOSE_RE.test(rawText.slice(dsmlParameterClose.index + dsmlParameterClose[0].length))
+  ) {
+    return { category: 'dsml-closing-tail' };
+  }
+  return null;
 }
