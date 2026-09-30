@@ -3003,8 +3003,10 @@ export class MakerScheduleRunner implements ScheduleRunner {
     const sessionId = initialSession.id;
     let assistantText = '';
     let finalTextMatchesStream = false;
-    // A non-empty authoritative full text is already a sealed transcript row.
-    // Deltas that follow it start a new message instead of extending it.
+    // A non-empty full-text snapshot (`isFullText`, e.g. a completed Codex or
+    // Pi item) is already a sealed transcript row; deltas that follow it start a
+    // new message. A block final without `isFullText` (claude-code) may still
+    // be extended by the same message's fallback tail, so it stays unsealed.
     let assistantTextSealed = false;
     let stopped = false;
     let stopListeningTurn: (() => void) | undefined;
@@ -3121,7 +3123,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
             if (data.text.trim()) finalTextMatchesStream = true;
             if (data.isFinal) {
               assistantText = data.text;
-              assistantTextSealed = true;
+              assistantTextSealed = data.isFullText === true;
             } else {
               if (assistantTextSealed) assistantText = '';
               assistantTextSealed = false;

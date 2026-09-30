@@ -338,6 +338,21 @@ describe('MakerScheduleRunner silent-run notification skip', () => {
     expect(assistantRows()).toHaveLength(0);
   });
 
+  it('keeps a Claude Code fallback tail in the same message after a block final (#5282 review)', async () => {
+    // claude-code emits each text block as isFinal without isFullText, then
+    // handleResult pushes the UI-missed tail as a delta of the same message and
+    // done carries the whole assistant text. The tail must extend the block.
+    const h = createSessionHarness(acceptingSend());
+    const { runner } = createRunnerHarness(h.session, { silenced: true });
+    const pending = runner.fire(baseSchedule({ silentWhenIdle: true }), createFireContext());
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalled());
+    h.emit({ type: 'text', source: 'claude-code', data: { text: 'The PR looks', isFinal: true } });
+    h.emit({ type: 'text', source: 'claude-code', data: { text: ' fine.', isFinal: false } });
+    h.emit({ type: 'done', data: { result: 'The PR looks fine.' } });
+    await expect(pending).resolves.toMatchObject({ resultText: 'The PR looks fine.' });
+    expect(assistantRows()).toHaveLength(0);
+  });
+
   it('still writes the canonical answer when the stream after an empty final was retracted again (#5277)', async () => {
     const h = createSessionHarness(acceptingSend());
     const { runner } = createRunnerHarness(h.session, { silenced: true });
