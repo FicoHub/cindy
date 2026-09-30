@@ -252,7 +252,12 @@ export function recordSessionClaudeTurnUsage(
         const { turnMoney, estimatedTurnMoney, perModel } = resolveClaudeTurnCostSinks(
           deltas,
           pricing,
-          { providerId: sessionProviderForBilling, billingRoute, region: CURRENT_CINDY_REGION },
+          {
+            providerId: sessionProviderForBilling,
+            billingRoute,
+            region: CURRENT_CINDY_REGION,
+            accessKind: turnContext.accessKind,
+          },
           claudeUsageSegments,
           claudeUsageSegmentsComplete,
         );
@@ -297,6 +302,7 @@ export function recordSessionClaudeTurnUsage(
                 : null;
           modelUsageWrites.push(
             recordModelTurnUsage({
+              sessionId: session.id,
               agentKind: 'claude-code',
               model:
                 isSubscriptionValueRow
@@ -447,7 +453,7 @@ export function recordSessionClaudeTurnUsage(
         // A cumulative SDK dollar value is authoritative only for an
         // explicitly selected provider API. Remote/unknown routing cannot
         // be attributed to this local account and must stay usage-only.
-        if (route !== 'provider-api') {
+        if (route !== 'provider-api' || turnContext.accessKind === 'managed') {
           await recordUsageOnly();
           return;
         }

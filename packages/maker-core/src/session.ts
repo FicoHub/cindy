@@ -52,6 +52,7 @@ import type { ContextUsageData } from './types/context-usage.js';
 import type { PiRuntimeCapabilityManifest } from './types/pi-runtime-capabilities.js';
 import type {
   AgentSessionHandle,
+  PiModelSwitchPreview,
   AgentSessionTeardownOptions,
   BackgroundTaskSnapshot,
   SendOptions,
@@ -1597,6 +1598,11 @@ export class Session {
     return this.handle.model;
   }
 
+  /** Codex-only: 当前会话实际绑定的本地 host 身份。 */
+  get codexHostKey(): string | undefined {
+    return this.handle.codexHostKey;
+  }
+
   /** Codex-only: 当前会话绑定的 app-server host 是否经 loopback proxy 出口。 */
   get codexProxyActive(): boolean | undefined {
     return this.handle.codexProxyActive;
@@ -1715,6 +1721,13 @@ export class Session {
       throw new NotSupportedError('switchModel', { supported: false, reason: 'not-implemented' });
     }
     await this.handle.setModel(model, opts);
+  }
+
+  async previewModelSwitch(
+    model: string,
+    opts?: { providerId?: string | null },
+  ): Promise<PiModelSwitchPreview | undefined> {
+    return this.handle.previewModelSwitch?.(model, opts);
   }
 
   async requiresModelSwitchRebuild(
@@ -2159,8 +2172,8 @@ export class Session {
       toolLoopGuard: this.agentKind === 'claude-code' ? null : new ToolLoopGuard({
         // These normalized events do not identify model-response batches.
         // Distinct malformed calls can belong to one parallel attempt, so do
-        // not enable the retry-count rule without that evidence. Claude keeps
-        // its existing batch-aware contract rule; repetition rules stay active.
+        // not enable the retry-count rule without that evidence. Claude also
+        // disables category-only retries; repetition rules stay active.
         contractConsecutiveLimit: Number.POSITIVE_INFINITY,
       }),
       pendingToolLoop: null,
