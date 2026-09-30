@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -58,6 +58,34 @@ describe('quota widget native integration', () => {
 
   it('keeps native palettes and five languages generated from the Mobile sources', () => {
     execFileSync(process.execPath, [resolve('../../scripts/generate-quota-widget-resources.mjs'), '--check'], { encoding: 'utf8' });
+  });
+
+  it('preserves generated resource bytes when Git checks out with Windows autocrlf', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cindy-quota-checkout-test-'));
+    try {
+      const repository = join(directory, 'repository');
+      const checkout = join(directory, 'checkout');
+      mkdirSync(repository); mkdirSync(checkout);
+      cpSync(resolve('../../.gitattributes'), join(repository, '.gitattributes'));
+      const native = 'apps/mobile/modules/cindy-quota-widget';
+      const res = `${native}/android/src/main/res`;
+      const paths = [`${native}/widget/QuotaWidgetResources.swift`, ...readdirSync(resolve('../..', res), { recursive: true, encoding: 'utf8' })
+        .filter(file => file.endsWith('.xml') && readFileSync(resolve('../..', res, file), 'utf8').includes('Generated from Mobile tokens'))
+        .map(file => `${res}/${file}`)];
+      expect(paths.length).toBeGreaterThan(1);
+      for (const path of paths) {
+        mkdirSync(dirname(join(repository, path)), { recursive: true });
+        cpSync(resolve('../..', path), join(repository, path));
+      }
+      // A non-generated control must become CRLF, proving this exercises actual Git conversion.
+      writeFileSync(join(repository, 'newline-control.txt'), 'control\n');
+      const git = (...args: string[]) => execFileSync('git', ['-c', 'core.autocrlf=true', '-C', repository, ...args], { encoding: 'utf8', stdio: 'pipe' });
+      git('init', '--quiet');
+      git('add', '.');
+      git('checkout-index', '--all', `--prefix=${checkout.replaceAll('\\', '/')}/`);
+      expect(readFileSync(join(checkout, 'newline-control.txt'), 'utf8')).toBe('control\r\n');
+      for (const path of paths) expect(readFileSync(join(checkout, path))).toEqual(readFileSync(resolve('../..', path)));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
   it.each(['ios', 'android'])('includes separate WidgetKit source changes in the %s native fingerprint', async platform => {

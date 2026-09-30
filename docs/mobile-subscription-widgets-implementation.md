@@ -1,8 +1,16 @@
 # 订阅额度小组件：实现与验收记录
 
-更新：2026-09-30。任务分支 `cindy/sweet-bohr`，审计主干 `f7f265ef2e4316d37a7ce6d4e03006a826e397e4`。
+更新：2026-09-30。任务分支 `cindy/sweet-bohr`；初始审计主干 `f7f265ef2e4316d37a7ce6d4e03006a826e397e4`，本轮已合入主干 `04e22d1ed86d59bc40feb9558f6647d6e901c39b`。
 
 **实现已进入原生构建阶段，尚未完成设备运行验收；不可据此宣称已发布或已完成多机型适配。** 原 Claude 确认稿与全部历史设计保留。本 PR 不包含先前未获授权的模拟器宿主补丁。
+
+## 主干同步与 Windows 回归
+
+已保留新版主干设置页结构、设备名/语音词典子路由与台账人工记录，只补回小组件入口和登记。历史宿主补丁在合并前后字节一致，不进入PR。
+
+上一提交 `eba687b0a` 的Linux两片、verify、Windows第一片、Git集成和DCO均通过；Windows第二片失败确为本PR生成资源未约束checkout换行。Swift/XML在Windows `core.autocrlf=true` 下转成CRLF，严格生成器检查因此报陈旧。现在只为这些生成文件固定LF，没有放宽字节比较。新增隔离Git仓库回归先复现失败，再验证修复；普通对照文件仍转成CRLF，证明实际覆盖Git转换而非字符串模拟。
+
+本轮额度/通道/排版定向99项、设置页13项、台账52项、Mobile scope与Mobile/Desktop类型检查通过；新增native插件组9项通过。未重跑无变化的Mobile全量7745项；该结果明确属于此前提交。推送后的远端CI以PR最新head为准，不轮询等待无变化结果。
 
 ## 基础审计与实现边界
 
@@ -85,7 +93,7 @@ Mobile43项、Desktop47项（含主动刷新、代理headers与远端owner隔离
 
 ## 冷更对比（同机同版本工具）
 
-使用 @expo/fingerprint 0.20.13，base为上述主干归档，依赖复用同一已安装版本。它不是发版runtime hash；以CI合并结果复核和发布工具为最终依据。
+使用 @expo/fingerprint 0.20.13，base为初次审计 `f7f265ef2` 的主干归档（同步 `04e22d1ed` 前），依赖复用同一已安装版本。它不是发版runtime hash；以CI合并结果复核和发布工具为最终依据。
 
 | 平台 | base | current |
 |---|---|---|
@@ -94,4 +102,6 @@ Mobile43项、Desktop47项（含主动刷新、代理headers与远端owner隔离
 
 两个平台均改变指纹。生产App Group能力与extension签名配置仍需发布负责人配置，本轮只做simulator构建，没有变更生产签名。清空缓存会请求所有widget kinds重绘，实际桌面更新时机仍由系统调度，不能承诺像素即时消失。
 
-最终增量构建退出0，完整宿主 `PlugIns/CindySubscriptionWidget.appex` 内含 Assets.car 与品牌许可；扩展为arm64+x86_64。实际Expo Updates指纹与源码相同：`0187def06e5fa66e6860c7fea4b424d9b39782a3`。脱敏的[产物核验](assets/subscription-widget-implementation/build-verification.json)单独保存；这仍不是安装或运行证据。
+同步主干 `04e22d1ed` 后再次执行完整 build-only 构建，退出0，完整宿主 `PlugIns/CindySubscriptionWidget.appex` 内含 Assets.car 与品牌许可；扩展为arm64+x86_64。实际Expo Updates指纹与源码相同：`a5bfec699baf76c0a48cf66d9cbc8e7b546061ff`。脱敏的[产物核验](assets/subscription-widget-implementation/build-verification.json)单独保存；这仍不是安装或运行证据。
+
+本轮构建日志包含 Expo 依赖的“exit code 0 but produced no further output”诊断；最终 xcodebuild/build-only 均正常退出0，宿主与扩展存在，并独立复核原生指纹一致。保留该日志事实，不把构建成功扩展为设备运行通过。
