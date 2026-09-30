@@ -3003,7 +3003,9 @@ export class MakerScheduleRunner implements ScheduleRunner {
     const sessionId = initialSession.id;
     let assistantText = '';
     let finalTextMatchesStream = false;
-    let lastTextWasCodexCommentary = false;
+    // A non-empty authoritative full text is already a sealed transcript row.
+    // Deltas that follow it start a new message instead of extending it.
+    let assistantTextSealed = false;
     let stopped = false;
     let stopListeningTurn: (() => void) | undefined;
     const turnFinished = new Promise<void>((resolve, reject) => {
@@ -3107,19 +3109,24 @@ export class MakerScheduleRunner implements ScheduleRunner {
             text?: string; isFinal?: boolean; isFullText?: boolean; phase?: string;
           } | null;
           if (data && typeof data.text === 'string') {
-            // Only Codex's separate empty answer after completed commentary
-            // leaves that commentary intact. Empty replacements after deltas
-            // must still retract the partial result, matching the transcript.
-            const emptyCodexAnswer = lastTextWasCodexCommentary
-              && ev.source === 'codex' && data.phase === 'final_answer'
-              && data.isFinal === true && data.isFullText === true && !data.text.trim();
-            lastTextWasCodexCommentary = ev.source === 'codex'
-              && data.phase === 'commentary' && data.isFinal === true
-              && data.isFullText === true && !!data.text.trim();
-            if (emptyCodexAnswer) return;
+            if (data.isFinal && !data.text.trim()) {
+              // An empty authoritative final only retracts a partial that is
+              // still streaming, matching the transcript. A sealed full text
+              // (Codex commentary before its empty answer item, an empty item
+              // without phase, or a repeated empty item) is never replayed,
+              // regardless of the event shape that carried it (#5220, #5277).
+              if (!assistantTextSealed) assistantText = '';
+              return;
+            }
             if (data.text.trim()) finalTextMatchesStream = true;
-            if (data.isFinal) assistantText = data.text;
-            else assistantText += data.text;
+            if (data.isFinal) {
+              assistantText = data.text;
+              assistantTextSealed = true;
+            } else {
+              if (assistantTextSealed) assistantText = '';
+              assistantTextSealed = false;
+              assistantText += data.text;
+            }
           }
           return;
         }
