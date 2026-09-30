@@ -324,6 +324,21 @@ describe('MakerScheduleRunner silent-run notification skip', () => {
     expect(assistantRows()).toHaveLength(0);
   });
 
+  it('does not replay commentary when an empty commentary precedes the empty final answer (#5277 real-device shape)', async () => {
+    // Real rollout: 「我先看一下。」→ `<|eos|>` → `:codex-file-citation{}`; the last two
+    // are cleaned to empty text and done falls back to the first item.
+    const h = createSessionHarness(acceptingSend());
+    const { runner } = createRunnerHarness(h.session, { silenced: true });
+    const pending = runner.fire(baseSchedule({ silentWhenIdle: true }), createFireContext());
+    await vi.waitFor(() => expect(mocks.createMessage).toHaveBeenCalled());
+    h.emit({ type: 'text', source: 'codex', data: commentary });
+    h.emit({ type: 'text', source: 'codex', data: { text: '', isFinal: true, isFullText: true, phase: 'commentary' } });
+    h.emit({ type: 'text', source: 'codex', data: { text: '', isFinal: true, isFullText: true, phase: 'final_answer' } });
+    h.emit({ type: 'done', data: { result: 'Checking the PR.' } });
+    await expect(pending).resolves.toMatchObject({ resultText: 'Checking the PR.' });
+    expect(assistantRows()).toHaveLength(0);
+  });
+
   it('does not replay a streamed answer that follows an empty final when done carries the canonical text (#5277 B2)', async () => {
     const h = createSessionHarness(acceptingSend());
     const { runner } = createRunnerHarness(h.session, { silenced: true });
