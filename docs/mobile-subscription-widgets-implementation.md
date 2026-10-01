@@ -1,6 +1,6 @@
 # 订阅额度小组件：实现与验收记录
 
-更新：2026-09-30。任务分支 `cindy/sweet-bohr`；初始审计主干 `f7f265ef2e4316d37a7ce6d4e03006a826e397e4`，本轮已合入主干 `04e22d1ed86d59bc40feb9558f6647d6e901c39b`。
+更新：2026-10-01。任务分支 `cindy/sweet-bohr`；初始审计主干 `f7f265ef2e4316d37a7ce6d4e03006a826e397e4`，本轮已合入主干 `36420c470`。
 
 **实现已进入原生构建阶段，尚未完成设备运行验收；不可据此宣称已发布或已完成多机型适配。** 原 Claude 确认稿与全部历史设计保留。本 PR 不包含先前未获授权的模拟器宿主补丁。
 
@@ -10,7 +10,7 @@
 
 上一提交 `eba687b0a` 的Linux两片、verify、Windows第一片、Git集成和DCO均通过；Windows第二片失败确为本PR生成资源未约束checkout换行。Swift/XML在Windows `core.autocrlf=true` 下转成CRLF，严格生成器检查因此报陈旧。现在只为这些生成文件固定LF，没有放宽字节比较。新增隔离Git仓库回归先复现失败，再验证修复；普通对照文件仍转成CRLF，证明实际覆盖Git转换而非字符串模拟。
 
-本轮额度/通道/排版定向99项、设置页13项、台账52项、Mobile scope与Mobile/Desktop类型检查通过；新增native插件组9项通过。未重跑无变化的Mobile全量7745项；该结果明确属于此前提交。推送后的远端CI以PR最新head为准，不轮询等待无变化结果。
+9月30日额度/通道/排版定向99项、设置页13项、台账52项、Mobile scope与Mobile/Desktop类型检查通过；新增native插件组9项通过。未重跑无变化的Mobile全量7745项；该结果明确属于此前提交。推送后的远端CI以PR最新head为准，不轮询等待无变化结果。
 
 ## 基础审计与实现边界
 
@@ -102,6 +102,19 @@ Mobile43项、Desktop47项（含主动刷新、代理headers与远端owner隔离
 
 两个平台均改变指纹。生产App Group能力与extension签名配置仍需发布负责人配置，本轮只做simulator构建，没有变更生产签名。清空缓存会请求所有widget kinds重绘，实际桌面更新时机仍由系统调度，不能承诺像素即时消失。
 
-同步主干 `04e22d1ed` 后再次执行完整 build-only 构建，退出0，完整宿主 `PlugIns/CindySubscriptionWidget.appex` 内含 Assets.car 与品牌许可；扩展为arm64+x86_64。实际Expo Updates指纹与源码相同：`a5bfec699baf76c0a48cf66d9cbc8e7b546061ff`。脱敏的[产物核验](assets/subscription-widget-implementation/build-verification.json)单独保存；这仍不是安装或运行证据。
+同步主干 `36420c470` 后再次执行完整 build-only 构建，退出0，完整宿主 `PlugIns/CindySubscriptionWidget.appex` 内含 Assets.car 与品牌许可；扩展为arm64+x86_64。实际Expo Updates指纹与源码相同：`bcbe9e93116730163e1a0cb58e9101a3c4993a50`。脱敏的[产物核验](assets/subscription-widget-implementation/build-verification.json)单独保存；这仍不是安装或运行证据。
 
-本轮构建日志包含 Expo 依赖的“exit code 0 but produced no further output”诊断；最终 xcodebuild/build-only 均正常退出0，宿主与扩展存在，并独立复核原生指纹一致。保留该日志事实，不把构建成功扩展为设备运行通过。
+9月30日构建日志包含 Expo 依赖的“exit code 0 but produced no further output”诊断；最终 xcodebuild/build-only 均正常退出0，宿主与扩展存在，并独立复核原生指纹一致。保留该日志事实，不把构建成功扩展为设备运行通过。
+
+## 2026-10-01 续办核验
+
+- 上一head `9294dc121` 的远端CI已全部完成：verify、Linux两片、Windows两片与汇总、Desktop Git integration、DCO均通过；此前CRLF问题已获Windows真实runner验证。无review或inline评论，设计依据检查因draft跳过。
+- 主干随后推进至 `36420c470`，本轮同步并解决生成设计台账冲突；保留全部人工决策及订阅入口，旧宿主补丁未stage/改写。新主干增加通知扩展，需验证与WidgetKit target共存。
+- 本轮104项额度/通道/设置回归、52项台账测试、Mobile/Desktop类型检查、Mobile scope与生成资源检查通过；没有重跑无变化的整仓单测。
+- 正式只读 `check_environment` / `doctor`：Xcode27.0、iOS27.0；18Pro/18ProMax/Air均Shutdown，当前没有运行实例，Duo runtime未安装。Baguette实时查询返回 `GHOST_NOT_FOUND`，此前安装拒绝 `MUTATION_CANCELLED` 未被重新授权，未重试安装。
+- Doctor的 `recommendedActions: start_instance` 仅是生命周期建议，不是设备控制许可。该只读接口未返回grant状态，不能据此认定历史 `DEVICE_CONTROL_NOT_GRANTED` 已解除；本轮不重复调用start/install。
+- 所需最小本人操作：在本任务右侧「iOS模拟器」选择Air或18Pro，使用界面的启动按钮；设备ready后点击「允许Agent控制」并确认正式对话框。入口源码的按钮当前只在ready显示，因此停机时需要用户先手动启动，不能用历史未提交宿主补丁或shell绕过。授权后还需真实SpringBoard添加/截图、退出清空、日夜与多尺寸验收。
+
+本节只读权限结论不等同本轮收到新的拒绝；历史工具返回的原始错误码是 `DEVICE_CONTROL_NOT_GRANTED`；代码解释为该设备尚未获准Agent控制或已拒绝控制（本轮未重新触发来区分这两种状态）。仍无设备运行证据，PR保持草稿。
+
+10月1日完整build-only再次退出0，App同时包含 `CindyNotificationService.appex` 与 `CindySubscriptionWidget.appex`；实际品牌资源/许可、AppGroup元数据、arm64+x86_64产物及上述指纹已读回核验。未安装到模拟器。

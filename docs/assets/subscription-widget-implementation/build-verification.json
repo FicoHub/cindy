@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-09-30T11:06:31.955882+00:00",
+  "checkedAt": "2026-10-01T03:23:14.043353+00:00",
   "build": "Xcode 27.0 27A266a / iOS 27.0 simulator SDK",
   "hostBundleId": "com.xd.cindy",
   "extensionBundleId": "com.xd.cindy.quota-widget",
@@ -9,22 +9,19 @@
   "nativeIdentity": {
     "healthy": true,
     "code": "native-matched",
-    "installedFingerprint": "a5bfec699baf76c0a48cf66d9cbc8e7b546061ff",
-    "expectedFingerprint": "a5bfec699baf76c0a48cf66d9cbc8e7b546061ff"
+    "installedFingerprint": "bcbe9e93116730163e1a0cb58e9101a3c4993a50",
+    "expectedFingerprint": "bcbe9e93116730163e1a0cb58e9101a3c4993a50"
   },
   "runtimeTested": false,
   "Baguette": "installation declined; not used",
   "tests": {
     "postMerge": {
-      "widgetTransportTypography": 99,
-      "settings": 13,
+      "widgetTransportSettings": 104,
       "designInventory": 52,
-      "autocrlfRegression": "red before LF attributes / native plugin group 9 passed after fix",
       "mobileTypecheck": "pass",
       "desktopTypecheck": "pass",
       "generatedResources": "pass",
-      "mobileScope": "pass",
-      "i18nKeysAndGlossary": "pass"
+      "mobileScope": "pass"
     },
     "preMerge": {
       "head": "eba687b0ae6f476248c10b14feae6b63e539003b",
@@ -36,7 +33,17 @@
       "sharedTypecheck": "8 identical errors reproduced on archived main f7f265ef2"
     }
   },
-  "mergedMain": "04e22d1ed86d59bc40feb9558f6647d6e901c39b",
+  "mergedMain": "36420c470f275af57103b2da7b03dd5e144333e3",
   "buildCommand": "pnpm mobile:sim:rebuild -- --build-only --force-build",
-  "buildExitCode": 0
+  "buildExitCode": 0,
+  "embeddedExtensions": [
+    "CindyNotificationService.appex",
+    "CindySubscriptionWidget.appex",
+    "expo-sharing-extension.appex"
+  ],
+  "previousHeadCI": {
+    "head": "9294dc12184ee1d49f8912133bc0319becf1b3fc",
+    "run": "https://github.com/makecindy/cindy/actions/runs/36706539834",
+    "conclusion": "all executed checks passed; design-basis skipped for draft"
+  }
 }
