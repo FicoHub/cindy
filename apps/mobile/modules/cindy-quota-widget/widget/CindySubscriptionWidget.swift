@@ -160,7 +160,11 @@ struct QuotaWidgetView: View {
       }
     }
     .overlay(alignment: .bottomTrailing) {
-      if entry.snapshot.source == "demo" { Text("Demo").font(.system(size: 10)).foregroundStyle(QuotaWidgetResources.color("widgetSecondary", dark: dark)).padding(4) }
+      if entry.snapshot.source == "demo" {
+        Text("Demo").font(.system(size: 10))
+          .foregroundStyle(QuotaWidgetResources.color("widgetSecondary", dark: dark))
+          .padding(.trailing, QuotaLayout.inset).padding(.bottom, 8)
+      }
     }
     .widgetURL(URL(string: (Bundle.main.object(forInfoDictionaryKey: "CindyQuotaScheme") as? String ?? "cindy") + "://subscription-widgets"))
     .privacySensitive()

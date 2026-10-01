@@ -2,7 +2,7 @@
 
 更新：2026-10-01。任务分支 `cindy/sweet-bohr`；初始审计主干 `f7f265ef2e4316d37a7ce6d4e03006a826e397e4`，本轮已合入主干 `36420c470`。
 
-**实现已进入原生构建阶段，尚未完成设备运行验收；不可据此宣称已发布或已完成多机型适配。** 原 Claude 确认稿与全部历史设计保留。本 PR 不包含先前未获授权的模拟器宿主补丁。
+**Air与18Pro已完成部分真实WidgetKit运行验证；真实账号端到端、字体缩放等仍未完成，不能宣称已发布或全面适配。** 原 Claude 确认稿与全部历史设计保留。本 PR 不包含先前未获授权的模拟器宿主补丁。
 
 ## 主干同步与 Windows 回归
 
@@ -20,7 +20,7 @@
 | Claude 时间 | 聚合 updatedAt；增量事件可能只更新一个窗口 | 逐窗口 observedAt；保留未更新窗口原时间；旧 mixed cache 未知时间不补 now | 3 个新增时间测试 + 10 个现有主动读取测试 |
 | 手机投影 | 通道及连接生命周期 | 最多每供应商一个已连接账号；返回后再次核对选择；v2 脱敏 schema；计划严格白名单；最多16个实际窗口 | Mobile 定向测试43项，类型检查通过 |
 | 本地并发 | 身份 generation 与设备撤权事件 | epoch 隔离、同代查询合并、串行缓存写入；退出/换账号/换电脑先清原生快照；撤权恢复隔离 | 11个 controller 测试包含迟到响应与撤权恢复 |
-| iOS 原生 | Expo 原生工程 | App Group + 原子文件；3个独立 small + 1个 medium（前两家）；所有 kinds 同步 reload | WidgetKit扩展和完整宿主构建；SpringBoard待授权验证 |
+| iOS 原生 | Expo 原生工程 | App Group + 原子文件；3个独立 small + 1个 medium（前两家）；所有 kinds 同步 reload | WidgetKit扩展和完整宿主构建；Air/18Pro的SpringBoard分层验证，真实账号链路待验 |
 | Android | Expo 原生工程 | 同一v2契约、AtomicFile无备份缓存、原生AppWidget文本布局和点击入口 | 尚未SDK编译/运行；不是iOS圆环设计的视觉验收 |
 
 不跨仓修改服务端，不新增后台音频、轮询服务或后台权限。手机需已登录 Cindy 并选择已配对电脑；供应商认证仍留在电脑。
@@ -68,17 +68,17 @@ Mobile43项、Desktop47项（含主动刷新、代理headers与远端owner隔离
 
 共享包无typecheck脚本，另跑 `pnpm --filter @cindy/maker-shared build`：8条类型错误（brandIdentity测试2、composerPalette测试3、historyView测试1、workRunGrouping2）；在同一主干git archive副本复现相同8条，未扩大本PR修复范围。完整全仓测试交CI，不能把上述定向结果称为全仓通过。
 
-构建环境：Xcode27.0 build27A266a / iOS27.0 SDK，CocoaPods1.17.0 / Homebrew Ruby4.0.6。系统Ruby2.6缺SDK头导致失败，改用受支持工具链，未修补系统Ruby/SDK。初次生成工程PBXGroup.path为undefined已修正为`.`；之后真实扩展arm64+x86_64构建成功。完整App以generic simulator destination构建，未安装到设备、未启动Metro、无运行期__DEV__ label证据。
+构建环境：Xcode27.0 build27A266a / iOS27.0 SDK，CocoaPods1.17.0 / Homebrew Ruby4.0.6。系统Ruby2.6缺SDK头导致失败，改用受支持工具链，未修补系统Ruby/SDK。初次生成工程PBXGroup.path为undefined已修正为`.`；之后真实扩展arm64+x86_64构建成功。初期完整App以generic simulator destination构建；10月1日后续已通过正式Baguette安装到Air/18Pro并进入登录页，详见后文原生实测。
 
 ## 必须保留的未完成项
 
 | 项目 | 真实状态与下一步 |
 |---|---|
-| Baguette | 正式安装被拒：MUTATION_CANCELLED；未重试或另路下载。不能声称使用过Baguette。 |
-| 内嵌模拟器 | 正式Air start返回DEVICE_CONTROL_NOT_GRANTED。未绕过控制授权，未安装/启动/录屏。需正式授予控制后验收SpringBoard。 |
-| iPhone18Pro/Air | 本机iOS27.0设备可枚举但关机。待small/medium、日夜、点击、前后台、清除与账号切换真实运行截图。 |
+| Baguette | 用户自行安装后0.2.0正式可用，运行库errno13/code22已普通恢复；Air/18Pro正式操作成功，不再沿用历史安装阻断。 |
+| 内嵌模拟器 | 历史DEVICE_CONTROL_NOT_GRANTED未绕过；本轮只控制Baguette独立设备，没有改变内嵌grant。 |
+| iPhone18Pro/Air | 已有small/medium日夜及夹具状态的真实SpringBoard证据；真实源账号同步、切换/退出、网络恢复仍待验。 |
 | iPhone Duo | Apple已提供Xcode27.1beta开发支持，本机只有27.0，无对应runtime。未下载/代接受许可；不得写成“无SDK”。 |
-| 动态字体/机型尺寸 | 仅离屏158pt布局审查；系统字号、锁屏保护、WidgetKit布局和系统染色均待原生验收。 |
+| 动态字体/机型尺寸 | 已有420×912/402×874设备逻辑尺寸下WidgetKit检查；系统字号、锁屏保护和系统染色仍待原生验收。 |
 | Android | 任务JDK/Gradle可用；SDK许可尚未得到明确接受，未静默安装/接受。无APK/设备截图；UI当前为文本兼容层。 |
 | 真实供应商 | 没有调用收费模型或访问凭据；Claude/Codex/Grok的本轮端到端账号验证均未做。 |
 | 冷更/设计 | 新extension/AppGroup/native module不可由JS OTA实现；必须新的原生包，存量包只能显示不支持提示。合并前需指定把关人针对冷更和设计明确确认。保持草稿，不发布/合并。 |
@@ -102,19 +102,18 @@ Mobile43项、Desktop47项（含主动刷新、代理headers与远端owner隔离
 
 两个平台均改变指纹。生产App Group能力与extension签名配置仍需发布负责人配置，本轮只做simulator构建，没有变更生产签名。清空缓存会请求所有widget kinds重绘，实际桌面更新时机仍由系统调度，不能承诺像素即时消失。
 
-同步主干 `36420c470` 后再次执行完整 build-only 构建，退出0，完整宿主 `PlugIns/CindySubscriptionWidget.appex` 内含 Assets.car 与品牌许可；扩展为arm64+x86_64。实际Expo Updates指纹与源码相同：`bcbe9e93116730163e1a0cb58e9101a3c4993a50`。脱敏的[产物核验](assets/subscription-widget-implementation/build-verification.json)单独保存；这仍不是安装或运行证据。
+同步主干 `36420c470` 后再次执行完整 build-only 构建，退出0，完整宿主 `PlugIns/CindySubscriptionWidget.appex` 内含 Assets.car 与品牌许可；扩展为arm64+x86_64。实际Expo Updates指纹与源码相同：`bcbe9e93116730163e1a0cb58e9101a3c4993a50`。脱敏的[产物核验](assets/subscription-widget-implementation/build-verification.json)单独保存；该历史构建记录本身不是运行证据；后续运行另见原生实测。
 
 9月30日构建日志包含 Expo 依赖的“exit code 0 but produced no further output”诊断；最终 xcodebuild/build-only 均正常退出0，宿主与扩展存在，并独立复核原生指纹一致。保留该日志事实，不把构建成功扩展为设备运行通过。
 
-## 2026-10-01 续办核验
+## 2026-10-01 续办核验与原生实测
 
-- 上一head `9294dc121` 的远端CI已全部完成：verify、Linux两片、Windows两片与汇总、Desktop Git integration、DCO均通过；此前CRLF问题已获Windows真实runner验证。无review或inline评论，设计依据检查因draft跳过。
-- 主干随后推进至 `36420c470`，本轮同步并解决生成设计台账冲突；保留全部人工决策及订阅入口，旧宿主补丁未stage/改写。新主干增加通知扩展，需验证与WidgetKit target共存。
-- 本轮104项额度/通道/设置回归、52项台账测试、Mobile/Desktop类型检查、Mobile scope与生成资源检查通过；没有重跑无变化的整仓单测。
-- 正式只读 `check_environment` / `doctor`：Xcode27.0、iOS27.0；18Pro/18ProMax/Air均Shutdown，当前没有运行实例，Duo runtime未安装。Baguette实时查询返回 `GHOST_NOT_FOUND`，此前安装拒绝 `MUTATION_CANCELLED` 未被重新授权，未重试安装。
-- Doctor的 `recommendedActions: start_instance` 仅是生命周期建议，不是设备控制许可。该只读接口未返回grant状态，不能据此认定历史 `DEVICE_CONTROL_NOT_GRANTED` 已解除；本轮不重复调用start/install。
-- 所需最小本人操作：在本任务右侧「iOS模拟器」选择Air或18Pro，使用界面的启动按钮；设备ready后点击「允许Agent控制」并确认正式对话框。入口源码的按钮当前只在ready显示，因此停机时需要用户先手动启动，不能用历史未提交宿主补丁或shell绕过。授权后还需真实SpringBoard添加/截图、退出清空、日夜与多尺寸验收。
+主干36420c470合入后，104项额度/通道/设置回归、52项台账及Mobile/Desktop类型检查等通过；head1f0cab853的Linux/Windows全部分片、verify、Git integration、DCO已在12:08一次性读回通过。旧7745项本地Mobile全量属于旧head，不当作当前全量证据。
 
-本节只读权限结论不等同本轮收到新的拒绝；历史工具返回的原始错误码是 `DEVICE_CONTROL_NOT_GRANTED`；代码解释为该设备尚未获准Agent控制或已拒绝控制（本轮未重新触发来区分这两种状态）。仍无设备运行证据，PR保持草稿。
+Baguette安装现已就绪。查明旧用户CoreSimulatorService尝试加载不可穿越的私有Cryptex旧路径；确认无运行设备后，仅重启该精确空闲用户服务，正式create/boot/install成功。没有sudo、改权限、删设备、重装运行库或绕过Host授权。
 
-10月1日完整build-only再次退出0，App同时包含 `CindyNotificationService.appex` 与 `CindySubscriptionWidget.appex`；实际品牌资源/许可、AppGroup元数据、arm64+x86_64产物及上述指纹已读回核验。未安装到模拟器。
+Air与18Pro上已添加真实WidgetKit small/medium；完整Cindy均进入登录页。合成快照经本地原生夹具写入同AppGroup，验证最长、日夜、0/unknown/Outdated/Offline及部分弧长。原生Store.clear后独立卡和组合卡旧值消失，随后恢复完整Cindy。**这不替代真实账号同步或手机退出链路**。
+
+实测发现Demo角标被系统圆角裁切，现右16pt/底8pt，完整build-only、Mobile typecheck和Swift契约再次通过；最新匹配指纹a057ee5c92a92e41eddc29324da5ff8934bad5c8。新修复提交的CI须独立读取，不沿用1f0cab853。
+
+详细设备身份、操作边界、原始截图及剩余门槛：[运行库恢复与原生验收](assets/subscription-widget-native-evidence/运行库恢复与原生验收.md)。后续需要本人在测试设备的正式Cindy入口登录、连接既有电脑，方可进行Claude/Codex只读端到端；widget不另配供应商授权。Grok无账号、Android未编译、Duo缺27.1、冷更/设计把关的限制保留。PR继续draft。
