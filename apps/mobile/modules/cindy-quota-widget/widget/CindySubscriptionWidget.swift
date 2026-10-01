@@ -39,6 +39,7 @@ struct QuotaProviderView: View {
   let row: QuotaRow?
   let entry: QuotaEntry
   let dark: Bool
+  var medium: Bool = false
   private var name: String { ["claude": "Claude", "codex": "Codex", "xai": "Grok"][platform] ?? "Cindy" }
   private var secondary: Color { QuotaWidgetResources.color("widgetSecondary", dark: dark) }
   private var primary: Color { QuotaWidgetResources.color("widgetPrimary", dark: dark) }
@@ -99,6 +100,64 @@ struct QuotaProviderView: View {
       }.frame(width: 61, alignment: .leading)
     }.foregroundStyle(secondary).frame(width: 78, alignment: .leading)
   }
+  /// A hidden reference glyph gives even detail-only/empty rows the same 20pt baseline.
+  /// No scale factor, clipping or provider-specific row heights are used in medium.
+  private func mediumLine<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    ZStack(alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline)) {
+      Text("100%").font(.system(size: QuotaWidgetResources.mediumValueSize, weight: .medium))
+        .hidden().accessibilityHidden(true)
+      content()
+    }
+    .fixedSize(horizontal: true, vertical: false)
+    .frame(height: QuotaWidgetResources.mediumRowHeight, alignment: .leading)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+  }
+  private func mediumQuota(_ window: QuotaWindow, showLabel: Bool) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: QuotaWidgetResources.mediumInlineGap) {
+      Text(value(window)).font(.system(size: QuotaWidgetResources.mediumValueSize, weight: .medium))
+        .foregroundStyle(QuotaLayout.tint(platform == "claude" ? order(window) : 0, dark: dark))
+      if showLabel {
+        Text(label(window)).font(.system(size: QuotaLayout.detailSize, weight: .medium))
+          .foregroundStyle(QuotaLayout.tint(order(window), dark: dark))
+      }
+      if window.kind != "scoped" || state(window) != "fresh" {
+        Text(detail(window, uppercase: platform != "claude"))
+          .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
+      }
+    }
+  }
+  private var mediumInformation: some View {
+    // Fixed semantic slots: missing windows stay absent instead of relabeling another quota.
+    let week = windows.first { $0.minutes == 10080 && $0.kind != "scoped" }
+    let session = windows.first { $0.minutes != 10080 && $0.kind != "scoped" }
+    let scoped = windows.first { $0.kind == "scoped" }
+    return VStack(alignment: .leading, spacing: QuotaWidgetResources.mediumRowGap) {
+      mediumLine {
+        if let week { mediumQuota(week, showLabel: false) }
+        else if windows.isEmpty {
+          Text("—").font(.system(size: QuotaWidgetResources.mediumValueSize, weight: .medium)).foregroundStyle(secondary)
+        }
+      }
+      mediumLine {
+        if windows.isEmpty {
+          Text(emptyText).font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
+        } else if platform == "claude" {
+          if let session { mediumQuota(session, showLabel: true) }
+        } else if week != nil {
+          Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(primary)
+        }
+      }
+      mediumLine {
+        if platform == "claude" {
+          if let scoped { mediumQuota(scoped, showLabel: true) }
+        } else if let week {
+          Text(state(week) == "fresh" ? "Reset \(detail(week, uppercase: true))" : detail(week))
+            .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
+        }
+      }
+    }
+  }
   @ViewBuilder private var information: some View {
     if windows.isEmpty {
       VStack(alignment: .leading, spacing: 8) {
@@ -132,7 +191,11 @@ struct QuotaProviderView: View {
       ZStack(alignment: .topLeading) {
         rings.offset(x: QuotaLayout.inset, y: QuotaLayout.inset)
         brand.offset(x: geo.size.width - 92, y: 17)
-        information.offset(x: QuotaLayout.inset, y: platform == "claude" ? 68 : 66)
+        if medium {
+          mediumInformation.offset(x: QuotaLayout.inset, y: QuotaWidgetResources.mediumInformationTop)
+        } else {
+          information.offset(x: QuotaLayout.inset, y: platform == "claude" ? 68 : 66)
+        }
       }.frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
     }
   }
@@ -156,7 +219,7 @@ struct QuotaWidgetView: View {
   private var content: some View {
     HStack(spacing: 6) {
       ForEach(platforms, id: \.self) { platform in
-        QuotaProviderView(platform: platform, row: entry.snapshot.rows.first { $0.platform == platform }, entry: entry, dark: dark)
+        QuotaProviderView(platform: platform, row: entry.snapshot.rows.first { $0.platform == platform }, entry: entry, dark: dark, medium: (previewFamily ?? widgetFamily) == .systemMedium)
       }
     }
     .overlay(alignment: .bottomTrailing) {

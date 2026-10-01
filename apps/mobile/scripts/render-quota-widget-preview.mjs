@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 const mobile = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const destination = process.argv[2];
 if (!destination) throw new Error('Pass a destination PNG path');
-const scenarios = process.argv.includes('--compact') ? ['longest'] : ['longest', 'partial', 'zero', 'unknown', 'outdated', 'offline', 'no windows', 'unauthorized', 'no plan'];
+const medium = process.argv.includes('--medium');
+const scenarios = process.argv.includes('--compact') ? ['longest'] : ['longest', 'partial', 'zero', 'unknown', 'outdated', 'offline', 'no windows', 'unauthorized', 'no plan', 'no reset', 'only session', 'no Fable'];
 const temporary = mkdtempSync(join(tmpdir(), 'cindy-quota-preview-'));
 try {
   const source = readFileSync(join(mobile, 'modules/cindy-quota-widget/widget/CindySubscriptionWidget.swift'), 'utf8');
@@ -33,7 +34,7 @@ import WidgetKit
       Text("Subscription widgets · implementation review").font(.system(size: 20, weight: .semibold))
       Text("DEMO DATA · macOS offscreen SwiftUI · NOT iOS / Android runtime").font(.system(size: 12))
       ForEach([false, true], id: \\.self) { dark in
-        Text(dark ? "Dark · 158 pt cards" : "Light · 158 pt cards").font(.system(size: 16, weight: .medium))
+        Text(dark ? "Dark · ${medium ? "medium columns" : "158 pt cards"}" : "Light · ${medium ? "medium columns" : "158 pt cards"}").font(.system(size: 16, weight: .medium))
         ForEach(${JSON.stringify(scenarios)}, id: \\.self) { scenario in
           VStack(alignment: .leading, spacing: 6) {
             Text(scenario.capitalized).font(.system(size: 12))
@@ -42,12 +43,12 @@ import WidgetKit
                 let missing = scenario == "no windows" || scenario == "unauthorized"
                 let percent: Double? = scenario == "unknown" ? nil : scenario == "zero" ? 0 : scenario == "partial" ? 76 : 100
                 let observed = scenario == "outdated" ? now - QuotaSnapshot.maximumAge : now
-                let week = QuotaWindow(kind: platform == "claude" ? "sevenDay" : "week", observedAtMs: observed, minutes: 10080, remainingPercent: percent, resetAtMs: now + 6*86400000 + 23*3600000)
+                let week = QuotaWindow(kind: platform == "claude" ? "sevenDay" : "week", observedAtMs: observed, minutes: 10080, remainingPercent: percent, resetAtMs: scenario == "no reset" ? nil : now + 6*86400000 + 23*3600000)
                 let hours = QuotaWindow(kind: "fiveHour", observedAtMs: observed, minutes: 300, remainingPercent: percent, resetAtMs: now + 4*3600000 + 59*60000)
                 let scoped = QuotaWindow(kind: "scoped", scope: "Fable", observedAtMs: observed, minutes: 10080, remainingPercent: percent, resetAtMs: nil)
-                let row = QuotaRow(plan: scenario == "no plan" ? nil : platform == "claude" ? "Max" : platform == "codex" ? "Enterprise" : "SuperGrok Heavy", status: scenario == "unauthorized" ? "unauthorized" : missing ? "no-windows" : "ready", platform: platform, observedAtMs: observed, available: !missing, windows: missing ? [] : platform == "claude" ? [week,hours,scoped] : [week])
+                let row = QuotaRow(plan: scenario == "no plan" ? nil : platform == "claude" ? "Max" : platform == "codex" ? "Enterprise" : "SuperGrok Heavy", status: scenario == "unauthorized" ? "unauthorized" : missing ? "no-windows" : "ready", platform: platform, observedAtMs: observed, available: !missing, windows: missing ? [] : platform == "claude" ? (scenario == "only session" ? [hours] : scenario == "no Fable" ? [week,hours] : [week,hours,scoped]) : [week])
                 let snapshot = QuotaSnapshot(version: 2, source: "demo", connection: scenario == "offline" ? "offline" : "online", rows: [row])
-                QuotaProviderView(platform: platform, row: row, entry: QuotaEntry(date: Date(timeIntervalSince1970: now/1000), snapshot: snapshot), dark: dark)
+                QuotaProviderView(platform: platform, row: row, entry: QuotaEntry(date: Date(timeIntervalSince1970: now/1000), snapshot: snapshot), dark: dark, medium: ${medium})
                   .frame(width: 158, height: 158)
                   .background(QuotaWidgetResources.color("widgetSurface", dark: dark))
                   .clipShape(RoundedRectangle(cornerRadius: 22))

@@ -34,6 +34,7 @@ enum QuotaWidgetResources {
   static let ringStroke: CGFloat = ${quotaWidgetTokens.stroke}
   static let brandSize: CGFloat = ${quotaWidgetTokens.brandSize}
   static let detailSize: CGFloat = ${quotaWidgetTokens.detailSize}
+${Object.entries(quotaWidgetTokens.medium).map(([key, value]) => `  static let medium${key[0].toUpperCase() + key.slice(1)}: CGFloat = ${value}`).join("\n")}
   static let footnote: CGFloat = ${typeScale.footnote}
   static let caption: CGFloat = ${typeScale.caption}
   static let micro: CGFloat = ${typeScale.micro}

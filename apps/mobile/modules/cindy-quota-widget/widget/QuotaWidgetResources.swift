@@ -7,6 +7,11 @@ enum QuotaWidgetResources {
   static let ringStroke: CGFloat = 4.5
   static let brandSize: CGFloat = 12
   static let detailSize: CGFloat = 14
+  static let mediumInformationTop: CGFloat = 68
+  static let mediumValueSize: CGFloat = 20
+  static let mediumRowHeight: CGFloat = 24
+  static let mediumRowGap: CGFloat = 3
+  static let mediumInlineGap: CGFloat = 4.5
   static let footnote: CGFloat = 13
   static let caption: CGFloat = 12
   static let micro: CGFloat = 11
