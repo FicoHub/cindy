@@ -145,7 +145,7 @@ struct QuotaProviderView: View {
         } else if platform == "claude" {
           if let session { mediumQuota(session, primary: false) }
         } else if week != nil {
-          Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(primary)
+          Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(platform == "codex" ? QuotaLayout.tint(1, dark: dark) : primary)
         }
       }
       mediumLine(height: QuotaWidgetResources.mediumTertiaryRowHeight) {
@@ -180,7 +180,7 @@ struct QuotaProviderView: View {
     } else if let window = windows.first {
       VStack(alignment: .leading, spacing: 0) {
         Text(value(window)).font(.system(size: 32, weight: .medium)).foregroundStyle(QuotaLayout.tint(0, dark: dark)).frame(height: 38, alignment: .leading)
-        Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(primary).frame(height: 21, alignment: .leading)
+        Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(platform == "codex" ? QuotaLayout.tint(1, dark: dark) : primary).frame(height: 21, alignment: .leading)
         Text(state(window) == "fresh" ? "Reset \(detail(window))" : detail(window))
           .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary).frame(height: 18, alignment: .leading)
       }.fixedSize(horizontal: true, vertical: false)
