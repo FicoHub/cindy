@@ -41,6 +41,7 @@ import {
   registerScheduleUpdateTool,
 } from './scheduler/index.js';
 import { resolveLiziMcpSessionContext } from './session-context.js';
+import { withAccountDataAccess, type AccountDataAccess } from './account-data-access.js';
 import type { LiziMcpSessionContext, SchedulerMcpDeps } from './types.js';
 
 /**
@@ -86,6 +87,8 @@ const CATEGORY_ENUM = ['scheduler'] as const;
 function registerListToolsEntry(
   server: McpServer,
   registry: SchedulerToolRegistry,
+  access: AccountDataAccess | undefined,
+  getSessionContext: () => LiziMcpSessionContext,
 ): void {
   server.tool(
     'list_tools',
@@ -97,7 +100,7 @@ function registerListToolsEntry(
         .describe('工具类目。不传时返回所有类目概览。'),
     },
     { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    async ({ category }) => {
+    async ({ category }) => withAccountDataAccess(access, getSessionContext().sessionId, async () => {
       if (category) {
         const tools = registry.list(category);
         return {
@@ -136,13 +139,15 @@ function registerListToolsEntry(
           },
         ],
       };
-    },
+    }),
   );
 }
 
 function registerCallToolEntry(
   server: McpServer,
   registry: SchedulerToolRegistry,
+  access: AccountDataAccess | undefined,
+  getSessionContext: () => LiziMcpSessionContext,
 ): void {
   server.tool(
     'call_tool',
@@ -153,7 +158,7 @@ function registerCallToolEntry(
         .describe('工具名，从 list_tools 获取（如 schedule_create / schedule_list）'),
       args: jsonObjectArg('工具参数（JSON 对象）。不确定 schema 时可先传 {} 触发错误反馈。'),
     },
-    async ({ name, args }) => registry.call(name, args),
+    async ({ name, args }) => withAccountDataAccess(access, getSessionContext().sessionId, () => registry.call(name, args)),
   );
 }
 
@@ -200,8 +205,8 @@ export function createSchedulerMcpServer(
   registerScheduleNotifyCurrentRunTool(registry, deps, getSessionContext);
   registerScheduleDeleteTool(registry, deps, getSessionContext);
 
-  registerListToolsEntry(server, registry);
-  registerCallToolEntry(server, registry);
+  registerListToolsEntry(server, registry, deps.withAccountDataAccess, getSessionContext);
+  registerCallToolEntry(server, registry, deps.withAccountDataAccess, getSessionContext);
 
   return server;
 }
