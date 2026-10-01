@@ -89,7 +89,10 @@ enum QuotaSnapshotStore {
 
 /// Shared English display rules; reset is never interpreted as a refill or as cache freshness.
 enum QuotaFormatting {
-  static func duration(resetAtMs: Double?, at date: Date, uppercase: Bool = false) -> String {
+  static func windowLabel(_ window: QuotaWindow) -> String {
+    window.scope ?? (window.minutes == 10080 ? "W" : window.minutes == 300 ? "5h" : "Quota")
+  }
+  static func duration(resetAtMs: Double?, at date: Date) -> String {
     guard let resetAtMs else { return "—" }
     let seconds = max(0, (resetAtMs / 1000) - date.timeIntervalSince1970)
     guard seconds > 0 else { return "—" }
@@ -99,6 +102,6 @@ enum QuotaFormatting {
     else if minutes >= 1440 { value = "\(minutes / 1440)d \((minutes % 1440) / 60)h" }
     else if minutes >= 60 { value = "\(minutes / 60)h \(minutes % 60)m" }
     else { value = "\(minutes)m" }
-    return uppercase ? value.uppercased() : value
+    return value
   }
 }

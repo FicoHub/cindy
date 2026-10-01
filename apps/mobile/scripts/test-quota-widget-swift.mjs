@@ -32,9 +32,17 @@ try {
   let snapshot = try QuotaSnapshot.decode(Data(valid.utf8))
   precondition(snapshot.state(snapshot.rows[0], snapshot.rows[0].windows[0], at: Date(timeIntervalSince1970: 1800000000)) == "stale")
   let now = Date(timeIntervalSince1970: 1800000000)
-  precondition(QuotaFormatting.duration(resetAtMs: 1800000000000 + 6*86400000 + 23*3600000, at: now, uppercase: true) == "6D 23H")
+  precondition(QuotaFormatting.duration(resetAtMs: 1800000000000 + 6*86400000 + 23*3600000, at: now) == "6d 23h")
   precondition(QuotaFormatting.duration(resetAtMs: 1800000000000 + 4*3600000 + 59*60000, at: now) == "4h 59m")
   precondition(QuotaFormatting.duration(resetAtMs: 1800000000000, at: now) == "—")
+  precondition(QuotaFormatting.duration(resetAtMs: nil, at: now) == "—")
+  precondition(QuotaFormatting.windowLabel(window) == "5h")
+  precondition(QuotaFormatting.windowLabel(snapshot.rows[0].windows[0]) == "Fable")
+  // Every provider/family uses this formatter. Include day, hour, minute and sub-minute boundaries.
+  for minute in 0...10080 {
+    let output = QuotaFormatting.duration(resetAtMs: 1800000000000 + Double(minute)*60000 + 1000, at: now)
+    precondition(output == output.lowercased(), "Uppercase duration: " + output)
+  }
     print("PASS: actual Swift quota decoder, privacy, scoped-window boundary, freshness and reset formatting")
   }
 }

@@ -53,10 +53,10 @@ struct QuotaProviderView: View {
   private func value(_ w: QuotaWindow) -> String {
     state(w) == "fresh" ? "\(Int((w.remainingPercent ?? 0).rounded()))%" : "—"
   }
-  private func label(_ w: QuotaWindow) -> String { w.scope ?? (w.minutes == 10080 ? "W" : w.minutes == 300 ? "5H" : "Quota") }
-  private func detail(_ w: QuotaWindow, uppercase: Bool = false) -> String {
+  private func label(_ w: QuotaWindow) -> String { QuotaFormatting.windowLabel(w) }
+  private func detail(_ w: QuotaWindow) -> String {
     switch state(w) {
-    case "fresh": return QuotaFormatting.duration(resetAtMs: w.resetAtMs, at: entry.date, uppercase: uppercase)
+    case "fresh": return QuotaFormatting.duration(resetAtMs: w.resetAtMs, at: entry.date)
     case "stale": return "Outdated"
     case "offline": return "Offline"
     case "awaitingRefresh": return "Updating"
@@ -122,7 +122,7 @@ struct QuotaProviderView: View {
           .foregroundStyle(QuotaLayout.tint(order(window), dark: dark))
       }
       if window.kind != "scoped" || state(window) != "fresh" {
-        Text(detail(window, uppercase: platform != "claude"))
+        Text(detail(window))
           .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
       }
     }
@@ -152,7 +152,7 @@ struct QuotaProviderView: View {
         if platform == "claude" {
           if let scoped { mediumQuota(scoped, primary: false) }
         } else if let week {
-          Text(state(week) == "fresh" ? "Reset \(detail(week, uppercase: true))" : detail(week))
+          Text(state(week) == "fresh" ? "Reset \(detail(week))" : detail(week))
             .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
         }
       }
@@ -181,7 +181,7 @@ struct QuotaProviderView: View {
       VStack(alignment: .leading, spacing: 0) {
         Text(value(window)).font(.system(size: 32, weight: .medium)).foregroundStyle(QuotaLayout.tint(0, dark: dark)).frame(height: 38, alignment: .leading)
         Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(primary).frame(height: 21, alignment: .leading)
-        Text(state(window) == "fresh" ? "Reset \(detail(window, uppercase: true))" : detail(window))
+        Text(state(window) == "fresh" ? "Reset \(detail(window))" : detail(window))
           .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary).frame(height: 18, alignment: .leading)
       }.fixedSize(horizontal: true, vertical: false)
     }
