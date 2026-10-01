@@ -45,7 +45,7 @@ export function QuotaWidgetBridge() {
     const timer = setInterval(() => void refresh(), 60_000);
     const sub = AppState.addEventListener('change', next => {
       if (next === 'active') void refresh();
-      else quotaWidgetStore.offline();
+      else quotaWidgetStore.suspend();
     });
     return () => { clearInterval(timer); sub.remove(); };
   }, [state.ready, state.deviceId, link.status, link.connectionEpoch, link.presenceVersion]);

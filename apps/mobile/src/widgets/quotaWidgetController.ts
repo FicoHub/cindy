@@ -81,6 +81,11 @@ export class QuotaWidgetController {
       await this.serialize(async () => { if (epoch === this.epoch && this.owner) await this.storage.setItem(key, value); });
     } catch { if (epoch === this.epoch) this.publish({ error: true }); }
   }
+  /** Suspension is not a failed source read. Keep the last observation until it ages out. */
+  suspend(): void {
+    ++this.epoch;
+    this.publish({ busy: false });
+  }
   offline(): void {
     ++this.epoch;
     const snapshot = { ...this.state.snapshot, connection: 'offline' as const };

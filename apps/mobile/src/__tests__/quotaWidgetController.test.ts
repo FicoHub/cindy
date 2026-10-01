@@ -131,6 +131,39 @@ describe('quota widget account and cache ownership', () => {
     expect(controller.getSnapshot().deviceId).toBeNull();
   });
 
+  it('suspends in-flight reads without hiding fresh cached data or changing its source time', async () => {
+    const { controller, reader, native, storage } = fixture();
+    await controller.setOwner('alice'); await controller.selectDevice('one'); await controller.refresh(reader);
+    const before = controller.getSnapshot().snapshot;
+    const pending = deferred<unknown>(); reader.getCodexRateLimits = () => pending.promise;
+    const read = controller.refresh(reader); await Promise.resolve();
+    native.writeSnapshot.mockClear(); storage.setItem.mockClear();
+    controller.suspend();
+    pending.resolve({ rateLimits: { primary: { usedPercent: 1 } } }); await read;
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, snapshot: before });
+    expect(native.writeSnapshot).not.toHaveBeenCalled();
+    expect(storage.setItem).not.toHaveBeenCalled();
+    const row = before.rows[0], window = row.windows[0];
+    expect(quotaWindowState(row, window, before.connection, row.observedAtMs!)).toBe('fresh');
+    expect(quotaWindowState(row, window, before.connection, row.observedAtMs! + QUOTA_MAX_AGE_MS)).toBe('stale');
+    reader.getCodexRateLimits = async () => ({ rateLimits: { primary: { usedPercent: 30 } } });
+    await controller.refresh(reader);
+    expect(controller.getSnapshot().snapshot.rows[0].windows[0].remainingPercent).toBe(70);
+    expect(native.writeSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('does not turn a failed suspended read into an offline write', async () => {
+    const { controller, reader, native } = fixture();
+    await controller.setOwner('alice'); await controller.selectDevice('one'); await controller.refresh(reader);
+    const before = controller.getSnapshot().snapshot;
+    const pending = deferred<unknown>(); reader.listProviders = () => pending.promise.then(() => { throw new Error('background disconnect'); });
+    const read = controller.refresh(reader);
+    native.writeSnapshot.mockClear(); controller.suspend(); pending.resolve(null); await read;
+    expect(controller.getSnapshot().snapshot).toEqual(before);
+    expect(controller.getSnapshot().error).toBe(false);
+    expect(native.writeSnapshot).not.toHaveBeenCalled();
+  });
+
   it('reports failed native clearing and disk persistence instead of claiming success', async () => {
     const { controller, storage, native } = fixture();
     await controller.setOwner('alice');
