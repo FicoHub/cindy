@@ -100,25 +100,25 @@ struct QuotaProviderView: View {
       }.frame(width: 61, alignment: .leading)
     }.foregroundStyle(secondary).frame(width: 78, alignment: .leading)
   }
-  /// A hidden reference glyph gives even detail-only/empty rows the same 20pt baseline.
+  /// Each semantic row shares a reference baseline across providers, including empty slots.
   /// No scale factor, clipping or provider-specific row heights are used in medium.
-  private func mediumLine<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+  private func mediumLine<Content: View>(primary: Bool = false, height: CGFloat, @ViewBuilder content: () -> Content) -> some View {
     ZStack(alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline)) {
-      Text("100%").font(.system(size: QuotaWidgetResources.mediumValueSize, weight: .medium))
+      Text("100%").font(.system(size: primary ? QuotaWidgetResources.mediumValueSize : QuotaLayout.detailSize, weight: primary ? .medium : .regular))
         .hidden().accessibilityHidden(true)
       content()
     }
     .fixedSize(horizontal: true, vertical: false)
-    .frame(height: QuotaWidgetResources.mediumRowHeight, alignment: .leading)
+    .frame(height: height, alignment: .leading)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
   }
-  private func mediumQuota(_ window: QuotaWindow, showLabel: Bool) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: QuotaWidgetResources.mediumInlineGap) {
-      Text(value(window)).font(.system(size: QuotaWidgetResources.mediumValueSize, weight: .medium))
+  private func mediumQuota(_ window: QuotaWindow, primary: Bool) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: primary ? QuotaWidgetResources.mediumPrimaryInlineGap : QuotaWidgetResources.mediumInlineGap) {
+      Text(value(window)).font(.system(size: primary ? QuotaWidgetResources.mediumValueSize : QuotaLayout.detailSize, weight: primary ? .medium : .regular))
         .foregroundStyle(QuotaLayout.tint(platform == "claude" ? order(window) : 0, dark: dark))
-      if showLabel {
-        Text(label(window)).font(.system(size: QuotaLayout.detailSize, weight: .medium))
+      if !primary {
+        Text(label(window)).font(.system(size: QuotaLayout.detailSize))
           .foregroundStyle(QuotaLayout.tint(order(window), dark: dark))
       }
       if window.kind != "scoped" || state(window) != "fresh" {
@@ -133,24 +133,24 @@ struct QuotaProviderView: View {
     let session = windows.first { $0.minutes != 10080 && $0.kind != "scoped" }
     let scoped = windows.first { $0.kind == "scoped" }
     return VStack(alignment: .leading, spacing: QuotaWidgetResources.mediumRowGap) {
-      mediumLine {
-        if let week { mediumQuota(week, showLabel: false) }
+      mediumLine(primary: true, height: QuotaWidgetResources.mediumPrimaryRowHeight) {
+        if let week { mediumQuota(week, primary: true) }
         else if windows.isEmpty {
           Text("—").font(.system(size: QuotaWidgetResources.mediumValueSize, weight: .medium)).foregroundStyle(secondary)
         }
       }
-      mediumLine {
+      mediumLine(height: QuotaWidgetResources.mediumSecondaryRowHeight) {
         if windows.isEmpty {
           Text(emptyText).font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
         } else if platform == "claude" {
-          if let session { mediumQuota(session, showLabel: true) }
+          if let session { mediumQuota(session, primary: false) }
         } else if week != nil {
           Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(primary)
         }
       }
-      mediumLine {
+      mediumLine(height: QuotaWidgetResources.mediumTertiaryRowHeight) {
         if platform == "claude" {
-          if let scoped { mediumQuota(scoped, showLabel: true) }
+          if let scoped { mediumQuota(scoped, primary: false) }
         } else if let week {
           Text(state(week) == "fresh" ? "Reset \(detail(week, uppercase: true))" : detail(week))
             .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
