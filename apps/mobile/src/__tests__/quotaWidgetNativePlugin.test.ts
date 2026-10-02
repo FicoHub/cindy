@@ -60,6 +60,12 @@ describe('quota widget native integration', () => {
     execFileSync(process.execPath, [resolve('../../scripts/generate-quota-widget-resources.mjs'), '--check'], { encoding: 'utf8' });
   });
 
+  it('separates SVG arc flags for the Android drawable parser', () => {
+    const drawable = readFileSync(resolve('modules/cindy-quota-widget/android/src/main/res/drawable/cindy_quota_xai.xml'), 'utf8');
+    expect(drawable).toContain('a7.808 7.808 0 0 0 -1.829 -1');
+    expect(drawable).toContain('A8.975 8.975 0 0 0 5.984 5.83');
+  });
+
   it('preserves generated resource bytes when Git checks out with Windows autocrlf', () => {
     const directory = mkdtempSync(join(tmpdir(), 'cindy-quota-checkout-test-'));
     try {
@@ -69,7 +75,7 @@ describe('quota widget native integration', () => {
       cpSync(resolve('../../.gitattributes'), join(repository, '.gitattributes'));
       const native = 'apps/mobile/modules/cindy-quota-widget';
       const res = `${native}/android/src/main/res`;
-      const paths = [`${native}/widget/QuotaWidgetResources.swift`, ...readdirSync(resolve('../..', res), { recursive: true, encoding: 'utf8' })
+      const paths = [`${native}/widget/QuotaWidgetResources.swift`, `${native}/android/src/main/java/expo/modules/cindyquotawidget/QuotaWidgetMetrics.kt`, ...readdirSync(resolve('../..', res), { recursive: true, encoding: 'utf8' })
         .filter(file => file.endsWith('.xml') && readFileSync(resolve('../..', res, file), 'utf8').includes('Generated from Mobile tokens'))
         .map(file => `${res}/${file}`)];
       expect(paths.length).toBeGreaterThan(1);

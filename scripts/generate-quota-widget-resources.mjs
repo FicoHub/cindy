@@ -65,14 +65,57 @@ for (const [language, values] of Object.entries(translations)) {
 }
 for (const [mode, palette] of Object.entries({ light: lightColors, dark: darkColors })) {
   generated.set(`${resourceDir}/values${mode === 'dark' ? '-night' : ''}/cindy_quota_colors.xml`, xmlHeader + '<resources>\n' +
-    roles.map(role => `  <color name="cindy_widget_${snake(role)}">${palette[role]}</color>`).join('\n') + '\n</resources>\n');
+    Object.entries({ ...Object.fromEntries(roles.map(role => [role, palette[role]])), ...quotaWidgetTokens[mode] }).map(([role, value]) => `  <color name="cindy_widget_${snake(role)}">${value}</color>`).join('\n') + '\n</resources>\n');
   // Fixed-mode drawables let RemoteViews respect the in-app appearance preference too.
   generated.set(`${resourceDir}/drawable/cindy_quota_background_${mode}.xml`, xmlHeader +
-    `<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">\n  <solid android:color="${palette.surfaceElevated}" />\n  <stroke android:width="1dp" android:color="${palette.border}" />\n  <corners android:radius="${radius.container}dp" />\n</shape>\n`);
+    `<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">\n  <solid android:color="${quotaWidgetTokens[mode].widgetSurface}" />\n  <stroke android:width="1dp" android:color="${palette.border}" />\n  <corners android:radius="${radius.container}dp" />\n</shape>\n`);
 }
 generated.set(`${resourceDir}/values/cindy_quota_dimensions.xml`, xmlHeader + '<resources>\n' +
-  Object.entries({ padding: `${spacing.md}dp`, radius: `${radius.container}dp`, footnote: `${typeScale.footnote}sp`, caption: `${typeScale.caption}sp`, micro: `${typeScale.micro}sp` })
+  Object.entries({ inset: `${quotaWidgetTokens.inset}dp`, ring: `${quotaWidgetTokens.ring}dp`, brand: `${quotaWidgetTokens.brandSize}sp`, detail: `${quotaWidgetTokens.detailSize}sp`, value: `${quotaWidgetTokens.medium.valueSize}sp`, primary_height: `${quotaWidgetTokens.medium.primaryRowHeight}dp`, secondary_height: `${quotaWidgetTokens.medium.secondaryRowHeight}dp`, tertiary_height: `${quotaWidgetTokens.medium.tertiaryRowHeight}dp`, padding: `${spacing.md}dp`, radius: `${radius.container}dp`, footnote: `${typeScale.footnote}sp`, caption: `${typeScale.caption}sp`, micro: `${typeScale.micro}sp` })
     .map(([name, value]) => `  <dimen name="cindy_widget_${name}">${value}</dimen>`).join('\n') + '\n</resources>\n');
+// SVG permits adjacent one-character arc flags (e.g. "005.984"). Android's
+// PathParser reads these as one float. Expand flags without changing geometry.
+const androidPath = data => data.replace(/[aA]([^a-df-zA-DF-Z]*)/g, arc => {
+  let remaining = arc.slice(1).trim();
+  const values = [];
+  while (remaining) {
+    for (let index = 0; index < 7; index++) {
+      remaining = remaining.replace(/^[\s,]+/, '');
+      const value = index === 3 || index === 4
+        ? remaining.match(/^[01]/)?.[0]
+        : remaining.match(/^[+-]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][+-]?\d+)?/)?.[0];
+      if (!value) throw new Error(`Invalid SVG arc: ${arc}`);
+      values.push(value);
+      remaining = remaining.slice(value.length);
+    }
+    remaining = remaining.replace(/^[\s,]+/, '');
+  }
+  return arc[0] + values.join(' ') + ' ';
+});
+// Preserve the normalized source SVG viewport and path geometry for Android too.
+for (const provider of ['claude', 'codex', 'xai']) {
+  const svg = fs.readFileSync(path.join(native, `widget/Assets.xcassets/${provider}.imageset/${provider}.svg`), 'utf8');
+  const [x, y, width, height] = svg.match(/viewBox="([^"]+)"/)[1].split(/\s+/).map(Number);
+  const paths = [...svg.matchAll(/<path\b[^>]*>/g)].map(([tag]) => {
+    const data = androidPath(tag.match(/\bd="([^"]+)"/)[1]);
+    const evenOdd = tag.includes('fill-rule="evenodd"') ? ' android:fillType="evenOdd"' : '';
+    return `    <path android:fillColor="#FF000000"${evenOdd} android:pathData="${data}" />`;
+  }).join('\n');
+  generated.set(`${resourceDir}/drawable/cindy_quota_${provider}.xml`, xmlHeader +
+    `<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="14dp" android:height="14dp" android:viewportWidth="${width}" android:viewportHeight="${height}">\n  <group android:translateX="${-x}" android:translateY="${-y}">\n${paths}\n  </group>\n</vector>\n`);
+}
+generated.set('android/src/main/java/expo/modules/cindyquotawidget/QuotaWidgetMetrics.kt', `// Generated from quotaWidgetTokens. Do not edit.
+package expo.modules.cindyquotawidget
+internal object QuotaWidgetMetrics {
+  const val INSET = ${quotaWidgetTokens.inset}f
+  const val RING = ${quotaWidgetTokens.ring}f
+  const val STROKE = ${quotaWidgetTokens.stroke}f
+  const val BRAND = ${quotaWidgetTokens.brandSize}f
+  const val DETAIL = ${quotaWidgetTokens.detailSize}f
+  const val VALUE = ${quotaWidgetTokens.medium.valueSize}f
+  const val INLINE_GAP = ${quotaWidgetTokens.medium.primaryInlineGap}f
+}
+`);
 let mismatch = false;
 for (const [relative, content] of generated) {
   const target = path.join(native, relative);

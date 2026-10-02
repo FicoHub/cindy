@@ -38,7 +38,7 @@ internal object QuotaSnapshot {
         require(kind != "scoped" || scope != null)
         windows.put(JSONObject().put("kind", kind).put("scope", nullable(scope)).put("observedAtMs", nullable(time(raw.opt("observedAtMs"))))
           .put("minutes", nullable(number(raw.opt("minutes"))?.takeIf { it > 0 && it <= 525600 }))
-          .put("remainingPercent", nullable(remaining)).put("resetAtMs", nullable(time(raw.opt("resetAtMs"))))
+          .put("remainingPercent", nullable(remaining)).put("resetAtMs", nullable(time(raw.opt("resetAtMs")))))
       }
       rows.put(JSONObject().put("platform", platform)
         .put("extraResetsRemaining", nullable(if (platform == "codex") number(row.opt("extraResetsRemaining"))?.takeIf { it >= 0 && it <= 9_007_199_254_740_991.0 && it % 1.0 == 0.0 } else null))

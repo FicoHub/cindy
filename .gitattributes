@@ -57,4 +57,5 @@ packages/device-link/src/filePeerRuntimeSource.ts text eol=lf
 # Native widget projections are checked byte-for-byte against the generator on all platforms.
 apps/mobile/modules/cindy-quota-widget/widget/QuotaWidgetResources.swift text eol=lf
 apps/mobile/modules/cindy-quota-widget/android/src/main/res/values*/cindy_quota_*.xml text eol=lf
-apps/mobile/modules/cindy-quota-widget/android/src/main/res/drawable/cindy_quota_background_*.xml text eol=lf
+apps/mobile/modules/cindy-quota-widget/android/src/main/res/drawable/cindy_quota_*.xml text eol=lf
+apps/mobile/modules/cindy-quota-widget/android/src/main/java/expo/modules/cindyquotawidget/QuotaWidgetMetrics.kt text eol=lf
