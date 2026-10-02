@@ -1622,6 +1622,53 @@ describe('GhostManager · 安装事务目录 rename 失败(#5026)', () => {
     expect(fs.existsSync(pendingMarkerPath())).toBe(false);
   });
 
+  it('新装 rename 退避等待期间取消:不再发布、不写成功 receipt,清理后可重新安装(#5028 review)', async () => {
+    const local = managerWithRenameRetry({ enabled: true, delaysMs: [20, 20, 20] });
+    const finalDir = path.join(rootDir, 'hello');
+    const receiptPath = path.join(workDir, 'ghosts-install-state', 'hello.json');
+    const realRename = fs.promises.rename;
+    const controller = new AbortController();
+    let placementAttempts = 0;
+    let guardChecks = 0;
+    const spy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (path.resolve(String(to)) === path.resolve(finalDir)) {
+        placementAttempts += 1;
+        if (placementAttempts === 1) {
+          // 第一次 rename 吃到瞬时 EPERM;请求在随后的退避等待期间被取消。
+          setTimeout(() => controller.abort(), 5);
+          throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+        }
+      }
+      return realRename(from as never, to as never);
+    });
+    const guard = vi.fn(() => {
+      guardChecks += 1;
+      expect(fs.existsSync(finalDir)).toBe(false);
+      controller.signal.throwIfAborted();
+    });
+    try {
+      await expectRejection(await local.install(await makeCindy('a.cindy', goodManifest()), {
+        beforePackagePlacement: guard,
+      }), 'io');
+    } finally {
+      spy.mockRestore();
+    }
+    // 取消发生在成功 rename 之前:检查必须在重试前再跑一次并拦下,第二次 rename 不能发生。
+    expect(guardChecks).toBe(2);
+    expect(placementAttempts).toBe(1);
+    expect(fs.existsSync(finalDir)).toBe(false);
+    expect(fs.existsSync(receiptPath)).toBe(false);
+    expect(fs.existsSync(pendingMarkerPath())).toBe(false);
+    expect(local.list()).toEqual([]);
+    expect(fs.readdirSync(rootDir).filter((name) => name.startsWith('.cindy-installing-'))).toEqual([]);
+
+    // 清理完整:同一插件可重新安装并获得批准。
+    const retried = await local.install(await makeCindy('b.cindy', goodManifest()));
+    expect('rejection' in retried).toBe(false);
+    expect(local.list()[0]).toMatchObject({ enabled: true, approval: { state: 'approved' } });
+    expect(fs.existsSync(receiptPath)).toBe(true);
+  });
+
   it('新装 rename 失败后目录状态查不清(lstat 非 ENOENT)时保留 journal,不误清隔离标记', async () => {
     const local = managerWithRenameRetry({ enabled: false });
     const finalDir = path.join(rootDir, 'hello');

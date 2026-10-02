@@ -555,12 +555,24 @@ export class GhostManager {
    * 事务目录 rename(staging→final / final→backup / backup→final)。瞬时错误按
    * `options.renameRetry` 有界重试;重试耗尽或非瞬时错误照常抛出,由各调用点的
    * 既有回滚/journal 逻辑处理。不做任何 rm/复制,失败时源目录保持原样。
+   *
+   * `beforeAttempt` 在**每次**尚未提交的 rename 尝试之前同步执行(含首次):新装发布的
+   * 取消/有效性检查必须覆盖退避等待窗口,否则「等待重试期间取消」仍会在下一次尝试
+   * 把包发布出去并写成功 receipt。它抛出即视为非瞬时错误、立即上抛,不再重试;一旦
+   * rename 成功就不再调用,已提交的发布不会被误报成取消失败。回滚路径不传此钩子。
    */
-  private async renameManagedDir(from: string, to: string, stage: string, id: string): Promise<void> {
+  private async renameManagedDir(
+    from: string,
+    to: string,
+    stage: string,
+    id: string,
+    beforeAttempt?: () => void,
+  ): Promise<void> {
     const retry = this.options.renameRetry;
     const enabled = retry?.enabled ?? process.platform === 'win32';
     const delays = enabled ? (retry?.delaysMs ?? DEFAULT_RENAME_RETRY_DELAYS_MS) : [];
     for (let attempt = 0; ; attempt += 1) {
+      beforeAttempt?.();
       try {
         await fs.promises.rename(from, to);
         if (attempt > 0) {
@@ -2654,7 +2666,10 @@ export class GhostManager {
       expectedPackageSha256?: string;
       trustOverride?: GhostHostTrustOverride;
       installOrigin?: 'agent-forge';
-      /** Synchronous live-authority check immediately before publishing the staged package. */
+      /**
+       * Synchronous live-authority / cancellation check run immediately before **every**
+       * not-yet-committed placement attempt (first try and each transient-error retry).
+       */
       beforePackagePlacement?: () => void;
     },
   ) {
@@ -2759,22 +2774,22 @@ export class GhostManager {
       });
       this.untrustedApprovals.add(this.isolationKey(manifest.id));
       try {
-        opts?.beforePackagePlacement?.();
+        // 取消/有效性检查(beforePackagePlacement)接在每次尚未提交的发布尝试之前:
+        // 首次尝试前与每次瞬时错误退避之后都会重查。等待重试期间取消 → 这里抛出,
+        // 下面按「没有发布任何字节」清理,不写成功 receipt,插件可重新安装。
+        await this.renameManagedDir(
+          stagingDir,
+          finalDir,
+          'install placement',
+          manifest.id,
+          opts?.beforePackagePlacement,
+        );
       } catch (error) {
-        // No package bytes were published. Clear the prepared journal so a
-        // cancelled request cannot leave an installation waiting for recovery.
-        await this.receiptStore.clearPendingMutation(manifest.id);
-        this.untrustedApprovals.delete(this.isolationKey(manifest.id));
-        throw error;
-      }
-      try {
-        await this.renameManagedDir(stagingDir, finalDir, 'install placement', manifest.id);
-      } catch (error) {
-        // rename 没成功就没有发布任何字节(#5026):此时若留下 install journal 与内存
-        // 隔离标记,之后每次审批检查都会判 invalid、插件停在停用态,且用户手工放入
-        // 目录也没有正常入口恢复。只有 lstat 明确 ENOENT 才能清;目录已出现(rename
-        // 半途成功)或 lstat 本身报权限/IO 错误时都保留 journal 交给启动恢复——journal
-        // 正是用来阻止无 receipt 的目录被迁移当作存量批准,不能凭"看不见"就清。
+        // rename 没成功(或发布前检查拒绝)就没有发布任何字节(#5026):此时若留下 install
+        // journal 与内存隔离标记,之后每次审批检查都会判 invalid、插件停在停用态,且用户
+        // 手工放入目录也没有正常入口恢复。只有 lstat 明确 ENOENT 才能清;目录已出现
+        // (rename 半途成功)或 lstat 本身报权限/IO 错误时都保留 journal 交给启动恢复——
+        // journal 正是用来阻止无 receipt 的目录被迁移当作存量批准,不能凭"看不见"就清。
         const finalDirAbsent = await fs.promises
           .lstat(finalDir)
           .then(() => false)
