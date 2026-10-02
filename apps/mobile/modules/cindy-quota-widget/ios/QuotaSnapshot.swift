@@ -12,6 +12,7 @@ struct QuotaWindow: Codable {
 }
 struct QuotaRow: Codable {
   var plan: String? = nil
+  var extraResetsRemaining: Double? = nil
   var status: String? = nil
   var provenance: String? = nil
   let platform: String
@@ -35,6 +36,7 @@ struct QuotaSnapshot: Codable {
           Set(value.rows.map(\.platform)).count == value.rows.count else { throw CocoaError(.fileReadCorruptFile) }
     func validTime(_ value: Double?) -> Bool { value == nil || (value!.isFinite && value! > 0 && value! <= 8_640_000_000_000_000) }
     for row in value.rows {
+      guard row.extraResetsRemaining == nil || (row.platform == "codex" && row.extraResetsRemaining!.isFinite && row.extraResetsRemaining! >= 0 && row.extraResetsRemaining! <= 9_007_199_254_740_991 && row.extraResetsRemaining!.rounded(.down) == row.extraResetsRemaining!) else { throw CocoaError(.fileReadCorruptFile) }
       guard row.plan == nil || ["Free", "Plus", "Pro", "Business", "Enterprise", "Edu", "Team", "Max", "SuperGrok", "SuperGrok Heavy"].contains(row.plan!),
             row.status == nil || ["ready", "no-windows", "unavailable", "unsupported", "unauthorized"].contains(row.status!),
             row.provenance == nil || ["codex-control", "codex-cache", "claude-control", "claude-event", "grok-subscription", "unknown"].contains(row.provenance!) else { throw CocoaError(.fileReadCorruptFile) }
@@ -89,6 +91,13 @@ enum QuotaSnapshotStore {
 
 /// Shared English display rules; reset is never interpreted as a refill or as cache freshness.
 enum QuotaFormatting {
+  static func extraResets(_ row: QuotaRow?, connection: String, at date: Date) -> String {
+    let now = date.timeIntervalSince1970 * 1000
+    guard let row, row.platform == "codex", row.status == "ready" || row.status == "no-windows",
+          connection == "online", let observed = row.observedAtMs, observed <= now + 60000,
+          now - observed < QuotaSnapshot.maximumAge, let count = row.extraResetsRemaining else { return "—" }
+    return String(format: "%.0f", count)
+  }
   static func windowLabel(_ window: QuotaWindow) -> String {
     window.scope ?? (window.minutes == 10080 ? "W" : window.minutes == 300 ? "5h" : "Quota")
   }

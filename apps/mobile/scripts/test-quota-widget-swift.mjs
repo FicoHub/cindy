@@ -43,6 +43,25 @@ try {
     let output = QuotaFormatting.duration(resetAtMs: 1800000000000 + Double(minute)*60000 + 1000, at: now)
     precondition(output == output.lowercased(), "Uppercase duration: " + output)
   }
+    precondition(row.extraResetsRemaining == nil) // Existing v2 snapshots remain readable.
+    for count in [0.0, 2.0, 99.0] {
+      var fresh = row
+      fresh.status = "ready"
+      fresh.extraResetsRemaining = count
+      let result = try QuotaSnapshot.decode(JSONEncoder().encode(QuotaSnapshot(version: 2, source: "demo", connection: "online", rows: [fresh])))
+      precondition(result.rows[0].extraResetsRemaining == count)
+      precondition(QuotaFormatting.extraResets(fresh, connection: "online", at: now) == String(format: "%.0f", count))
+      precondition(QuotaFormatting.extraResets(fresh, connection: "offline", at: now) == "—")
+      precondition(QuotaFormatting.extraResets(fresh, connection: "online", at: now.addingTimeInterval(900)) == "—")
+      fresh.status = "unauthorized"
+      precondition(QuotaFormatting.extraResets(fresh, connection: "online", at: now) == "—")
+    }
+    for count in [-1.0, 0.5, 9_007_199_254_740_992.0] {
+      var invalid = row
+      invalid.extraResetsRemaining = count
+      let json = try JSONEncoder().encode(QuotaSnapshot(version: 2, source: "demo", connection: "online", rows: [invalid]))
+      do { _ = try QuotaSnapshot.decode(json); fatalError("Invalid reset count accepted") } catch {}
+    }
     print("PASS: actual Swift quota decoder, privacy, scoped-window boundary, freshness and reset formatting")
   }
 }

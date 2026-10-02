@@ -10,8 +10,10 @@ struct QuotaTimeline: TimelineProvider {
   func getTimeline(in context: Context, completion: @escaping (Timeline<QuotaEntry>) -> Void) {
     let snapshot = QuotaSnapshotStore.load(), now = Date()
     let milliseconds = now.timeIntervalSince1970 * 1000
-    let boundaries = snapshot.rows.flatMap { row in
-      row.windows.map { $0.observedAtMs.map { $0 + QuotaSnapshot.maximumAge } } + row.windows.map(\.resetAtMs)
+    let boundaries = snapshot.rows.flatMap { row -> [Double?] in
+      let expiry = row.windows.map { $0.observedAtMs.map { $0 + QuotaSnapshot.maximumAge } }
+      let rowExpiry = row.observedAtMs.map { $0 + QuotaSnapshot.maximumAge }
+      return [rowExpiry] + expiry + row.windows.map(\.resetAtMs)
     }.compactMap { $0 }.filter { $0 > milliseconds && $0 <= milliseconds + 86_400_000 }
     // Local entries expire cached values and advance reset text; they never query a provider.
     let ticks = (1...15).map { now.addingTimeInterval(Double($0) * 60) }
@@ -151,12 +153,18 @@ struct QuotaProviderView: View {
       mediumLine(height: QuotaWidgetResources.mediumTertiaryRowHeight) {
         if platform == "claude" {
           if let scoped { mediumQuota(scoped, primary: false) }
+        } else if platform == "codex" {
+          extraResets
         } else if let week {
           Text(state(week) == "fresh" ? "Reset \(detail(week))" : detail(week))
             .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
         }
       }
     }
+  }
+  private var extraResets: some View {
+    Text("Extra resets: \(QuotaFormatting.extraResets(row, connection: entry.snapshot.connection, at: entry.date))")
+      .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary)
   }
   @ViewBuilder private var information: some View {
     if windows.isEmpty {
@@ -180,9 +188,15 @@ struct QuotaProviderView: View {
     } else if let window = windows.first {
       VStack(alignment: .leading, spacing: 0) {
         Text(value(window)).font(.system(size: 32, weight: .medium)).foregroundStyle(QuotaLayout.tint(0, dark: dark)).frame(height: 38, alignment: .leading)
-        Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(platform == "codex" ? QuotaLayout.tint(1, dark: dark) : primary).frame(height: 21, alignment: .leading)
-        Text(state(window) == "fresh" ? "Reset \(detail(window))" : detail(window))
-          .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary).frame(height: 18, alignment: .leading)
+        HStack(spacing: 4.5) {
+          Text("Weekly").font(.system(size: QuotaLayout.detailSize)).foregroundStyle(platform == "codex" ? QuotaLayout.tint(1, dark: dark) : primary)
+          if platform == "codex" { Text(detail(window)).font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary) }
+        }.frame(height: 21, alignment: .leading)
+        if platform == "codex" { extraResets.frame(height: 18, alignment: .leading) }
+        else {
+          Text(state(window) == "fresh" ? "Reset \(detail(window))" : detail(window))
+            .font(.system(size: QuotaLayout.detailSize)).foregroundStyle(secondary).frame(height: 18, alignment: .leading)
+        }
       }.fixedSize(horizontal: true, vertical: false)
     }
   }

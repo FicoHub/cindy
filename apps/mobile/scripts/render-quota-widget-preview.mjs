@@ -9,7 +9,7 @@ const mobile = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const destination = process.argv[2];
 if (!destination) throw new Error('Pass a destination PNG path');
 const medium = process.argv.includes('--medium');
-const scenarios = process.argv.includes('--compact') ? ['longest'] : ['longest', 'partial', 'zero', 'unknown', 'outdated', 'offline', 'no windows', 'unauthorized', 'no plan', 'no reset', 'only session', 'no Fable'];
+const scenarios = process.argv.includes('--compact') ? ['longest'] : ['longest', 'partial', 'zero', 'unknown', 'outdated', 'offline', 'no windows', 'unauthorized', 'no plan', 'no reset', 'only session', 'no Fable', 'no extra resets', 'zero extra resets'];
 const temporary = mkdtempSync(join(tmpdir(), 'cindy-quota-preview-'));
 try {
   const source = readFileSync(join(mobile, 'modules/cindy-quota-widget/widget/CindySubscriptionWidget.swift'), 'utf8');
@@ -46,7 +46,7 @@ import WidgetKit
                 let week = QuotaWindow(kind: platform == "claude" ? "sevenDay" : "week", observedAtMs: observed, minutes: 10080, remainingPercent: percent, resetAtMs: scenario == "no reset" ? nil : now + 6*86400000 + 23*3600000)
                 let hours = QuotaWindow(kind: "fiveHour", observedAtMs: observed, minutes: 300, remainingPercent: percent, resetAtMs: now + 4*3600000 + 59*60000)
                 let scoped = QuotaWindow(kind: "scoped", scope: "Fable", observedAtMs: observed, minutes: 10080, remainingPercent: percent, resetAtMs: nil)
-                let row = QuotaRow(plan: scenario == "no plan" ? nil : platform == "claude" ? "Max" : platform == "codex" ? "Enterprise" : "SuperGrok Heavy", status: scenario == "unauthorized" ? "unauthorized" : missing ? "no-windows" : "ready", platform: platform, observedAtMs: observed, available: !missing, windows: missing ? [] : platform == "claude" ? (scenario == "only session" ? [hours] : scenario == "no Fable" ? [week,hours] : [week,hours,scoped]) : [week])
+                let row = QuotaRow(plan: scenario == "no plan" ? nil : platform == "claude" ? "Max" : platform == "codex" ? "Pro" : "SuperGrok Heavy", extraResetsRemaining: platform == "codex" ? (scenario == "no extra resets" ? nil : scenario == "zero extra resets" ? 0 : 2) : nil, status: scenario == "unauthorized" ? "unauthorized" : missing ? "no-windows" : "ready", platform: platform, observedAtMs: observed, available: !missing, windows: missing ? [] : platform == "claude" ? (scenario == "only session" ? [hours] : scenario == "no Fable" ? [week,hours] : [week,hours,scoped]) : [week])
                 let snapshot = QuotaSnapshot(version: 2, source: "demo", connection: scenario == "offline" ? "offline" : "online", rows: [row])
                 QuotaProviderView(platform: platform, row: row, entry: QuotaEntry(date: Date(timeIntervalSince1970: now/1000), snapshot: snapshot), dark: dark, medium: ${medium})
                   .frame(width: 158, height: 158)

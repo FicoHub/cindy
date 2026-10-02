@@ -19,6 +19,8 @@ export interface QuotaWindow {
 export interface QuotaRow {
   platform: QuotaPlatform;
   plan?: string | null;
+  /** Remaining banked resets from the formal Codex read; absent is unknown, never zero. */
+  extraResetsRemaining?: number | null;
   status?: QuotaRowStatus;
   provenance?: 'codex-control' | 'codex-cache' | 'claude-control' | 'claude-event' | 'grok-subscription' | 'unknown';
   observedAtMs: number | null;
@@ -35,6 +37,7 @@ export const emptyQuotaSnapshot = (): QuotaSnapshot => ({ version: 2, source: 'l
 export const record = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+export const resetCount = (v: unknown): number | null => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
 export const timestamp = (v: unknown): number | null => finite(v) && v > 0 && v <= 8_640_000_000_000_000 ? v : null;
 const percent = (v: unknown): number | null => finite(v) && v >= 0 && v <= 100 ? v : null;
 export const remaining = (used: unknown): number | null => percent(used) === null ? null : 100 - (used as number);
@@ -70,6 +73,7 @@ export function sanitizeQuotaSnapshot(raw: unknown): QuotaSnapshot {
     }
     rows.push({
       platform: row.platform as QuotaPlatform, plan: QUOTA_PLANS.find(plan => plan === row.plan) ?? null,
+      extraResetsRemaining: row.platform === 'codex' ? resetCount(row.extraResetsRemaining) : null,
       status: ['ready', 'no-windows', 'unavailable', 'unsupported', 'unauthorized'].includes(String(row.status)) ? row.status as QuotaRowStatus : 'unavailable',
       provenance: ['codex-control', 'codex-cache', 'claude-control', 'claude-event', 'grok-subscription'].includes(String(row.provenance)) ? row.provenance as QuotaRow['provenance'] : 'unknown',
       observedAtMs: timestamp(row.observedAtMs), available: row.available === true, windows,

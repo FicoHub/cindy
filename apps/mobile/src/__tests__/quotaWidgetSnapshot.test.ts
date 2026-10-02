@@ -15,6 +15,37 @@ const reader = (overrides: Partial<WidgetQuotaReader> = {}): WidgetQuotaReader =
 });
 
 describe('widget quota boundaries', () => {
+  it.each([undefined, null, '0', false, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 0, 2, 99])('projects only an explicitly returned valid remaining-reset count: %s', async input => {
+    const result = await readWidgetQuota(reader({ getCodexRateLimits: async () => ({
+      rateLimits: { planType: 'pro', secondary: { usedPercent: 0, windowMinutes: 10080 } },
+      rateLimitResetCredits: { availableCount: input, credits: [{ id: 'must-not-cross', status: 'available' }] },
+      credits: { balance: '500' },
+    }) }), () => now);
+    const expected = typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? input : null;
+    expect(result.snapshot.rows[0]).toMatchObject({ plan: 'Pro', extraResetsRemaining: expected });
+    expect(JSON.stringify(result.snapshot)).not.toMatch(/must-not-cross|balance/);
+  });
+
+  it('does not infer reset counts from missing summaries, details, or legacy caches', async () => {
+    const legacy = { updatedAt: now, primary: { usedPercent: 0 }, rateLimitResetCredits: { availableCount: 9 } };
+    const read = reader({ getCodexRateLimits: async () => ({ rateLimits: { primary: { usedPercent: 0 } }, rateLimitResetCredits: null }) });
+    expect((await readWidgetQuota(read, () => now)).snapshot.rows[0].extraResetsRemaining).toBeNull();
+    read.getCodexRateLimits = async () => { throw new Error('Unsupported channel'); };
+    read.getAccountUsage = async () => legacy;
+    expect((await readWidgetQuota(read, () => now)).snapshot.rows[0].extraResetsRemaining).toBeNull();
+    const old = sanitizeQuotaSnapshot({ version: 2, source: 'demo', rows: [{ platform: 'codex', windows: [] }] });
+    expect(old.rows[0].extraResetsRemaining).toBeNull();
+    expect(sanitizeQuotaSnapshot({ ...old, rows: [{ ...old.rows[0], platform: 'claude', extraResetsRemaining: 2 }] }).rows[0].extraResetsRemaining).toBeNull();
+  });
+
+  it('uses an explicit account plan fallback but does not guess Pro price tiers from credits or usage', async () => {
+    const read = reader({ getCodexRateLimits: async () => ({ account: { planType: 'plus' }, rateLimits: { secondary: { usedPercent: 50, windowMinutes: 10080 } } }) });
+    expect((await readWidgetQuota(read, () => now)).snapshot.rows[0].plan).toBe('Plus');
+    read.getCodexRateLimits = async () => ({ rateLimits: { planType: 'pro', credits: { balance: '500' }, secondary: { usedPercent: 50, windowMinutes: 10080 } } });
+    expect((await readWidgetQuota(read, () => now)).snapshot.rows[0].plan).toBe('Pro');
+    read.getCodexRateLimits = async () => ({ account: { planType: 'unknown' }, rateLimits: { planType: 'unknown', secondary: { usedPercent: 12, windowMinutes: 10080 } }, rateLimitResetCredits: { availableCount: 3 } });
+    expect((await readWidgetQuota(read, () => now)).snapshot.rows[0]).toMatchObject({ plan: null, extraResetsRemaining: 3 });
+  });
   it('projects only quotas, preserves source observation times and converts reset seconds once', async () => {
     const { snapshot } = await readWidgetQuota(reader(), () => now);
     expect(snapshot.rows.map(row => row.windows[0].remainingPercent)).toEqual([0, 75, 90]);

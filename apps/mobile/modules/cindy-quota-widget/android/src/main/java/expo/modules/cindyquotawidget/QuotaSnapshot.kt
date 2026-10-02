@@ -41,6 +41,7 @@ internal object QuotaSnapshot {
           .put("remainingPercent", nullable(remaining)).put("resetAtMs", nullable(time(raw.opt("resetAtMs"))))
       }
       rows.put(JSONObject().put("platform", platform)
+        .put("extraResetsRemaining", nullable(if (platform == "codex") number(row.opt("extraResetsRemaining"))?.takeIf { it >= 0 && it <= 9_007_199_254_740_991.0 && it % 1.0 == 0.0 } else null))
         .put("plan", nullable(row.optString("plan").takeIf { it in listOf("Free", "Plus", "Pro", "Business", "Enterprise", "Edu", "Team", "Max", "SuperGrok", "SuperGrok Heavy") }))
         .put("status", row.optString("status").takeIf { it in listOf("ready", "no-windows", "unavailable", "unsupported", "unauthorized") } ?: "unavailable")
         .put("provenance", row.optString("provenance").takeIf { it in listOf("codex-control", "codex-cache", "claude-control", "claude-event", "grok-subscription") } ?: "unknown").put("available", row.opt("available") == true)

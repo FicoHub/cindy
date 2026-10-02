@@ -1,6 +1,6 @@
 import { codexLimitBucketKey, GENERIC_BUCKET_KEYS, selectCodexUsageForModel } from '@cindy/maker-shared/codex-usage-buckets';
 import { shouldFallbackToLegacyCodexUsage } from '@/session/sessionControls';
-import { QUOTA_SCOPES, QUOTA_PLANS, finite, record, remaining, resetMillis, timestamp, sanitizeQuotaSnapshot, type QuotaPlatform, type QuotaRow, type QuotaSnapshot, type QuotaWindow } from './quotaSnapshot';
+import { QUOTA_SCOPES, QUOTA_PLANS, finite, record, remaining, resetCount, resetMillis, timestamp, sanitizeQuotaSnapshot, type QuotaPlatform, type QuotaRow, type QuotaSnapshot, type QuotaWindow } from './quotaSnapshot';
 
 export interface WidgetAccount { providerId: string; platform: QuotaPlatform; label: string }
 export interface WidgetQuotaReader {
@@ -66,7 +66,10 @@ export async function readWidgetAccount(account: WidgetAccount, reader: WidgetQu
       const value = record(limits[k]);
       return window(k, value, finite(value.windowMinutes) ? value.windowMinutes : null, observedAtMs);
     });
-    return { platform: 'codex', observedAtMs, provenance, plan: planLabel(limits.planType ?? payload.planType), status: windows.length ? 'ready' : 'no-windows', available: windows.some(w => w.remainingPercent !== null), windows };
+    return { platform: 'codex', observedAtMs, provenance, plan: planLabel(limits.planType ?? payload.planType ?? record(payload.account).planType),
+      // Legacy usage stores do not establish freshness/semantics for earned resets.
+      extraResetsRemaining: provenance === 'codex-control' ? resetCount(record(payload.rateLimitResetCredits).availableCount) : null,
+      status: windows.length ? 'ready' : 'no-windows', available: windows.some(w => w.remainingPercent !== null), windows };
   }
   const raw = await reader.getSubscriptionUsage(account.platform, account.providerId);
   if (raw === null) return unknownRow(account.platform);
