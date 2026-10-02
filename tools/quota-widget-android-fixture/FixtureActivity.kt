@@ -30,6 +30,17 @@ object FixtureData {
 class FixtureActivity:Activity(){
  override fun onCreate(b:Bundle?){super.onCreate(b)
   val state=intent.getStringExtra("state")?:"partial"
+  if(state=="inspect") {
+   val manager=AppWidgetManager.getInstance(this)
+   val component=ComponentName(this,QuotaWidgetProvider::class.java)
+   val lines=manager.getAppWidgetIds(component).map { id ->
+    val info=manager.getAppWidgetInfo(id)
+    val options=manager.getAppWidgetOptions(id)
+    "id=$id target=${info.targetCellWidth}x${info.targetCellHeight} " + options.keySet().sorted().joinToString { key -> "$key=${options.get(key)}" }
+   }
+   setContentView(TextView(this).apply { text=lines.joinToString("\n");textSize=14f;setPadding(16,60,16,16) })
+   return
+  }
   if(intent.data==null){if(state=="clear")QuotaSnapshot.clear(this) else QuotaSnapshot.save(this,FixtureData.snapshot(state));QuotaWidgetProvider.updateAll(this)}
   val box=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(28,70,28,28)}
   box.addView(TextView(this).apply{text="DEMO DATA — isolated widget harness\nActual production AppWidget / snapshot code\nState: $state\n"+(if(intent.data!=null)"PASS: widget deep link" else "No login or real account data");textSize=20f})

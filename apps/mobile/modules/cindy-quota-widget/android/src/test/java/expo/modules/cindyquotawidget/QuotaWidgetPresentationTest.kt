@@ -5,6 +5,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuotaWidgetPresentationTest {
+  @Test fun twoProvidersFitACompactPhoneCardWithoutDemoPadding() {
+    val layout = QuotaWidgetPresentation.layout(382, 210, 1f, 2)
+    assertEquals(2, layout.columns)
+    assertEquals(2, layout.count)
+    assertFalse(layout.needsSpace)
+    assertEquals(2, QuotaWidgetPresentation.layout(382, 164, 1f, 2).count)
+  }
+  @Test fun resizingAndFontScaleDoNotHideOverflowOrInventRoom() {
+    assertEquals(1, QuotaWidgetPresentation.layout(190, 210, 1f, 2).count)
+    assertEquals(2, QuotaWidgetPresentation.layout(190, 340, 1f, 2).count)
+    assertTrue(QuotaWidgetPresentation.layout(190, 162, 1f, 2).needsSpace)
+    assertTrue(QuotaWidgetPresentation.layout(170, 210, 1f, 2).needsSpace)
+    assertEquals(1, QuotaWidgetPresentation.layout(382, 250, 1.3f, 2).count)
+    assertTrue(QuotaWidgetPresentation.layout(382, 210, 2f, 2).needsSpace)
+  }
   private val now = 1800000000000L
   private fun snapshot() = JSONObject("""{"version":2,"source":"demo","connection":"online","rows":[{"platform":"codex","available":true,"status":"ready","observedAtMs":1800000000000,"windows":[{"kind":"primary","minutes":10080,"remainingPercent":0,"observedAtMs":1800000000000,"resetAtMs":1800601200000}]}]}""")
   @Test fun resetCountsRemainUnknownUnlessTheyAreReliableRemainingIntegers() {

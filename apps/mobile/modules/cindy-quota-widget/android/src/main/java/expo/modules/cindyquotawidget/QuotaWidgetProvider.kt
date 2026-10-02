@@ -49,17 +49,14 @@ class QuotaWidgetProvider : AppWidgetProvider() {
       val landscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE
       val width = options.getInt(if (landscape) AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH else AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 250)
       val height = options.getInt(if (landscape) AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT else AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 200)
-      // Switch structure at large font sizes; never shrink text to hide overflow.
-      val cardHeight = ceil(184 * config.fontScale.coerceAtLeast(1f)).toInt()
-      val wide = width >= 2 * (32 + 146 * config.fontScale)
-      val demo = snapshot.getString("source") == "demo"
-      val rowCapacity = ((height - if (demo) 24 else 0) / cardHeight).coerceAtLeast(1)
-      val needsSpace = height < cardHeight + (if (demo) 24 else 0) || width < 32 + 146 * config.fontScale
-      val count = if (needsSpace) 0 else minOf(rows.length().coerceAtLeast(1), if (wide) rowCapacity * 2 else rowCapacity, 3)
+      val layout = QuotaWidgetPresentation.layout(width, height, config.fontScale, rows.length())
+      val wide = layout.columns == 2
+      val count = layout.count
+      val needsSpace = layout.needsSpace
       views.setInt(R.id.quota_root, "setBackgroundResource", if (dark) R.drawable.cindy_quota_background_dark else R.drawable.cindy_quota_background_light)
-      views.setTextViewText(R.id.quota_heading, if (needsSpace) "Enlarge widget" else if (count < rows.length()) (if (demo) "Demo data · Enlarge for all" else "Enlarge for all") else if (demo) "Demo data" else "")
+      views.setTextViewText(R.id.quota_heading, if (needsSpace) "Enlarge widget" else if (count < rows.length()) "Enlarge for all" else "")
       views.setTextColor(R.id.quota_heading, themed.getColor(R.color.cindy_widget_widget_secondary))
-      views.setViewVisibility(R.id.quota_heading, if (demo || needsSpace || count < rows.length()) View.VISIBLE else View.GONE)
+      views.setViewVisibility(R.id.quota_heading, if (needsSpace || count < rows.length()) View.VISIBLE else View.GONE)
       for (container in listOf(R.id.quota_column_0, R.id.quota_column_1, R.id.quota_bottom)) views.removeAllViews(container)
       views.setViewVisibility(R.id.quota_column_1, if (wide && count > 1) View.VISIBLE else View.GONE)
       val now = System.currentTimeMillis()
@@ -93,6 +90,11 @@ class QuotaWidgetProvider : AppWidgetProvider() {
       v.setTextViewText(R.id.provider_plan, row?.optString("plan")?.takeUnless { it == "null" || it.isBlank() } ?: " ")
       for (id in listOf(R.id.provider_name, R.id.provider_plan, R.id.provider_secondary, R.id.provider_tertiary)) v.setTextColor(id, secondary)
       val density = context.resources.displayMetrics.density
+      // Reserve three brand/plan text lines equally in both columns, including
+      // Android font rounding. A two-line plan must not move one quota baseline.
+      v.setInt(R.id.provider_header, "setMinimumHeight", ceil(
+        QuotaWidgetPresentation.HEADER_HEIGHT_DP * context.resources.configuration.fontScale.coerceAtLeast(1f) * density
+      ).toInt())
       fun sp(size: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, size, context.resources.displayMetrics).toInt()
       fun quota(window: JSONObject, primary: Boolean): CharSequence {
         val value = QuotaWidgetPresentation.value(row!!, window, connection, now)

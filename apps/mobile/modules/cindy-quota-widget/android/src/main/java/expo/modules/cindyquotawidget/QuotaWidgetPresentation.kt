@@ -2,9 +2,28 @@ package expo.modules.cindyquotawidget
 
 import org.json.JSONObject
 import kotlin.math.roundToInt
+import kotlin.math.ceil
 
 /** Pure presentation policy; never advances source observation time on redraw. */
 internal object QuotaWidgetPresentation {
+  const val HEADER_HEIGHT_DP = 46
+  const val CARD_HEIGHT_DP = 164
+  data class Layout(val columns: Int, val count: Int, val needsSpace: Boolean)
+  // 16dp insets + 46dp brand/ring area + 8dp gap + 38/21/18dp information rows.
+  // Do not use landscape grid constraints as the rendered card's required height.
+  fun layout(width: Int, height: Int, fontScale: Float, providers: Int): Layout {
+    val scale = fontScale.coerceAtLeast(1f)
+    val cardHeight = ceil(CARD_HEIGHT_DP * scale).toInt()
+    val columnWidth = 32 + 146 * scale
+    val columns = if (width >= 2 * columnWidth) 2 else 1
+    val requested = providers.coerceIn(1, 3)
+    val initial = (height / cardHeight).coerceAtLeast(0) * columns
+    // A genuine size warning consumes space; demo metadata never does.
+    val warningHeight = if (initial < requested) ceil(20 * scale).toInt() else 0
+    val capacity = ((height - warningHeight) / cardHeight).coerceAtLeast(0) * columns
+    val needsSpace = width < columnWidth || capacity == 0
+    return Layout(columns, if (needsSpace) 0 else minOf(requested, capacity), needsSpace)
+  }
   fun windows(row: JSONObject): List<JSONObject> {
     if (!row.optBoolean("available") || row.optString("status") != "ready") return emptyList()
     val source = row.getJSONArray("windows")
