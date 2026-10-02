@@ -28,6 +28,6 @@
   <string name="cindy_widget_minutes" formatted="false">{{count}} min</string>
   <string name="cindy_widget_demo" formatted="false">Demo</string>
   <string name="cindy_widget_add_hint" formatted="false">Add Claude Usage, Codex Usage or Grok Usage as a small widget. Subscription Usage shows the first two connected platforms side by side in a medium widget. Widget text is English.</string>
-  <string name="cindy_widget_add_hint_android" formatted="false">Add Cindy from your launcher’s widget picker. The compact widget shows one platform; a taller widget shows up to three. Widget text is in English.</string>
+  <string name="cindy_widget_add_hint_android" formatted="false">Add Cindy from your launcher’s widget picker. A wide widget shows two platforms side by side; narrower sizes stack them or show fewer platforms to fit. Resize the widget to show more. Widget text is in English.</string>
   <string name="cindy_widget_account_hint" formatted="false">Accounts in computer order, one per platform. Manage their order and connections on the computer.</string>
 </resources>

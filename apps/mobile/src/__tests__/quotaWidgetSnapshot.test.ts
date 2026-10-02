@@ -46,6 +46,10 @@ describe('widget quota boundaries', () => {
     read.getCodexRateLimits = async () => ({ account: { planType: 'unknown' }, rateLimits: { planType: 'unknown', secondary: { usedPercent: 12, windowMinutes: 10080 } }, rateLimitResetCredits: { availableCount: 3 } });
     expect((await readWidgetQuota(read, () => now)).snapshot.rows[0]).toMatchObject({ plan: null, extraResetsRemaining: 3 });
   });
+  it.each(['unknown', '', null])('uses the explicit account plan when the bucket plan is %s', async (planType) => {
+    const read = reader({ getCodexRateLimits: async () => ({ account: { planType: 'plus' }, rateLimits: { planType, secondary: { usedPercent: 34, windowMinutes: 10080 } } }) });
+    expect((await readWidgetQuota(read, () => now)).snapshot.rows[0].plan).toBe('Plus');
+  });
   it('projects only quotas, preserves source observation times and converts reset seconds once', async () => {
     const { snapshot } = await readWidgetQuota(reader(), () => now);
     expect(snapshot.rows.map(row => row.windows[0].remainingPercent)).toEqual([0, 75, 90]);

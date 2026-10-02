@@ -28,6 +28,6 @@
   <string name="cindy_widget_minutes" formatted="false">{{count}} 分</string>
   <string name="cindy_widget_demo" formatted="false">デモ</string>
   <string name="cindy_widget_add_hint" formatted="false">小サイズでは Claude Usage、Codex Usage、Grok Usage を追加できます。中サイズの Subscription Usage は接続済みの最初の2つのサービスを並べて表示します。ウィジェット内は英語表示です。</string>
-  <string name="cindy_widget_add_hint_android" formatted="false">ホーム画面のウィジェット一覧から Cindy を追加します。小さいサイズでは1つ、高さを増やすと最大3つのプラットフォームを表示します。ウィジェットの表示言語は英語です。</string>
+  <string name="cindy_widget_add_hint_android" formatted="false">ホーム画面のウィジェット一覧から Cindy を追加します。横幅が広い場合は2つのプラットフォームを横に並べ、狭い場合は空きスペースに応じて縦に並べるか表示数を減らします。サイズを変更すると、より多くの情報を表示できます。ウィジェット内は英語表示です。</string>
   <string name="cindy_widget_account_hint" formatted="false">コンピューター上の順序で各プラットフォームから 1 アカウントを使用します。接続と順序はコンピューターで管理してください。</string>
 </resources>

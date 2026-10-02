@@ -2998,8 +2998,32 @@ assertRouteCurrent();
     // This RPC is credential-specific, unlike model/list or memory utilities. Requiring
     // oauth-bearer prevents a gateway/provider host from reading or mutating the wrong
     // account context; getHost refuses to replace a differently-authenticated active host.
-    return this.withStartedAccountHost(providerId,
-      host => host.request<AccountRateLimitsResponse>(Method.AccountRateLimitsRead, undefined));
+    return this.withStartedAccountHost(providerId, async (host) => {
+      const result = await host.request<AccountRateLimitsResponse>(Method.AccountRateLimitsRead, undefined);
+      const missingPlan = (plan: string | null | undefined) => !plan?.trim() || plan.trim().toLowerCase() === 'unknown';
+      if (!missingPlan(result.rateLimits.planType)
+        && Object.values(result.rateLimitsByLimitId ?? {}).every(bucket => !missingPlan(bucket.planType))) return result;
+      // Rate-limit buckets may omit the plan even for a paid account. Read only the
+      // selected host's public account metadata; never inspect auth files or force refresh.
+      try {
+        const state = await host.request<{ account?: { type?: string; planType?: string } | null }>(
+          'account/read', { refreshToken: false }, { timeoutMs: 2_000 });
+        const plan = state.account?.planType;
+        if (state.account?.type !== 'chatgpt' || typeof plan !== 'string'
+          || !['free', 'go', 'plus', 'pro', 'team', 'business', 'enterprise', 'edu'].includes(plan)) return result;
+        const fillPlan = (bucket: AccountRateLimitsResponse['rateLimits']) => missingPlan(bucket.planType)
+          ? { ...bucket, planType: plan } : bucket;
+        return {
+          ...result,
+          rateLimits: fillPlan(result.rateLimits),
+          rateLimitsByLimitId: result.rateLimitsByLimitId == null ? null
+            : Object.fromEntries(Object.entries(result.rateLimitsByLimitId).map(([key, bucket]) => [key, fillPlan(bucket)])),
+        };
+      } catch {
+        // Optional metadata must not turn a successful quota read into an error.
+        return result;
+      }
+    });
   }
 
   /** Consume one reset credit on the non-model app-server control plane. */

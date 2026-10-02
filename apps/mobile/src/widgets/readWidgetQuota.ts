@@ -66,7 +66,7 @@ export async function readWidgetAccount(account: WidgetAccount, reader: WidgetQu
       const value = record(limits[k]);
       return window(k, value, finite(value.windowMinutes) ? value.windowMinutes : null, observedAtMs);
     });
-    return { platform: 'codex', observedAtMs, provenance, plan: planLabel(limits.planType ?? payload.planType ?? record(payload.account).planType),
+    return { platform: 'codex', observedAtMs, provenance, plan: planLabel(limits.planType) ?? planLabel(payload.planType) ?? planLabel(record(payload.account).planType),
       // Legacy usage stores do not establish freshness/semantics for earned resets.
       extraResetsRemaining: provenance === 'codex-control' ? resetCount(record(payload.rateLimitResetCredits).availableCount) : null,
       status: windows.length ? 'ready' : 'no-windows', available: windows.some(w => w.remainingPercent !== null), windows };
