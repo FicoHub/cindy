@@ -62,6 +62,106 @@ The interface is built from a three-tier layer system that applies symmetrically
 
 > **Important — element-level vs. page-level:** The "flat Surface" rule in full-window layouts applies only to the **overall page structure**, not to individual widgets. Lifted widgets _within_ a full-window layout — inputs, chat input boxes, raised cards, modal overlays, panel popups — still use **Card** color per their component rules (see Section 4). A full-window chat interface can have a flat Surface page _and_ a Card-colored chat input box at the same time; those are two different scopes. "Surface flat" means "don't split the page into Page+Card layers," not "every element on the page must be Surface color."
 
+### Optional application wallpaper (user decision, 2026-10-01)
+
+An explicitly selected Desktop wallpaper replaces the flat page canvas across
+the whole host application: title bar, navigation, messages, tool-pane chrome,
+settings and other host pages share continuous viewport-aligned artwork. This
+opt-in setting supersedes the CINDY sidebar-only backdrop treatment while active;
+disabling it restores the original theme without modifying theme files or tokens.
+Use a theme-surface veil, never a fixed black overlay in Light mode. Image opacity
+must not affect text or icons. Elevated controls, menus, dialogs and embedded web
+or editor content keep their readable surfaces. Composer scroll masking must
+align with the same wallpaper instead of introducing an opaque footer rectangle.
+Built-in SVG wallpapers are decorative assets, not new semantic UI colors.
+Verify actual Light/Dark screenshots across host pages and the expanded tool pane.
+
+The built-in wallpaper catalog contains only Window Companion, Future Atelier and Dream
+Wander, plus None to restore the theme canvas (user decision, 2026-10-01).
+Custom wallpaper is available through Choose image, Replace image and Remove image
+in the same section (user addition, 2026-10-01). Accept local PNG/JPEG/WebP up to
+20 MB and 40 megapixels, store a metadata-free static image up to 3840 pixels
+in the managed media store. Wallpaper selection and the custom image reference
+are shared within the Desktop profile, just like theme preferences (user decision,
+2026-10-02). Import, replacement, removal and recycling are client-wide as well:
+no account database, account-bound operation guard or pre-release owner migration.
+The media store's client wallpaper scope isolates its bytes from chat attachments;
+switching accounts (or signing out) keeps the same wallpaper. Font-only utility renderers never receive
+custom media URLs.
+Detached sidebar and plugin-panel host chrome use the same wallpaper provider;
+embedded plugin webviews retain their own surfaces and permission boundary.
+Cancellation and import failures retain the existing image. Switching to a built-in
+or None keeps the imported image available; Remove image forgets it. Custom imagery
+shares the continuous cover-fit canvas and readability veil; no dynamic toggle.
+Remove the previous arrow, standalone portrait, gradient and paper
+options and assets. Retired saved selections normalize to None; unrelated theme
+and font preferences remain unchanged. All three scenes use the same cover fit,
+so do not expose a fit selector that cannot affect them.
+
+The scene-led Cindy wallpaper alternatives (2026-10-01) place the recognizable
+character and black cat in three distinct illustrated environments: a sunny
+window, a futuristic atelier and a floating garden above clouds. Preserve each
+landscape as one viewport-sized, cover-fitted canvas behind navigation, chat and
+tools. Do not confine the scene to chat, fade its edges into a separate backdrop,
+or reposition/scale it when sidebars open: that splits the app into disconnected
+pieces (user correction, 2026-10-01). Only window resizing changes the crop.
+These curated scenes use a lighter theme-derived
+veil than arbitrary photos, with a stronger Dark veil to preserve reading
+contrast. Validate real long messages, not only empty chat views.
+
+The three approved scenes also offer an explicit Static / Dynamic choice (2026-10-01).
+Static remains the default. Dynamic uses a silent, subtly moving loop with a fixed
+camera, preserving the same composition and full-window crop. Camera position,
+viewing angle and field of view must stay constant throughout the entire loop,
+including Dream Wander and Future Atelier (user correction, 2026-10-02). No pans,
+tilts, dolly movement, zooms or perspective drift; matching first and last frames
+alone is insufficient. Built-in static artwork
+uses 3584×2240 WebP. All three official 2304×1440 videos are bundled, fully offline,
+with no duplicate low-resolution assets or resolution switching on window resize.
+The motion approved on 2026-10-02 is preserved frame for frame at its original
+24fps. The bundled 2304×1440 delivery is Real-ESRGAN anime-video super-resolution
+of the approved 1214×758 sources, not native 2K generation; do not regenerate,
+retime or reverse the accepted motion while preparing higher-resolution assets.
+The CDN mechanism remains opt-in for future catalog entries marked as CDN-delivered;
+those entries can use a bundled fallback while downloading verified HD bytes into
+the managed media store. Official scenes never request CDN resources.
+Decode one local video
+per window, suspend playback while hidden/minimized, and use the original still for
+reduced motion or playback failure. Static / Dynamic switches crossfade the video
+over the retained high-resolution still using base/ease-move (200ms), starting
+only after playback is ready. Switching back to Static releases the video after
+the fade; rapid toggles reverse it without adding a decoder. Reduced motion
+bypasses the transition and releases the video immediately.
+For moving scenes, fade the message layer above the composer instead of painting a
+static duplicate of the wallpaper over it. Check the loop seam and actual Light/Dark
+chat readability, including collapsed sidebars and resized windows.
+
+Environment motion must be clearly perceptible rather than concentrated on the
+character (user correction, 2026-10-01). Animate existing foliage, curtains and
+leaf shadows in the sunny scene; rain, plants and reflections in the atelier;
+clouds, grasses, vines and waterfalls in the floating garden. Keep architecture
+and the camera stationary. Prefer several slow, independent environmental rhythms
+with restrained character movement; verify foliage crops and loop transitions,
+including after the Light/Dark readability veil is applied.
+For the floating garden, keep the environmental amplitude restrained: tiny leaf
+and vine-tip movement, slow cloud-edge drift and fine downward water flow. Avoid
+large drifting petals, rolling cloud banks and whole flowerbeds sweeping across
+the view (user correction, 2026-10-01). Demonstrate motion in recordings of the real
+chat interface with messages, composer and pane chrome, not only isolated artwork.
+In the sunny window scene, keep the curtain close to its resting drape: small,
+slow folds rather than large billows across the window. Nearby leaves and light
+shadows should move gently without competing with messages (user correction,
+2026-10-01).
+The window scene needs infrequent, natural blinking and coherent whole-scene
+motion (user corrections, 2026-10-01). Judge hair, face, eyes, cat, curtains and
+foliage together at normal playback speed. Do not retime an isolated eye patch
+against a differently moving face or reverse hair motion to manufacture a loop.
+Keep the blink gentle and the environment moving at a steady pace: never speed
+up the entire frame to shorten a blink, which also accelerates curtains, hair and
+shadows (user correction, 2026-10-02). Avoid mid-blink reopening, alternating-frame
+holds and doubled eyelid outlines. Decoder frame counts alone do not establish natural
+motion; inspect the complete action and loop boundary before accepting an asset.
+
 ### Task tag identity colors
 
 用户确认的任务标签色板为红、橙、黄、绿、蓝、紫、灰、粉、珊瑚、青、靛蓝、白共十二色。只用于标签色球与编辑色板，表示用户分类，不表示任务运行状态。色球为圆形、细描边，选中时勾位于球内；白色在 Light/Dark 中均保持白色，用独立深色勾保证对比度。Desktop 使用 `task-tag-*` 语义 token；Mobile 使用对应 `taskTag*` 色板字段。默认面板只显示选择列表，添加或编辑后才显示名称和两行六列色板，不显示双击编辑提示。
@@ -1540,7 +1640,7 @@ The execution rulebook for subsequent desktop / mobile UI updates. Sources: the 
 
 - File identity is classified by `packages/maker-shared/src/filePresentation.ts` on both platforms. Known file names/extensions take precedence; MIME is a fallback for unknown names. This is presentation metadata only, never a decoder or permission decision.
 - Compact file rows, search results, tabs, mentions, references and diff headers use `FileTypeIcon` / `pickFileIcon`: the same named Lucide glyph on Desktop and Mobile, regular stroke, inherited semantic foreground. At 12–18 px/pt, do not squeeze PDF/DOC/XLS text into the glyph. PDF, prose and word-processing documents may share `FileText`; the filename provides the finer distinction.
-- Large attachment and generated-file tiles keep real content previews first. Without a preview, use `FileTypeTile` and the shared type label. Desktop reuses the attachment paper/badge artwork and registered file-badge tokens; Mobile uses the shared Lucide glyph and a separate readable label. Labels must respect the platform micro-text minimum; never scale a labeled tile down into a compact icon.
+- Large attachment and generated-file tiles keep real content previews first. Without a preview, use `FileTypeTile` and the shared type label. Desktop reuses the attachment paper/badge artwork and registered file-badge tokens; Mobile uses the shared Lucide glyph and a separate readable label; at the 64 pt `iconSize.glyph` tier that glyph matches the file-browser folder glyph — `iconStroke.thin` with `absoluteStrokeWidth` on `borderStrong` — because Lucide's regular 2-unit stroke would otherwise scale to ~5 pt (2026-10-02). Labels must respect the platform micro-text minimum; never scale a labeled tile down into a compact icon.
 - Categories cover code/configuration, text, PDF, documents, spreadsheets, presentations, images, audio, video, archives, databases and unknown files. New entry points reuse the shared classifier and platform components instead of adding extension tables.
 - File-type decoration does not replace upload progress, errors, diff counts, rename/copy status or action icons. Folder navigation, pasted-text actions and generic “files” section icons keep their own semantics. Decorative file glyphs add no focus stop or duplicate accessible label.
 
@@ -1630,7 +1730,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 登录页是**黑白反色**体系（亮色 = 白底墨字 / 深色 = 深底米字），与编辑器主界面解耦，亮 / 深两模式镜像同构：
 
 - **面板 / 控件走墨黑–米白反色，深色镜像反相**：亮色白面板 `#FBFBFB` + 米白控件 `#EEEEEE` + 墨黑主按钮 `#2A2828`；深色反相为深面板 `#312F2F` + 深控件 `#2C2A2A` + 白主按钮 `#EEEEEE`。**两模式的面板 / 控件底色与文字都不出现纯黑 `#000` 或纯白 `#fff`**（`figma-component-spec §1.1`）；细描边例外——暗色主按钮 / 圆钮的 `#FFFFFF` 白边为 figma `white_button` 实测值，不受此限。
-- **品牌红 `#DF0C27` 在登录画布内只用于区域徽标（旧称 Global pill，见 §16.3）与字标红元素等品牌 accent，跨模式不变**；画布外仅有 §15.10 登记的 Mobile Beta 渠道状态徽标例外。**禁止作页面背景**（wave4 改判，见 `token-decision-table §3` 对 `#df0c27` 的语义判定），不渗入面板内部（呼应 §15.10 红色边界）。画布底走 `--login-bg-base`（亮 `#EDEDED` / 深 `#1F1F1E`），红只经 `--login-brand-accent` 消费。错误红 `#D91F37` 同样跨模式不变（语义豁免，呼应 §10 豁免族）。
+- **品牌红 `#DF0C27` 在登录画布内只用于区域徽标（旧称 Global pill，见 §16.3）与字标红元素等品牌 accent，跨模式不变**；画布外仅有 §15.10 登记的 Mobile Beta 渠道状态徽标例外。**禁止作页面背景**（wave4 改判，见 `token-decision-table §3` 对 `#df0c27` 的语义判定），不渗入面板内部（呼应 §15.10 红色边界）。画布底走 `--login-bg-base`（亮 `#F2F2ED` / 深 `#181818`，与 CINDY 皮肤页底同值，固定不随扩展主题），红只经 `--login-brand-accent` 消费。错误红 `#D91F37` 同样跨模式不变（语义豁免，呼应 §10 豁免族）。
 - **`--login-*` 调色板双态目标值** —— token 已注册于 `apps/desktop/src/renderer/themes/colors.ts`（dark 槽位当前为 light 占位值）。下表为深色实现的目标规格，经 Figma 组件库 Dark symbol 逐个核验；实现 PR 须将 dark 槽位更新为本表 dark 列的值：
 
 <!-- BEGIN GENERATED DS-8: login-colors -->
@@ -1657,7 +1757,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 | `--login-splash-progress-track` / `--login-splash-progress-fill` | `#D9D9D9` / `#252222` | `#434343` / `#D4D4D4` | figma Dark symbol 核验 |
 | `--login-loading-ring-track`（loading 环轨道） | `rgba(42, 40, 40, 0.18)` | `rgba(212, 212, 212, 0.18)` | 18% 半透明环轨二态；登录页 LoginLoadingRing 与 Splash 转圈环共用（Splash 侧自暗色实现 PR 起由字面 rgba 收敛至本 token） |
 | `--login-error-fg` | `#D91F37` | `#D91F37` | 语义豁免不变 |
-| `--login-bg-base`（画布底） | `#EDEDED` | `#1F1F1E` | figma 532:585 暗色帧实测；两模式纯平定稿——暗色帧的双红晕层（532:588/589）曾按 1:1 几何落地，2026-07-24 实机走查拍板去除（亮色撤渐变=PR#104 拍板，两条决策相互独立） |
+| `--login-bg-base`（画布底） | `#F2F2ED` | `#181818` | 2026-10-01 对齐 CINDY 皮肤页底（cindy-light / cindy-dark 的 `surface`，#2571 色阶改版值），登录前后背景同色；仍为固定值、不随扩展主题。两模式纯平定稿——暗色帧的双红晕层（532:588/589）曾按 1:1 几何落地，2026-07-24 实机走查拍板去除（亮色撤渐变=PR#104 拍板，两条决策相互独立） |
 <!-- END GENERATED DS-8: login-colors -->
 
 品牌保护项 `--login-brand-accent` / `--login-brand-accent-pressed` 仍按原决定保留 `#DF0C27` / `#A61629`，两模式相同；尚未接管，不由本表生成。上表已接管行从 DTCG 自动生成，核验源说明保留原批准依据。
@@ -1863,7 +1963,7 @@ and media position (`ui/media-scrubber`, seconds in/out). Native media controls 
 **3 处非纯 token、需组件改动**：
 
 1. **hover / pressed 叠层二态**：叠层原为组件内 figma 实测 rgba 字面值，暗色起 token 化为 `--login-overlay-*` 二态。**〔2026-07-24 组件库更新改判〕hover 统一「叠白变亮」**：全按钮族 hover = normal 底上叠白色半透明（深底 `#2A2828`/`#434141` 族 +白 8%；浅底 `#EEEEEE` 族 +白 10%；**唯一例外**：`back` 亮色 hover 维持既有白 70%），两模式同向——旧「白底钮 hover = 黑 5% 变暗」口径作废（figma `white_button 347:2529`、SSO `549:779` 已按新值改稿）。pressed 维持叠黑，alpha 分档：**深底强调钮 50%**（`log_in_button` 与亮模式强调小钮 `light_button_highlight`，不论尺寸）/ 暗普通小钮 `Dark_button_Normal` 20% / 浅底钮 10%（边 `#E5E5E5`）/ 方式行与返回钮 8%。归纳仅作速记，**落码逐组件对拍 `figma-component-spec §11.1` 的状态矩阵，不按类别名推断**。**〔落码状态〕本改判当前仅在文档层生效**：as-built 组件（含回调页 dark CTA / `oauthResultPage`）仍消费改判前的旧叠层值（浅底 hover 黑 5%、pressed 黑 10% 等），与新口径的同步随暗色实现 PR 的 `--login-overlay-*` token 化一并落地——在那之前「文档新口径 vs 代码旧值」的差异是已知且有意的，不构成实现缺陷；落地后以本段口径为准。hover 方向不再随底色反转，但 alpha 档位随组件底色深浅取值，`--login-overlay-*` 系列 light / dark 二态 token 照常承载，组件把字面 rgba 改为 `var(--login-overlay-*)`（机械替换，零行为变化）。
-2. **`--login-bg-base` 前提变更**：画布底原为「跨主题恒定白 `#EDEDED`」，深色为 `#1F1F1E`（figma 532:585 帧实测）——即 `--login-*` 从「跨主题恒定」改为「随 light / dark 二态」（见 §16.2）。
+2. **`--login-bg-base` 前提变更**：画布底原为「跨主题恒定白 `#EDEDED`」，深色为 `#1F1F1E`（figma 532:585 帧实测）——即 `--login-*` 从「跨主题恒定」改为「随 light / dark 二态」（见 §16.2）。〔2026-10-01〕两态改为与 CINDY 皮肤页底同值 `#F2F2ED` / `#181818`，登录前后背景不再变色；仍为固定值，不随扩展主题。
 3. **`LoginBrandStage` 资产按模式切**：深色画布用**登录专用**白字版字标 / slogan 资产（`assets/login/wordmark-dark*.png` / `slogan-dark*.png`，源自 figma 532:585 `CINDY_Standard_White` 与 SLOGAN `#FBFBFB`，由暗色实现 PR 新增；**不是** §15.7 的新页横版 `cindy-logo-dark.png`——落位与尺寸不同）；立绘两模式同资产。
 
 **disabled 态特例**：主按钮 disabled **两模式同构**——深底 `#2A2828`（独立 token `--login-disabled-button-bg`，**不随** `--login-primary-button-bg` 反相；组件需 disabled 分支切换底/字）+ 白 70% 叠层（`--login-disabled-button-overlay`）+ 边 `#B4B4B4` + 文字 `#D4D4D4`（`--login-disabled-button-text`）opacity 0.8（figma `white_button` Disable 态核验：深色 disabled 不反相为白底，仍走亮色同款灰态）。
