@@ -23,6 +23,106 @@ function fixture() {
 }
 
 describe('quota widget account and cache ownership', () => {
+  it('retries stopping sharing after native deletion failed and fences late responses', async () => {
+    const { controller, native, reader, cache } = fixture();
+    await controller.setOwner('alice'); await controller.selectDevice('one'); await controller.refresh(reader);
+    const pending = deferred<unknown>(); reader.getCodexRateLimits = () => pending.promise;
+    const read = controller.refresh(reader); await Promise.resolve();
+    native.clearSnapshot.mockImplementationOnce(() => { throw new Error('delete failed'); });
+    await controller.selectDevice(null);
+    expect(controller.getSnapshot()).toMatchObject({ deviceId: null, error: true, clearPending: true });
+    native.clearSnapshot.mockClear(); native.writeSnapshot.mockClear();
+    await controller.selectDevice(null);
+    pending.resolve({ rateLimits: { planType: 'pro', primary: { usedPercent: 1 } } }); await read;
+    expect(native.clearSnapshot).toHaveBeenCalledOnce();
+    expect(native.writeSnapshot).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({ deviceId: null, error: false, clearPending: false });
+    expect(JSON.parse([...cache.values()][0])).toMatchObject({ deviceId: null, snapshot: { rows: [] } });
+  });
+
+  it('retains a failed provider observation while refreshing other providers', async () => {
+    const { controller, reader } = fixture();
+    reader.listProviders = async () => ({ providers: [
+      { id: 'openai', connected: true, auth: { method: 'oauth' } },
+      { id: 'anthropic', connected: true, auth: { method: 'oauth' } },
+    ] });
+    reader.getSubscriptionUsage = async () => ({ source: 'oauth-endpoint', updatedAt: Date.now(), sevenDay: { utilization: 20 } });
+    await controller.setOwner('alice'); await controller.selectDevice('one'); await controller.refresh(reader);
+    const before = controller.getSnapshot().snapshot.rows[0];
+    reader.getCodexRateLimits = async () => { throw new Error('temporary network failure'); };
+    reader.getSubscriptionUsage = async () => ({ source: 'oauth-endpoint', updatedAt: Date.now(), sevenDay: { utilization: 30 } });
+    await controller.refresh(reader);
+    expect(controller.getSnapshot().snapshot.rows[0]).toEqual(before);
+    expect(controller.getSnapshot().snapshot.rows[1].windows[0].remainingPercent).toBe(70);
+    expect(controller.getSnapshot().error).toBe(true);
+    expect(quotaWindowState(before, before.windows[0], 'online', before.observedAtMs! + QUOTA_MAX_AGE_MS)).toBe('stale');
+  });
+
+  it('keeps native-clear retry pending across repeated failures and blocks refresh', async () => {
+    const { controller, native, reader } = fixture();
+    await controller.setOwner('alice'); await controller.selectDevice('one');
+    native.clearSnapshot.mockImplementation(() => { throw new Error('disk'); });
+    await controller.selectDevice(null); await controller.selectDevice(null);
+    expect(controller.getSnapshot()).toMatchObject({ deviceId: null, clearPending: true, error: true });
+    await controller.selectDevice('two');
+    const list = vi.fn(reader.listProviders); reader.listProviders = list;
+    await controller.refresh(reader); expect(list).not.toHaveBeenCalled();
+    native.clearSnapshot.mockReset(); await controller.selectDevice('two');
+    await controller.refresh(reader);
+    expect(controller.getSnapshot()).toMatchObject({ deviceId: 'two', clearPending: false, error: false });
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries private-cache deletion when stopping sharing could not persist', async () => {
+    const { controller, storage, cache } = fixture();
+    await controller.setOwner('alice'); await controller.selectDevice('one');
+    storage.setItem.mockRejectedValueOnce(new Error('disk'));
+    await controller.selectDevice(null);
+    expect(controller.getSnapshot()).toMatchObject({ clearPending: true, error: true });
+    await controller.selectDevice(null);
+    expect(controller.getSnapshot()).toMatchObject({ clearPending: false, error: false });
+    expect(JSON.parse([...cache.values()][0]).deviceId).toBeNull();
+  });
+
+  it.each(['unauthorized', 'unsupported', 'empty', 'provider', 'device', 'owner', 'cold'])('does not retain a prior allowance across %s boundaries', async boundary => {
+    const { controller: initial, reader, storage, native } = fixture();
+    let controller = initial;
+    await controller.setOwner('alice'); await controller.selectDevice('one'); await controller.refresh(reader);
+    if (boundary === 'provider') reader.listProviders = async () => ({ providers: [{ id: 'other', connected: true, auth: { method: 'oauth', native: 'codex' } }] });
+    if (boundary === 'device') await controller.selectDevice('two');
+    if (boundary === 'owner') { await controller.setOwner('bob'); await controller.selectDevice('one'); }
+    if (boundary === 'cold') { controller = new QuotaWidgetController(storage, native); await controller.setOwner('alice'); }
+    reader.getCodexRateLimits = async () => {
+      if (boundary === 'empty') return { rateLimits: {} };
+      throw new Error(boundary === 'unauthorized' ? 'PRECONDITION_FAILED: reconnect' : boundary === 'unsupported' ? 'unsupported channel' : 'network');
+    };
+    await controller.refresh(reader);
+    expect(controller.getSnapshot().snapshot.rows[0].windows).toEqual([]);
+    expect(controller.getSnapshot().snapshot.rows[0].available).toBe(false);
+  });
+
+  it('does not revive legacy Codex data after an explicit authorization failure', async () => {
+    const { controller, reader } = fixture();
+    await controller.setOwner('alice'); await controller.selectDevice('one'); await controller.refresh(reader);
+    reader.getCodexRateLimits = async () => { throw new Error('UNAUTHORIZED'); };
+    const legacy = vi.fn(async () => ({ primary: { usedPercent: 1 }, updatedAt: Date.now() }));
+    reader.getAccountUsage = legacy;
+    await controller.refresh(reader);
+    expect(legacy).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().snapshot.rows[0]).toMatchObject({ status: 'unauthorized', windows: [] });
+  });
+
+  it('replaces a retained observation when its provider recovers', async () => {
+    const { controller, reader } = fixture();
+    await controller.setOwner('alice'); await controller.selectDevice('one'); await controller.refresh(reader);
+    reader.getCodexRateLimits = async () => { throw new Error('network'); };
+    await controller.refresh(reader); expect(controller.getSnapshot().error).toBe(true);
+    reader.getCodexRateLimits = async () => ({ rateLimits: { primary: { usedPercent: 40 } } });
+    await controller.refresh(reader);
+    expect(controller.getSnapshot().error).toBe(false);
+    expect(controller.getSnapshot().snapshot.rows[0].windows[0].remainingPercent).toBe(60);
+  });
+
   it('rejects a source revoked while its cold-start cache read was pending', async () => {
     const { controller, storage, native, revoked, cache } = fixture();
     const pending = deferred<string | null>();

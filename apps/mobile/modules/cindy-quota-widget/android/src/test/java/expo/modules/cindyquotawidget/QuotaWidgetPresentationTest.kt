@@ -5,6 +5,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuotaWidgetPresentationTest {
+  @Test fun thirdProviderWarningMustNotDisplaceFittingCards() {
+    assertEquals(2, QuotaWidgetPresentation.layout(356, 164, 1f, 3).count)
+    assertEquals(1, QuotaWidgetPresentation.layout(178, 164, 1f, 3).count)
+    assertEquals(2, QuotaWidgetPresentation.layout(178, 328, 1f, 3).count)
+  }
+
+  @Test fun hintsOnlyUseSpareSpaceAndNeverReduceCapacity() {
+    assertFalse(QuotaWidgetPresentation.layout(356, 164, 1f, 3).showMoreHint)
+    assertFalse(QuotaWidgetPresentation.layout(356, 183, 1f, 3).showMoreHint)
+    assertTrue(QuotaWidgetPresentation.layout(356, 184, 1f, 3).showMoreHint)
+    assertEquals(3, QuotaWidgetPresentation.layout(356, 328, 1f, 3).count)
+    for (scale in listOf(1f, 1.3f, 2f)) for (width in listOf(178, 356, 600)) for (height in 100..400) {
+      val two = QuotaWidgetPresentation.layout(width, height, scale, 2)
+      val three = QuotaWidgetPresentation.layout(width, height, scale, 3)
+      assertTrue(three.count >= two.count)
+    }
+  }
+
   @Test fun twoProvidersFitACompactPhoneCardWithoutDemoPadding() {
     val layout = QuotaWidgetPresentation.layout(382, 210, 1f, 2)
     assertEquals(2, layout.columns)

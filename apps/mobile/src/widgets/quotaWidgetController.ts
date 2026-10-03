@@ -8,10 +8,11 @@ export interface QuotaWidgetState {
   accounts: WidgetAccount[];
   busy: boolean;
   error: boolean;
+  clearPending: boolean;
 }
 interface Storage { getItem(key: string): Promise<string | null>; setItem(key: string, value: string): Promise<void>; removeItem(key: string): Promise<void> }
 interface NativeSnapshot { writeSnapshot(json: string): void; clearSnapshot(): void }
-const empty = (): QuotaWidgetState => ({ ready: false, deviceId: null, snapshot: emptyQuotaSnapshot(), accounts: [], busy: false, error: false });
+const empty = (): QuotaWidgetState => ({ ready: false, deviceId: null, snapshot: emptyQuotaSnapshot(), accounts: [], busy: false, error: false, clearPending: false });
 
 /** Owns one user's selection and serialized writes. Native writes are synchronous at the owner fence. */
 export class QuotaWidgetController {
@@ -35,8 +36,8 @@ export class QuotaWidgetController {
     return pending;
   }
   private clearNative(): boolean {
-    try { this.native.clearSnapshot(); return true; }
-    catch { this.publish({ error: true }); return false; }
+    try { this.native.clearSnapshot(); this.publish({ clearPending: false }); return true; }
+    catch { this.publish({ error: true, clearPending: true }); return false; }
   }
   async setOwner(owner: string): Promise<void> {
     const previous = this.owner;
@@ -60,7 +61,7 @@ export class QuotaWidgetController {
         snapshot.connection = 'offline';
         // Only the already authenticated owner may rehydrate a native snapshot.
         this.native.writeSnapshot(JSON.stringify(deviceId ? snapshot : emptyQuotaSnapshot()));
-        this.publish({ deviceId, snapshot: deviceId ? snapshot : emptyQuotaSnapshot(), ready: true });
+        this.publish({ deviceId, snapshot: deviceId ? snapshot : emptyQuotaSnapshot(), ready: true, clearPending: false });
         if (cachedDevice && !deviceId) await this.storage.removeItem(this.key(owner));
       });
     } catch { if (epoch === this.epoch) this.publish({ ready: true, error: true }); }
@@ -68,7 +69,7 @@ export class QuotaWidgetController {
   async selectDevice(deviceId: string | null): Promise<void> {
     if (!this.owner || (deviceId !== null && (!deviceId || deviceId.length > 200))) return;
     if (deviceId && this.isDeviceRevoked(deviceId)) return;
-    if (deviceId === this.state.deviceId) return;
+    if (deviceId === this.state.deviceId && !this.state.clearPending) return;
     const epoch = ++this.epoch;
     const cleared = this.clearNative();
     this.publish({ deviceId, snapshot: emptyQuotaSnapshot(), accounts: [], busy: false, error: !cleared });
@@ -79,7 +80,7 @@ export class QuotaWidgetController {
     const value = JSON.stringify({ deviceId: this.state.deviceId, snapshot: this.state.snapshot });
     try {
       await this.serialize(async () => { if (epoch === this.epoch && this.owner) await this.storage.setItem(key, value); });
-    } catch { if (epoch === this.epoch) this.publish({ error: true }); }
+    } catch { if (epoch === this.epoch) this.publish({ error: true, clearPending: this.state.clearPending || this.state.deviceId === null }); }
   }
   /** Suspension is not a failed source read. Keep the last observation until it ages out. */
   suspend(): void {
@@ -93,7 +94,7 @@ export class QuotaWidgetController {
     catch { this.publish({ error: true, busy: false }); }
   }
   refresh(reader: WidgetQuotaReader): Promise<void> {
-    if (!this.owner || !this.state.ready || !this.state.deviceId) return Promise.resolve();
+    if (!this.owner || !this.state.ready || !this.state.deviceId || this.state.clearPending) return Promise.resolve();
     if (this.isDeviceRevoked(this.state.deviceId)) return this.selectDevice(null);
     const epoch = this.epoch;
     if (this.flight?.epoch === epoch) return this.flight.promise;
@@ -103,8 +104,15 @@ export class QuotaWidgetController {
         const result = await readWidgetQuota(reader);
         if (epoch !== this.epoch) return;
         if (this.state.deviceId && this.isDeviceRevoked(this.state.deviceId)) { await this.selectDevice(null); return; }
-        this.native.writeSnapshot(JSON.stringify(result.snapshot));
-        this.publish({ ...result, busy: false });
+        // Retain only a transiently failed observation from this same owner/device epoch
+        // and provider account. A cold-restored cache has no validated account list.
+        const snapshot = { ...result.snapshot, rows: result.snapshot.rows.map(row => {
+          const failed = result.transientFailures.find(account => account.platform === row.platform);
+          if (!failed || !this.state.accounts.some(account => account.platform === failed.platform && account.providerId === failed.providerId)) return row;
+          return this.state.snapshot.rows.find(previous => previous.platform === row.platform) ?? row;
+        }) };
+        this.native.writeSnapshot(JSON.stringify(snapshot));
+        this.publish({ snapshot, accounts: result.accounts, busy: false, error: result.transientFailures.length > 0 });
         await this.persist(epoch);
       } catch {
         if (epoch !== this.epoch) return;

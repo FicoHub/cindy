@@ -56,7 +56,7 @@ class QuotaWidgetProvider : AppWidgetProvider() {
       views.setInt(R.id.quota_root, "setBackgroundResource", if (dark) R.drawable.cindy_quota_background_dark else R.drawable.cindy_quota_background_light)
       views.setTextViewText(R.id.quota_heading, if (needsSpace) "Enlarge widget" else if (count < rows.length()) "Enlarge for all" else "")
       views.setTextColor(R.id.quota_heading, themed.getColor(R.color.cindy_widget_widget_secondary))
-      views.setViewVisibility(R.id.quota_heading, if (needsSpace || count < rows.length()) View.VISIBLE else View.GONE)
+      views.setViewVisibility(R.id.quota_heading, if (needsSpace || layout.showMoreHint) View.VISIBLE else View.GONE)
       for (container in listOf(R.id.quota_column_0, R.id.quota_column_1, R.id.quota_bottom)) views.removeAllViews(container)
       views.setViewVisibility(R.id.quota_column_1, if (wide && count > 1) View.VISIBLE else View.GONE)
       val now = System.currentTimeMillis()

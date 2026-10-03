@@ -61,7 +61,7 @@ export default function SubscriptionWidgetsScreen() {
         {state.deviceId && !state.snapshot.rows.length && <Text style={{ color: colors.textSecondary }}>{key('unavailable')}</Text>}
         <Text style={{ color: colors.textSecondary }}>{key('accountHint')}</Text>
         <Text style={{ color: colors.textSecondary }}>{key(Platform.OS === 'android' ? 'addHintAndroid' : 'addHint')}</Text>
-        {state.deviceId && <MainWindowActionButton action={{ label: key('disable'), onPress: () => void quotaWidgetStore.selectDevice(null), tone: 'secondary' }} />}
+        {(state.deviceId || state.clearPending) && <MainWindowActionButton action={{ label: key('disable'), onPress: () => void quotaWidgetStore.selectDevice(null), tone: 'secondary' }} />}
       </ScrollView>
     </SafeAreaView>
   );

@@ -24,7 +24,9 @@ object FixtureData {
    codex.getJSONArray("windows").getJSONObject(0).put("remainingPercent",27)
   }
   if(state=="long-plan"){codex.put("platform","xai").put("plan","SuperGrok Heavy");claude.put("plan","Enterprise")}
-  return JSONObject().put("version",2).put("source","demo").put("connection",if(state=="offline")"offline" else "online").put("rows",JSONArray().put(claude).put(codex)).toString()
+  val rows=JSONArray().put(claude).put(codex)
+  if(state=="three-providers") rows.put(row("xai").put("plan","SuperGrok").put("windows",JSONArray().put(window("week",10080,63))))
+  return JSONObject().put("version",2).put("source","demo").put("connection",if(state=="offline")"offline" else "online").put("rows",rows).toString()
  }
 }
 class FixtureActivity:Activity(){
@@ -56,6 +58,11 @@ class ContractInstrumentation:Instrumentation(){
   val now=1800000000000L
   try {
    for(icon in listOf(R.drawable.cindy_quota_claude,R.drawable.cindy_quota_codex,R.drawable.cindy_quota_xai))verify(targetContext.getDrawable(icon)!=null)
+   verify(QuotaWidgetPresentation.layout(356,164,1f,3).count==2)
+   verify(!QuotaWidgetPresentation.layout(356,164,1f,3).showMoreHint)
+   verify(QuotaWidgetPresentation.layout(178,164,1f,3).count==1)
+   verify(QuotaWidgetPresentation.layout(356,184,1f,3).showMoreHint)
+   verify(QuotaWidgetPresentation.layout(356,328,1f,3).count==3)
    val base=JSONObject(FixtureData.snapshot("long",now))
    for(raw in listOf<Any>(JSONObject.NULL,0,3,99,-1,1.5,9_007_199_254_740_992.0)){
     base.getJSONArray("rows").getJSONObject(1).put("extraResetsRemaining",raw)

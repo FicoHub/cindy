@@ -30,6 +30,7 @@ export function widgetAccounts(raw: unknown): WidgetAccount[] {
   return result.slice(0, 3);
 }
 
+const isUnauthorized = (error: unknown) => /PRECONDITION_FAILED|UNAUTHORIZED|reconnect/i.test(String(error));
 const unknownRow = (platform: QuotaPlatform): QuotaRow => ({ platform, observedAtMs: null, available: false, status: 'unavailable', windows: [] });
 function assertScope(raw: unknown, account: WidgetAccount) {
   const builtin = { codex: 'openai', claude: 'anthropic', xai: 'xai' }[account.platform];
@@ -53,8 +54,11 @@ export async function readWidgetAccount(account: WidgetAccount, reader: WidgetQu
       observedAtMs = now();
       selected = selectCodexUsageForModel({ fallback: payload.rateLimits, byLimitId: payload.rateLimitsByLimitId, nowMs: observedAtMs });
     } catch (error) {
-      if (account.providerId !== 'openai' || !shouldFallbackToLegacyCodexUsage(error)) throw error;
-      payload = record(await reader.getAccountUsage('codex'));
+      if (account.providerId !== 'openai' || isUnauthorized(error) || !shouldFallbackToLegacyCodexUsage(error)) throw error;
+      const cached = await reader.getAccountUsage('codex');
+      // No legacy observation cannot turn a failed live read into a successful empty result.
+      if (cached == null) throw error;
+      payload = record(cached);
       provenance = 'codex-cache';
       selected = selectCodexUsageForModel({ fallback: payload, appServerBuckets: payload.appServerBuckets, nowMs: now() });
       observedAtMs = timestamp(record(selected).updatedAt ?? payload.updatedAt);
@@ -98,15 +102,20 @@ export async function readWidgetAccount(account: WidgetAccount, reader: WidgetQu
 
 }
 
-export async function readWidgetQuota(reader: WidgetQuotaReader, now = Date.now): Promise<{ snapshot: QuotaSnapshot; accounts: WidgetAccount[] }> {
+export async function readWidgetQuota(reader: WidgetQuotaReader, now = Date.now): Promise<{ snapshot: QuotaSnapshot; accounts: WidgetAccount[]; transientFailures: WidgetAccount[] }> {
   const accounts = widgetAccounts(await reader.listProviders());
-  const rows = await Promise.all(accounts.map(account => readWidgetAccount(account, reader, now).catch(error => ({ ...unknownRow(account.platform), status: /PRECONDITION_FAILED|UNAUTHORIZED|reconnect/i.test(String(error)) ? 'unauthorized' as const : /unsupported channel|not found/i.test(String(error)) ? 'unsupported' as const : 'unavailable' as const }))));
+  const transientFailures: WidgetAccount[] = [];
+  const rows = await Promise.all(accounts.map(account => readWidgetAccount(account, reader, now).catch(error => {
+    const status = isUnauthorized(error) ? 'unauthorized' as const : /unsupported channel|not found/i.test(String(error)) ? 'unsupported' as const : 'unavailable' as const;
+    if (status === 'unavailable') transientFailures.push(account);
+    return { ...unknownRow(account.platform), status };
+  })));
   // Re-check connection and selected account after slow provider reads. A disconnect or reorder
   // must not publish a now-revoked account, even when the mobile device selection did not change.
   const current = widgetAccounts(await reader.listProviders());
   const retained = accounts.map((account, index) => ({ account, row: rows[index] })).filter(({ account }) =>
     current.some(value => value.platform === account.platform && value.providerId === account.providerId));
-  return { accounts: retained.map(value => value.account), snapshot: sanitizeQuotaSnapshot({ version: 2, source: 'live-source', connection: 'online', rows: retained.map(value => value.row) }) };
+  return { accounts: retained.map(value => value.account), transientFailures: transientFailures.filter(failed => retained.some(value => value.account === failed)), snapshot: sanitizeQuotaSnapshot({ version: 2, source: 'live-source', connection: 'online', rows: retained.map(value => value.row) }) };
 }
 
 /** Only a recognized value explicitly returned by the supplier. Never infer from model access. */

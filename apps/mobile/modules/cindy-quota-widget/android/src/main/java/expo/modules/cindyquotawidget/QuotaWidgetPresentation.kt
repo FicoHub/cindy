@@ -8,7 +8,7 @@ import kotlin.math.ceil
 internal object QuotaWidgetPresentation {
   const val HEADER_HEIGHT_DP = 46
   const val CARD_HEIGHT_DP = 164
-  data class Layout(val columns: Int, val count: Int, val needsSpace: Boolean)
+  data class Layout(val columns: Int, val count: Int, val needsSpace: Boolean, val showMoreHint: Boolean)
   // 16dp insets + 46dp brand/ring area + 8dp gap + 38/21/18dp information rows.
   // Do not use landscape grid constraints as the rendered card's required height.
   fun layout(width: Int, height: Int, fontScale: Float, providers: Int): Layout {
@@ -17,12 +17,13 @@ internal object QuotaWidgetPresentation {
     val columnWidth = 32 + 146 * scale
     val columns = if (width >= 2 * columnWidth) 2 else 1
     val requested = providers.coerceIn(1, 3)
-    val initial = (height / cardHeight).coerceAtLeast(0) * columns
-    // A genuine size warning consumes space; demo metadata never does.
-    val warningHeight = if (initial < requested) ceil(20 * scale).toInt() else 0
-    val capacity = ((height - warningHeight) / cardHeight).coerceAtLeast(0) * columns
+    val capacity = (height / cardHeight).coerceAtLeast(0) * columns
     val needsSpace = width < columnWidth || capacity == 0
-    return Layout(columns, if (needsSpace) 0 else minOf(requested, capacity), needsSpace)
+    val count = if (needsSpace) 0 else minOf(requested, capacity)
+    val usedHeight = ((count + columns - 1) / columns) * cardHeight
+    // The hint may use spare space, but must never displace a fitting provider card.
+    val showMoreHint = !needsSpace && count < requested && height - usedHeight >= ceil(20 * scale).toInt()
+    return Layout(columns, count, needsSpace, showMoreHint)
   }
   fun windows(row: JSONObject): List<JSONObject> {
     if (!row.optBoolean("available") || row.optString("status") != "ready") return emptyList()
