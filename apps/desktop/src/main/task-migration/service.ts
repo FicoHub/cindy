@@ -73,10 +73,13 @@ import {
   MigrationSizeError,
 } from './resources';
 import { sendParts, receiveParts } from './transferParts';
+import type { SkippedEntry } from './portableEntries';
 
 const log = createLogger('task-migration');
 /** Native transcripts this large travel as separate streamed files, not inside the package. */
 const EXTERNAL_TRANSCRIPT_MIN_BYTES = 32 * 1024 * 1024;
+/** The finished copy lists this many left-behind entries; the count covers the rest. */
+const MAX_REPORTED_SKIPPED = 100;
 
 type MoveProject = (
   sessionId: string,
@@ -91,6 +94,8 @@ interface RunningCopy {
   /** The target may commit from here on; cancelling would orphan its copy. */
   committing?: boolean;
   cancelRequested?: boolean;
+  /** Aborted together with cancelRequested so the file in flight stops, not just the next checkpoint. */
+  abort: AbortController;
 }
 const running = new Map<string, RunningCopy>();
 /** The target's cause never crosses the wire (only its code does), so keep it in this log. */
@@ -208,6 +213,7 @@ function view(scope: Scope, record: MigrationRecord | null): TaskMigrationView {
                 targetSessionId: record.targetSessionId,
                 ...(record.error ? { error: record.error } : {}),
                 ...(record.error && record.errorPath ? { errorPath: record.errorPath } : {}),
+                ...(record.skipped ? { skipped: record.skipped } : {}),
                 ...(record.error &&
                 record.errorSize &&
                 Number.isSafeInteger(record.errorSize.needed) &&
@@ -418,10 +424,26 @@ async function prepare(scope: Scope, record: MigrationHandoff) {
       if ((result.externalTranscripts?.length ?? 0) > TASK_MIGRATION_MAX_TRANSCRIPTS)
         throw new Error('MIGRATION_NO_MEMORY');
       const snapshots: PortableWorkspace[] = [];
-      for (const [index, dir] of sourceKeys.entries())
-        snapshots.push(
-          await snapshotWorkspace(dir, workspaceDirectory(directory, index), record.id),
+      const skipped: SkippedEntry[] = [];
+      for (const [index, dir] of sourceKeys.entries()) {
+        const { skipped: left, ...snapshot } = await snapshotWorkspace(
+          dir,
+          workspaceDirectory(directory, index),
+          record.id,
         );
+        snapshots.push(snapshot);
+        // Other members' worktrees are named by folder; the task's own paths stay project-relative.
+        for (const entry of left)
+          skipped.push(index ? { ...entry, path: `${path.basename(dir)}/${entry.path}` } : entry);
+      }
+      if (skipped.length)
+        log.warn('task copy leaves entries behind', {
+          copyId: record.id,
+          count: skipped.length,
+        });
+      record.skipped = skipped.length
+        ? { total: skipped.length, entries: skipped.slice(0, MAX_REPORTED_SKIPPED) }
+        : undefined;
       // Copy does not freeze input. Discard preparation if the task or team changed
       // while capturing conversation and files, including a turn that already finished.
       await sourceBoundary!.drain();
@@ -466,20 +488,31 @@ async function sendFile(
   file: string,
   artifacts = path.dirname(file),
   onProgress?: (bytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<MigrationFile> {
   const space = await fs.statfs(path.dirname(file));
   const partBytes = Math.floor(
     Math.min(FILE_PEER_MAX_BYTES, MAX_MEDIA_BYTES, (space.bavail * space.bsize) / 4),
   );
   let completed = 0;
-  return sendParts(file, partBytes, async (part) => {
-    const result = await sendPart(scope, device, part, artifacts, (bytes) =>
-      onProgress?.(completed + bytes),
-    );
-    completed += result.size;
-    onProgress?.(completed);
-    return result;
-  });
+  return sendParts(
+    file,
+    partBytes,
+    async (part) => {
+      const result = await sendPart(
+        scope,
+        device,
+        part,
+        artifacts,
+        (bytes) => onProgress?.(completed + bytes),
+        signal,
+      );
+      completed += result.size;
+      onProgress?.(completed);
+      return result;
+    },
+    signal,
+  );
 }
 async function sendPart(
   scope: Scope,
@@ -487,6 +520,7 @@ async function sendPart(
   file: string,
   artifacts: string,
   onProgress?: (bytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<MigrationFileRef> {
   scope.assertCurrent();
   const peer = await tryUploadPeerAttachment(
@@ -496,6 +530,7 @@ async function sendPart(
     (deviceId, channel, args) =>
       remoteInvoke(deviceId, channel, args, { preSend: scope.assertCurrent }),
     onProgress,
+    signal,
   );
   scope.assertCurrent();
   if (peer) {
@@ -504,7 +539,11 @@ async function sendPart(
     return { ref: peer, size: result.size, sha256: result.sha256 };
   }
   onProgress?.(0); // OSS fallback starts this part again, not a second completed part.
-  const result = await uploadLocalFile(file, { maxBytes: (await fs.stat(file)).size, onProgress });
+  const result = await uploadLocalFile(file, {
+    maxBytes: (await fs.stat(file)).size,
+    onProgress,
+    signal,
+  });
   // Record the upload before the checkpoint so a cancelled copy still deletes it.
   const keysFile = path.join(artifacts, 'transfer-keys.json');
   const keys = JSON.parse(readAtomicFileSync(keysFile) ?? '[]') as string[];
@@ -630,15 +669,22 @@ async function transfer(scope: Scope, record: MigrationHandoff) {
     bytesPerSecond: 0,
   };
   const send = async (file: string, artifacts = path.dirname(file)) => {
-    const result = await sendFile(scope, record.targetDeviceId, file, artifacts, (bytes) => {
-      const sentBytes = Math.min(resources.transferBytes, completed + bytes);
-      live.progress = {
-        phase: 'sending',
-        sentBytes,
-        totalBytes: resources.transferBytes,
-        bytesPerSecond: (sentBytes * 1000) / Math.max(1, Date.now() - startedAt),
-      };
-    });
+    const result = await sendFile(
+      scope,
+      record.targetDeviceId,
+      file,
+      artifacts,
+      (bytes) => {
+        const sentBytes = Math.min(resources.transferBytes, completed + bytes);
+        live.progress = {
+          phase: 'sending',
+          sentBytes,
+          totalBytes: resources.transferBytes,
+          bytesPerSecond: (sentBytes * 1000) / Math.max(1, Date.now() - startedAt),
+        };
+      },
+      live.abort.signal,
+    );
     completed += result.size;
     return result;
   };
@@ -706,7 +752,10 @@ function launch(scope: Scope, record: MigrationHandoff & { kind: 'outgoing' }) {
   const key = `${scope.root}:${record.sessionId}`;
   if (running.has(key)) return;
   // See transfer(): a resumed transfer stays non-cancellable until its receipt is checked.
-  const live: RunningCopy = { committing: record.stage !== 'preparing' };
+  const live: RunningCopy = {
+    committing: record.stage !== 'preparing',
+    abort: new AbortController(),
+  };
   running.set(key, live);
   // Every existing checkpoint doubles as a cancellation point for this copy.
   const copyScope: Scope = {
@@ -1175,6 +1224,7 @@ export async function requestTaskMigration(raw: unknown): Promise<TaskMigrationV
     if (live) {
       if (live.committing) throw new Error('MIGRATION_CANNOT_CANCEL');
       live.cancelRequested = true;
+      live.abort.abort();
       return view(scope, scope.read(request.sessionId));
     }
   }

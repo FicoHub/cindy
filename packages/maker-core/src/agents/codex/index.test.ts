@@ -1156,7 +1156,8 @@ describe('CodexAgent spawn configuration', () => {
         started.resolve();
         await finish.promise;
         if (method === Method.ModelList) return { data: [], nextCursor: null };
-        if (method === Method.AccountRateLimitsRead || method === Method.MemoryReset) return {};
+        if (method === Method.AccountRateLimitsRead) return { rateLimits: { planType: 'plus' }, rateLimitsByLimitId: null, rateLimitResetCredits: null };
+        if (method === Method.MemoryReset) return {};
         return undefined;
       });
       const operation = method === Method.ModelList ? agent.refreshLocalModels({ credentialMode: 'oauth-bearer' })
@@ -1812,6 +1813,27 @@ describe('CodexAgent permissions', () => {
       supported: { supported: true },
       unsupportedPermissionModes: ['bypassPermissions'],
     });
+  });
+
+  it.each([false, true])('keeps goal continuation owned by Cindy on thread startup (resume=%s)', async (resume) => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'host-owned-goal',
+      model: 'gpt-6-astra',
+      workingDir: '/repo',
+      ...(resume ? { resumeSessionId: '11111111-1111-1111-1111-111111111111' } : {}),
+    });
+    try {
+      const params = host.request.mock.calls.find(
+        ([method]) => method === (resume ? Method.ThreadResume : Method.ThreadStart),
+      )?.[1] as { config: Record<string, unknown> };
+      // A native create_goal would start a second loop outside the Host's
+      // pause/budget controls and lose turnOrigin after its first completion.
+      expect(params.config['features.goals']).toBe(false);
+    } finally {
+      await handle.close();
+    }
   });
 
   it.each([
@@ -6665,12 +6687,12 @@ describe('CodexAgent.startSession developerInstructions', () => {
       config?: Record<string, unknown>;
     };
     expect(params.config).toMatchObject({
-      'features.multi_agent': false,
-      'features.multi_agent_v2': false,
-      'agents.enabled': false,
       'memories.generate_memories': false,
       'memories.use_memories': false,
     });
+    expect(params.config?.['features.multi_agent']).not.toBe(false);
+    expect(params.config?.['features.multi_agent_v2']).not.toBe(false);
+    expect(params.config?.['agents.enabled']).not.toBe(false);
     expect(params.developerInstructions).toContain('BOT SOUL');
     expect(params.developerInstructions).toContain('BOT HOME CONTEXT');
     expect(params.developerInstructions).not.toContain('GLOBAL CINDY HOST PROMPT');
@@ -7877,6 +7899,7 @@ describe('CodexAgent MCP thread context hooks', () => {
   });
 
   it.each([
+    null, undefined, {},
     { account: null },
     { account: { type: 'apiKey', planType: 'pro' } },
     { account: { type: 'chatgpt', planType: 'unknown' } },
@@ -7890,6 +7913,42 @@ describe('CodexAgent MCP thread context hooks', () => {
     };
     const agent = new CodexAgent(createDeps());
     await expect(agent.readAccountRateLimits()).resolves.toEqual(rateLimits);
+    await agent.dispose();
+  });
+
+  it.each([
+    null, undefined, {}, { rateLimits: null }, { rateLimits: [] },
+    { rateLimits: 'invalid' }, { rateLimits: {}, rateLimitsByLimitId: [] },
+    { rateLimits: {}, rateLimitsByLimitId: { codex: null } },
+  ])('rejects malformed quota envelopes without fabricating a plan: %j', async (result) => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent);
+    host.request.mockResolvedValueOnce(result);
+    await expect(agent.readAccountRateLimits()).rejects.toThrow('Invalid Codex account/rateLimits/read response');
+    expect(host.request).toHaveBeenCalledTimes(1);
+    expect(host.request).toHaveBeenCalledWith(Method.AccountRateLimitsRead, undefined);
+    const guard = await agent.beginLocalHostCredentialChange('after invalid quota', { allLocalHosts: true });
+    guard.assertIdle();
+    await guard.finalize();
+    await agent.dispose();
+  });
+
+  it.each([null, undefined, '', 500])('fills missing or invalid plan fields from explicit account metadata: %j', async (planType) => {
+    const rateLimits = { rateLimits: { planType }, rateLimitsByLimitId: { codex: { planType } }, rateLimitResetCredits: null };
+    const agent = new CodexAgent(createDeps());
+    installFakeHost(agent, async method => method === Method.AccountRateLimitsRead ? rateLimits
+      : { account: { type: 'chatgpt', planType: 'plus' } });
+    await expect(agent.readAccountRateLimits()).resolves.toEqual({
+      ...rateLimits, rateLimits: { planType: 'plus' }, rateLimitsByLimitId: { codex: { planType: 'plus' } },
+    });
+    await agent.dispose();
+  });
+
+  it('propagates quota RPC failure without attempting an account metadata fallback', async () => {
+    const agent = new CodexAgent(createDeps());
+    const host = installFakeHost(agent, async () => { throw new Error('quota unavailable'); });
+    await expect(agent.readAccountRateLimits()).rejects.toThrow('quota unavailable');
+    expect(host.request).toHaveBeenCalledTimes(1);
     await agent.dispose();
   });
 

@@ -3000,29 +3000,32 @@ assertRouteCurrent();
     // account context; getHost refuses to replace a differently-authenticated active host.
     return this.withStartedAccountHost(providerId, async (host) => {
       const result = await host.request<AccountRateLimitsResponse>(Method.AccountRateLimitsRead, undefined);
-      const missingPlan = (plan: string | null | undefined) => !plan?.trim() || plan.trim().toLowerCase() === 'unknown';
+      // The required quota envelope must be present. Do not turn malformed RPC
+      // replies into successful empty quotas merely to obtain optional metadata.
+      const isObject = (value: unknown) => value !== null && typeof value === 'object' && !Array.isArray(value);
+      if (!isObject(result) || !isObject(result.rateLimits)
+        || (result.rateLimitsByLimitId != null && (!isObject(result.rateLimitsByLimitId)
+          || Object.values(result.rateLimitsByLimitId).some(bucket => !isObject(bucket))))) {
+        throw new Error('Invalid Codex account/rateLimits/read response');
+      }
+      const missingPlan = (plan: unknown) => typeof plan !== 'string' || !plan.trim() || plan.trim().toLowerCase() === 'unknown';
       if (!missingPlan(result.rateLimits.planType)
         && Object.values(result.rateLimitsByLimitId ?? {}).every(bucket => !missingPlan(bucket.planType))) return result;
-      // Rate-limit buckets may omit the plan even for a paid account. Read only the
-      // selected host's public account metadata; never inspect auth files or force refresh.
-      try {
-        const state = await host.request<{ account?: { type?: string; planType?: string } | null }>(
-          'account/read', { refreshToken: false }, { timeoutMs: 2_000 });
-        const plan = state.account?.planType;
-        if (state.account?.type !== 'chatgpt' || typeof plan !== 'string'
-          || !['free', 'go', 'plus', 'pro', 'team', 'business', 'enterprise', 'edu'].includes(plan)) return result;
-        const fillPlan = (bucket: AccountRateLimitsResponse['rateLimits']) => missingPlan(bucket.planType)
-          ? { ...bucket, planType: plan } : bucket;
-        return {
-          ...result,
-          rateLimits: fillPlan(result.rateLimits),
-          rateLimitsByLimitId: result.rateLimitsByLimitId == null ? null
-            : Object.fromEntries(Object.entries(result.rateLimitsByLimitId).map(([key, bucket]) => [key, fillPlan(bucket)])),
-        };
-      } catch {
-        // Optional metadata must not turn a successful quota read into an error.
-        return result;
-      }
+      // Read only this selected host's public account metadata. Unsupported/failed
+      // optional reads preserve the already validated quota response; no auth refresh.
+      const state = await host.request<{ account?: { type?: string; planType?: string } | null } | null>(
+        'account/read', { refreshToken: false }, { timeoutMs: 2_000 }).catch(() => null);
+      const plan = state?.account?.planType;
+      if (state?.account?.type !== 'chatgpt' || typeof plan !== 'string'
+        || !['free', 'go', 'plus', 'pro', 'team', 'business', 'enterprise', 'edu'].includes(plan)) return result;
+      const fillPlan = (bucket: AccountRateLimitsResponse['rateLimits']) => missingPlan(bucket.planType)
+        ? { ...bucket, planType: plan } : bucket;
+      return {
+        ...result,
+        rateLimits: fillPlan(result.rateLimits),
+        rateLimitsByLimitId: result.rateLimitsByLimitId == null ? null
+          : Object.fromEntries(Object.entries(result.rateLimitsByLimitId).map(([key, bucket]) => [key, fillPlan(bucket)])),
+      };
     });
   }
 
@@ -6395,12 +6398,13 @@ assertRouteCurrent();
         // Install while the thread is created/resumed: a later switch to Auto
         // changes the turn reviewer without rebuilding this thread config.
         ...nativeContinuationConfig,
-        // Bot memory and delegation belong to its Cindy Profile and Session
-        // tasks, not the shared native home or hidden harness child threads.
+        // Cindy owns goal dispatch, budgets and pause/resume. A native goal
+        // starts a second continuation loop whose turns bypass Session.send
+        // and lose the Host origin after the first terminal event.
+        'features.goals': false,
+        // Keep companion memory in its own Home. Native delegation uses the
+        // same feature settings and permissions as an ordinary task.
         ...(opts.botRuntimeProfile ? {
-          'features.multi_agent': false,
-          'features.multi_agent_v2': false,
-          'agents.enabled': false,
           'memories.generate_memories': false,
           'memories.use_memories': false,
         } : {}),
@@ -6439,7 +6443,6 @@ assertRouteCurrent();
               } : {}),
               web_search: 'disabled',
               'features.apps': false,
-              'features.goals': false,
               'features.hooks': false,
               'features.multi_agent': false,
               'features.remote_plugin': false,

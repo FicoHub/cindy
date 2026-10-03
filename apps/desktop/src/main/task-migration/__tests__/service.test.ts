@@ -29,6 +29,8 @@ const state = vi.hoisted(() => ({
   drain: vi.fn(),
   exported: vi.fn(),
   uploadedProgress: vi.fn(),
+  /** Models a long in-flight upload: it only ends when its signal aborts. */
+  stallUpload: undefined as undefined | (() => void),
   loseReply: '' as string,
   importsFail: false,
   siblingRunning: false,
@@ -45,6 +47,8 @@ const state = vi.hoisted(() => ({
   estimateLimits: [] as number[],
   timeoutAction: '' as string,
   exclusions: [] as string[],
+  /** Entries each snapshot reports it left behind. */
+  skipped: [] as Array<{ path: string; code: string }>,
   migrationWarn: vi.fn(),
   /** Native transcript the export streams beside the package when the target supports it. */
   transcript: '' as string,
@@ -140,7 +144,16 @@ vi.mock('../../device-link/filePeer', () => ({ tryUploadPeerAttachment: async ()
 vi.mock('../../device-link/mediaTransfer', () => ({
   MAX_MEDIA_BYTES: 2 * 1024 ** 3,
   removeRemote: (key: string) => state.remove(key),
-  uploadLocalFile: async (file: string, opts: { onProgress?: (bytes: number) => void }) => {
+  uploadLocalFile: async (
+    file: string,
+    opts: { onProgress?: (bytes: number) => void; signal?: AbortSignal },
+  ) => {
+    if (state.stallUpload) {
+      state.stallUpload();
+      await new Promise((_, reject) =>
+        opts.signal?.addEventListener('abort', () => reject(new Error('UPLOAD_CANCELLED'))),
+      );
+    }
     const bytes = await fs.readFile(file),
       key = `migration/${state.files.size}`;
     opts.onProgress?.(bytes.length);
@@ -275,7 +288,11 @@ vi.mock('../workspace', async (original) => ({
     state.snapshot();
     await fs.mkdir(directory, { recursive: true });
     await fs.copyFile(path.join(source, 'draft'), path.join(directory, 'a.tar.gz.enc'));
-    return { unpackedBytes: 8, archive: { file: 'a.tar.gz.enc', files: {} } };
+    return {
+      unpackedBytes: 8,
+      archive: { file: 'a.tar.gz.enc', files: {} },
+      skipped: state.skipped,
+    };
   },
   restoreWorkspace: async (_manifest: unknown, directory: string, target: string) => {
     await fs.copyFile(path.join(directory, 'a.tar.gz.enc'), path.join(target, 'draft'));
@@ -307,6 +324,7 @@ describe('resumable cross-computer copy', () => {
     state.drain.mockReset();
     state.exported.mockClear();
     state.uploadedProgress.mockReset();
+    state.stallUpload = undefined;
     state.root = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-migration-service-')),
     );
@@ -317,6 +335,7 @@ describe('resumable cross-computer copy', () => {
     state.imports.mockClear();
     state.created.mockReset();
     state.snapshot.mockClear();
+    state.skipped = [];
     state.close.mockClear();
     state.remove.mockReset();
     state.loseReply = '';
@@ -657,6 +676,29 @@ describe('resumable cross-computer copy', () => {
     await start();
     expect((await settled()).stage).toBe('complete');
   });
+  it('cancelling stops the file in flight instead of waiting for it to finish', async () => {
+    let started!: () => void;
+    const uploading = new Promise<void>((resolve) => (started = resolve));
+    state.stallUpload = () => started();
+    expect((await start()).cancellable).toBe(true);
+    await uploading;
+    expect(await requestTaskMigration({ action: 'cancel', sessionId: 'fork' })).toMatchObject({
+      running: true,
+      cancelling: true,
+    });
+    // Without aborting the stalled upload this never settles.
+    const status = await settled();
+    expect(status.stage).toBe('cancelled');
+    expect(status.error).toBeUndefined();
+    expect(state.files.size).toBe(0);
+    expect(state.imports).not.toHaveBeenCalled();
+    await expect(
+      fs.stat(path.join(state.root, 'A', 'task-copies', 'outgoing', status.targetSessionId!)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    state.stallUpload = undefined;
+    await start();
+    expect((await settled()).stage).toBe('complete');
+  });
   it('closing a failed transfer removes source staging without deleting an already committed target', async () => {
     state.loseReply = 'receive';
     await start();
@@ -860,6 +902,19 @@ describe('resumable cross-computer copy', () => {
     );
     expect((await settled()).stage).toBe('complete');
     expect(state.imports).toHaveBeenCalledTimes(1);
+  });
+  it('finishes despite skipped entries and reports them until the next copy', async () => {
+    state.skipped = [{ path: 'Pods/out.h', code: 'MIGRATION_EXTERNAL_LINK' }];
+    await start();
+    const first = await settled();
+    expect(first.stage).toBe('complete');
+    expect(first.error).toBeUndefined();
+    expect(first.skipped).toEqual({ total: 1, entries: state.skipped });
+    state.skipped = [];
+    await start();
+    const second = await settled();
+    expect(second.stage).toBe('complete');
+    expect(second.skipped).toBeUndefined();
   });
   it('allows another independent copy after completion', async () => {
     await start();
