@@ -39,7 +39,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tip } from '@/components/ui/tooltip';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
-import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS } from '@/features/cc-agent/sidebar/menuStyles';
+import { MENU_ITEM_CLASS } from '@/features/cc-agent/sidebar/menuStyles';
 import type { UseAttachmentsReturn } from '@/hooks/useAttachments';
 import { isAnnotationBurnInError, materializeAnnotatedAttachmentsForSend } from '@/lib/annotationBurnIn';
 import type { AttachedFile } from '@/lib/fileTypes';
@@ -233,7 +233,7 @@ export function BotGroupComposer({
         : { text: trimmed, clientId: crypto.randomUUID(), division, attachments: signature };
     attemptRef.current = attempt;
     const mentions = resolveBotGroupMentions(trimmed, {
-      members: members.map((member) => ({ botId: member.botId, name: member.name })),
+      members,
       allLabels: [allLabel],
       tracked,
     });
@@ -557,7 +557,7 @@ export function BotGroupComposer({
                   side="top"
                   align="start"
                   sideOffset={8}
-                  className={cn(MENU_CONTENT_CLASS, 'w-72')}
+                  className="w-72"
                   onCloseAutoFocus={(event) => {
                     if (!focusInputOnMenuCloseRef.current) return;
                     focusInputOnMenuCloseRef.current = false;
@@ -573,7 +573,7 @@ export function BotGroupComposer({
                     }}
                   >
                     <Paperclip size={16} aria-hidden className="shrink-0 text-[var(--text-secondary)]" />
-                    <span className="min-w-0 truncate text-13 font-medium text-[var(--text-primary)]">
+                    <span className="min-w-0 truncate">
                       {t('extraDirs.addFiles')}
                     </span>
                   </DropdownMenuItem>
@@ -587,10 +587,10 @@ export function BotGroupComposer({
                   >
                     <Users size={16} aria-hidden className="mt-0.5 shrink-0 text-[var(--text-secondary)]" />
                     <span className="flex min-w-0 flex-col gap-0.5">
-                      <span className="text-13 font-medium text-[var(--text-primary)]">
+                      <span>
                         {t('bots.groupChat.composer.division')}
                       </span>
-                      <span className="text-12 leading-normal text-[var(--text-tertiary)]">
+                      <span className="text-12 leading-[1.33] text-[var(--cmd-palette-item-meta)]">
                         {t(
                           divisionBlocked
                             ? 'bots.groupChat.composer.divisionBusy'

@@ -28,6 +28,7 @@ import {
   Terminal,
   GitPullRequestArrow,
   UsersRound,
+  LayoutGrid,
   ListTodo,
   Plus,
   Puzzle,
@@ -142,6 +143,7 @@ const KIND_ICON: Record<BuiltinTabKindId, LucideIcon> = {
   subagents: Bot,
   'background-tasks': ListTodo,
   routines: ListTodo,
+  'bot-workbench': LayoutGrid,
   'resource-usage': Activity,
   'cindy-make': Wrench,
 };
@@ -156,6 +158,7 @@ const KIND_LABEL_KEY: Record<BuiltinTabKindId, string> = {
   subagents: 'rightSidebar.tabs.kinds.subagents',
   'background-tasks': 'rightSidebar.tabs.kinds.backgroundTasks',
   routines: 'routines.title',
+  'bot-workbench': 'bots.workbench.title',
   'resource-usage': 'rightSidebar.tabs.kinds.resourceUsage',
   'cindy-make': 'settings.cindyMake.title',
 };
@@ -505,12 +508,6 @@ export function TabStrip({
         <DropdownMenuContent
           align="start"
           sideOffset={2}
-          className={cn(
-            'rounded-xl p-0.5 overflow-hidden',
-            'bg-[var(--cmd-palette-bg)]',
-            'border border-[var(--cmd-palette-border)]',
-            'shadow-[var(--shadow-menu)]',
-          )}
         >
           {contextMenu && (
             <>
@@ -520,7 +517,6 @@ export function TabStrip({
                   closeContextMenu();
                   onClose(id);
                 }}
-                className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
               >
                 {t('rightSidebar.tabs.contextMenu.close')}
               </DropdownMenuItem>
@@ -532,7 +528,6 @@ export function TabStrip({
                   closeContextMenu();
                   onCloseOthers?.(id);
                 }}
-                className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)] data-[disabled]:opacity-50"
               >
                 {t('rightSidebar.tabs.contextMenu.closeOthers')}
               </DropdownMenuItem>
@@ -541,7 +536,6 @@ export function TabStrip({
                   closeContextMenu();
                   onCloseAll?.();
                 }}
-                className="h-7 px-2.5 rounded-md text-13 leading-none text-[var(--msg-assistant-text)] focus:bg-[var(--cmd-palette-item-hover)]"
               >
                 {t('rightSidebar.tabs.contextMenu.closeAll')}
               </DropdownMenuItem>
