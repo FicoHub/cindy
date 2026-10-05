@@ -105,22 +105,29 @@ function extractCommandPathTokens(command: string): CommandPathToken[] {
   // 裸 Windows 盘符路径与裸 POSIX 绝对路径(前面是行首/空白/常见分隔)。
   // 盘符前不允许字母数字:排除 URL scheme 尾字母被当盘符(https://…)。
   // 引号区间按起点排序后二分查找;逐 token 线性扫描在数千候选 × 数千引号时是
-  // 平方级成本(#5503)。
+  // 平方级成本(#5503)。单、双引号区间可以嵌套(`"print('ok') # > /work/x.txt"`),
+  // 判定必须是「任一起点不晚于该位置的区间仍未结束」,所以用前缀最大 end,
+  // 而不是只看起点最靠后的那一个区间。
   quotedRanges.sort((a, b) => a.start - b.start);
+  const quotedPrefixMaxEnd: number[] = [];
+  for (const range of quotedRanges) {
+    const previous = quotedPrefixMaxEnd.at(-1) ?? -1;
+    quotedPrefixMaxEnd.push(Math.max(previous, range.end));
+  }
   const insideQuotedRange = (index: number): boolean => {
     let low = 0;
     let high = quotedRanges.length - 1;
-    let found: { start: number; end: number } | undefined;
+    let found = -1;
     while (low <= high) {
       const mid = (low + high) >> 1;
       if (quotedRanges[mid].start <= index) {
-        found = quotedRanges[mid];
+        found = mid;
         low = mid + 1;
       } else {
         high = mid - 1;
       }
     }
-    return found !== undefined && index < found.end;
+    return found >= 0 && index < quotedPrefixMaxEnd[found];
   };
   for (const m of command.matchAll(/(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s'"<>|?*]+/g)) {
     const start = m.index ?? 0;
@@ -261,11 +268,45 @@ function extractTransferPlainFilenameDestinations(command: string): CommandPathT
   return out;
 }
 
-function isTopLevelPowerShellTail(value: string): boolean {
+
+/** command[from, to) 以 `-Path` 类开关结尾(可带一个引号)。等价于对该片段做
+ * /-(?:FilePath|LiteralPath|Path)\s+['"]?$/i,但只从尾部向前检查,不切片、不随
+ * 片段长度线性扫描。 */
+function endsWithPowerShellPathSwitch(command: string, from: number, to: number): boolean {
+  let end = to;
+  if (end > from && (command[end - 1] === "'" || command[end - 1] === '"')) end -= 1;
+  let cursor = end;
+  while (cursor > from && /\s/.test(command[cursor - 1])) cursor -= 1;
+  if (cursor === end) return false;
+  return /-(?:FilePath|LiteralPath|Path)$/i.test(command.slice(Math.max(from, cursor - 12), cursor));
+}
+
+/** command[from, to) 只含空白、可带一个末尾引号。等价于 /^\s*['"]?$/,长片段先做有界否定。 */
+function isBlankOrQuote(command: string, from: number, to: number): boolean {
+  if (to - from > 256 && /\S/.test(command.slice(from, from + 255))) return false;
+  return /^\s*['"]?$/.test(command.slice(from, to));
+}
+
+interface PowerShellTailScan {
+  /** 自写入 cmdlet 之后首个顶层分隔符(`;` `|` 换行)的位置;没有则为 Infinity。 */
+  terminator: number;
+  /** 每个括号事件之后的深度,按位置升序;查询位置之前没有事件即深度 0。 */
+  eventPositions: number[];
+  eventDepths: number[];
+}
+
+/**
+ * isTopLevelPowerShellTail 的增量形式:从写入 cmdlet 之后向前扫一次(到下一个写入
+ * cmdlet 为止),记录括号深度事件与首个顶层分隔符;之后任意候选位置只需二分查找。
+ * 原来每个 `-Path` 候选都从写入 cmdlet 重新扫到自身,`Set-Content -Value @((Get-Content
+ * -Path a), …数千…) -Path out` 这类命令是平方级(#5506 review)。
+ */
+function scanPowerShellTail(command: string, from: number, to: number): PowerShellTailScan {
+  const scan: PowerShellTailScan = { terminator: Infinity, eventPositions: [], eventDepths: [] };
   let depth = 0;
   let quote: "'" | '"' | null = null;
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index];
+  for (let index = from; index < to; index += 1) {
+    const char = command[index];
     if (char === '`') {
       index += 1;
       continue;
@@ -280,34 +321,40 @@ function isTopLevelPowerShellTail(value: string): boolean {
     }
     if (char === '(' || char === '[' || char === '{') {
       depth += 1;
+      scan.eventPositions.push(index);
+      scan.eventDepths.push(depth);
       continue;
     }
     if (char === ')' || char === ']' || char === '}') {
       depth = Math.max(0, depth - 1);
+      scan.eventPositions.push(index);
+      scan.eventDepths.push(depth);
       continue;
     }
     if (depth === 0 && (char === ';' || char === '|' || char === '\r' || char === '\n')) {
-      return false;
+      scan.terminator = index;
+      break;
+    }
+  }
+  return scan;
+}
+
+/** 等价于 isTopLevelPowerShellTail(command.slice(from, to)),用预扫结果回答。 */
+function isTopLevelPowerShellTailAt(scan: PowerShellTailScan, to: number): boolean {
+  if (scan.terminator < to) return false;
+  let low = 0;
+  let high = scan.eventPositions.length - 1;
+  let depth = 0;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (scan.eventPositions[mid] < to) {
+      depth = scan.eventDepths[mid];
+      low = mid + 1;
+    } else {
+      high = mid - 1;
     }
   }
   return depth === 0;
-}
-
-/** 以 `-Path` 类开关结尾(可带一个引号)。等价于 /-(?:FilePath|LiteralPath|Path)\s+['"]?$/i,
- * 但只从尾部向前检查,不随前缀长度线性扫描。 */
-function endsWithPowerShellPathSwitch(text: string): boolean {
-  let end = text.length;
-  if (end > 0 && (text[end - 1] === "'" || text[end - 1] === '"')) end -= 1;
-  let cursor = end;
-  while (cursor > 0 && /\s/.test(text[cursor - 1])) cursor -= 1;
-  if (cursor === end) return false;
-  return /-(?:FilePath|LiteralPath|Path)$/i.test(text.slice(Math.max(0, cursor - 12), cursor));
-}
-
-/** 只含空白、可带一个末尾引号。等价于 /^\s*['"]?$/ 但对长文本先做有界否定。 */
-function isBlankOrQuote(text: string): boolean {
-  if (text.length > 256 && /\S/.test(text.slice(0, 255))) return false;
-  return /^\s*['"]?$/.test(text);
 }
 
 interface CommandCmdlet {
@@ -342,6 +389,7 @@ class CommandScanIndex {
   private readonly writeCmdlets: CommandCmdlet[] = [];
   private readonly separators: CommandSeparator[] = [];
   private readonly segments = new Map<number, CommandSegmentInfo>();
+  private readonly tailScans = new Map<number, PowerShellTailScan>();
 
   constructor(
     readonly command: string,
@@ -387,15 +435,49 @@ class CommandScanIndex {
     const lastCmdlet = CommandScanIndex.lastEndingBefore(this.cmdlets, tokenStart);
     const lastWriteCmdlet = CommandScanIndex.lastEndingBefore(this.writeCmdlets, tokenStart);
     if (!lastCmdlet || !lastWriteCmdlet) return false;
-    const writeTail = this.command.slice(lastWriteCmdlet.end, tokenStart);
     // Support the first positional path and the cmdlets' explicit path switches.
     // An explicit switch may follow a nested read expression, but it must remain at the writer's
     // top level so a nested `Get-Content -Path` cannot leak its input path.
-    if (endsWithPowerShellPathSwitch(writeTail) && isTopLevelPowerShellTail(writeTail)) {
+    if (
+      endsWithPowerShellPathSwitch(this.command, lastWriteCmdlet.end, tokenStart) &&
+      isTopLevelPowerShellTailAt(this.tailScanFrom(lastWriteCmdlet), tokenStart)
+    ) {
       return true;
     }
     if (lastCmdlet.start !== lastWriteCmdlet.start) return false;
-    return isBlankOrQuote(this.command.slice(lastCmdlet.end, tokenStart));
+    return isBlankOrQuote(this.command, lastCmdlet.end, tokenStart);
+  }
+
+  /** 写入 cmdlet 之后的顶层扫描,按 cmdlet 惰性计算一次;只需扫到下一个写入 cmdlet。 */
+  private tailScanFrom(writeCmdlet: CommandCmdlet): PowerShellTailScan {
+    const cached = this.tailScans.get(writeCmdlet.start);
+    if (cached) return cached;
+    const position = this.writeCmdlets.indexOf(writeCmdlet);
+    const next = this.writeCmdlets[position + 1];
+    const scan = scanPowerShellTail(this.command, writeCmdlet.end, next ? next.start : this.command.length);
+    this.tailScans.set(writeCmdlet.start, scan);
+    return scan;
+  }
+
+  /** 起点落在 [from, to) 且终点不超过 to 的 token,按起点升序;token 列表已排序,二分定位起点。 */
+  tokensWithin(from: number, to: number): CommandPathToken[] {
+    let low = 0;
+    let high = this.tokens.length - 1;
+    let first = this.tokens.length;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (this.tokens[mid].start >= from) {
+        first = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+    const out: CommandPathToken[] = [];
+    for (let index = first; index < this.tokens.length && this.tokens[index].start < to; index += 1) {
+      if (this.tokens[index].end <= to) out.push(this.tokens[index]);
+    }
+    return out;
   }
 
   /** token 所在的命令段:前一个分隔符(起点 < tokenStart)之后到下一个分隔符(起点 ≥ tokenEnd)之前。 */
@@ -431,10 +513,8 @@ class CommandScanIndex {
     if (cached) return cached;
     const segment = this.command.slice(segmentStart, segmentEnd);
     const trimmed = segment.trim();
-    const lastPath = this.tokens
-      .filter((candidate) => candidate.start >= segmentStart && candidate.end <= segmentEnd)
-      .sort((a, b) => a.start - b.start || a.end - b.end)
-      .at(-1);
+    // token 已按 (start, end) 排序,段内末位路径直接取范围内最后一个,不再逐段全量筛选。
+    const lastPath = this.tokensWithin(segmentStart, segmentEnd).at(-1);
     const info: CommandSegmentInfo = {
       start: segmentStart,
       end: segmentEnd,
@@ -521,16 +601,11 @@ function endsWithTargetDirectoryOption(text: string): boolean {
   return /(?:^|\s)(?:-t|--target-directory)$/i.test(window);
 }
 
-function transferDirectoryOutputs(
-  index: CommandScanIndex,
-  destination: CommandPathToken,
-  tokens: readonly CommandPathToken[],
-): string[] {
+function transferDirectoryOutputs(index: CommandScanIndex, destination: CommandPathToken): string[] {
   if (!/[\\/]$/.test(destination.path)) return [destination.path];
   const command = index.command;
   const { start: segmentStart, end: segmentEnd } = index.segmentFor(destination.start, destination.end);
-  const sourcePaths = tokens
-    .filter((token) => token.start >= segmentStart && token.end <= segmentEnd)
+  const sourcePaths = index.tokensWithin(segmentStart, segmentEnd)
     .filter((token) => token.start !== destination.start)
     .filter((token) => !/[\\/]$/.test(token.path))
     .map((token) => token.path);
@@ -688,7 +763,7 @@ export function extractCommandOutputPathCandidates(command: string): string[] {
   const out: string[] = [];
   for (const token of tokens) {
     if (!isExplicitOutputPath(index, token)) continue;
-    for (const output of transferDirectoryOutputs(index, token, tokens)) {
+    for (const output of transferDirectoryOutputs(index, token)) {
       if (seen.has(output)) continue;
       seen.add(output);
       out.push(output);

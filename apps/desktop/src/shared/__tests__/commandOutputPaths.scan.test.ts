@@ -8,7 +8,9 @@ import { extractCommandOutputPathCandidates } from '../commandOutputPaths';
  * cost shape (long text + many path tokens, with and without separators) instead
  * of a long run of repeated characters, which never exercised the per-candidate scans.
  */
-function longCommand(kind: 'oneline' | 'multiline' | 'powershell', count: number): string {
+type LongCommandKind = 'oneline' | 'multiline' | 'powershell' | 'powershell-nested-reads' | 'powershell-per-line-writes';
+
+function longCommand(kind: LongCommandKind, count: number): string {
   const paths = Array.from({ length: count }, (_, index) =>
     `'/Users/demo/project/data/dir${index % 97}/segment-${index}/file-${index}.json'`);
   const pad = 'x'.repeat(120);
@@ -18,19 +20,45 @@ function longCommand(kind: 'oneline' | 'multiline' | 'powershell', count: number
   if (kind === 'multiline') {
     return `cat <<'EOF' | node scripts/collect.js\n${paths.map((p) => `${p} ${pad}`).join('\n')}\nEOF\necho ok > /work/final-report.txt`;
   }
+  if (kind === 'powershell-nested-reads') {
+    // The writer comes first; every nested read carries its own `-Path` switch, so each
+    // candidate ends in a path switch and must be rejected as nested (not top level).
+    return `Set-Content -Value @(${paths.map((p) => `(Get-Content -Path ${p} ${pad})`).join(', ')}) -Path C:\\work\\final-report.txt`;
+  }
+  if (kind === 'powershell-per-line-writes') {
+    return paths.map((p, index) => `Out-File -FilePath 'C:\\work\\out-${index}.txt' ${pad} ${p}`).join('\n');
+  }
   return `Get-ChildItem ${pad} ${paths.map((p) => `${p} ${pad}`).join(' ')} | Out-File -FilePath C:\\work\\final-report.txt`;
 }
 
+function expectedOutputs(kind: LongCommandKind, count: number): string[] {
+  if (kind === 'powershell-per-line-writes') {
+    return Array.from({ length: count }, (_, index) => `C:\\work\\out-${index}.txt`);
+  }
+  return [kind.startsWith('powershell') ? 'C:\\work\\final-report.txt' : '/work/final-report.txt'];
+}
+
 describe('command output path scan cost (#5503)', () => {
-  it.each(['oneline', 'multiline', 'powershell'] as const)('stays linear on long %s commands with thousands of candidates', (kind) => {
+  it.each([
+    'oneline', 'multiline', 'powershell', 'powershell-nested-reads', 'powershell-per-line-writes',
+  ] as const)('stays linear on long %s commands with thousands of candidates', (kind) => {
     const command = longCommand(kind, 7000);
     expect(command.length).toBeGreaterThan(1_000_000);
     const started = performance.now();
     const paths = extractCommandOutputPathCandidates(command);
     const elapsed = performance.now() - started;
-    expect(paths).toEqual([kind === 'powershell' ? 'C:\\work\\final-report.txt' : '/work/final-report.txt']);
+    expect(paths).toEqual(expectedOutputs(kind, 7000));
     // The pre-fix implementation took 13–18s here; the bound is generous for slow CI.
     expect(elapsed).toBeLessThan(2000);
+  });
+
+  it('keeps paths inside outer quotes quoted when an inner quote closes first', () => {
+    // Nested quoting: the path sits in a script comment inside the outer double quotes.
+    expect(extractCommandOutputPathCandidates(`python -c "print('ok') # > /work/fake.txt"`)).toEqual([]);
+    expect(extractCommandOutputPathCandidates(`python -c "print('ok') # > C:\\work\\fake.txt"`)).toEqual([]);
+    expect(extractCommandOutputPathCandidates(`node -e "const s = 'a'; fs.writeFileSync('/work/nested.txt', s)"`)).toEqual(['/work/nested.txt']);
+    // Once the outer quote closes, a real redirect still counts.
+    expect(extractCommandOutputPathCandidates(`python -c "print('ok')" > /work/real.txt`)).toEqual(['/work/real.txt']);
   });
 
   it('keeps explicit-output decisions that end in long whitespace runs', () => {
