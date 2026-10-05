@@ -433,6 +433,11 @@ import {
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
 import {
+  ColdPiRehydrationError,
+  coldPiRehydrationFailureMessage,
+  describeColdPiRehydrationFailure,
+} from './coldPiRehydrationFailure.js';
+import {
   desktopClaudeAuthAdapter,
   desktopCodexAuthAdapter,
   readClaudeApiKey,
@@ -8713,14 +8718,21 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       .from(sessions)
       .where(eq(sessions.id, sessionId))
       .limit(1);
-    if (
-      !row ||
-      row.agentKind !== 'pi' ||
-      row.remoteHostId ||
-      !row.sdkSessionId ||
-      !row.workingDir
-    ) {
-      throw new Error(`session ${sessionId} cannot rehydrate a local Pi runtime for verification`);
+    // 失败分类只为诊断（#5508）：每个分支仍 fail-closed，切模不会继续。
+    if (!row) {
+      throw new ColdPiRehydrationError('session-row-missing', `session ${sessionId} has no database row`);
+    }
+    if (row.agentKind !== 'pi' || row.remoteHostId) {
+      throw new ColdPiRehydrationError(
+        'not-local-pi',
+        `session ${sessionId} is not a local Pi runtime (agentKind=${row.agentKind}${row.remoteHostId ? ', remote' : ''})`,
+      );
+    }
+    if (!row.sdkSessionId) {
+      throw new ColdPiRehydrationError('native-session-missing', `session ${sessionId} has no native Pi session to resume`);
+    }
+    if (!row.workingDir) {
+      throw new ColdPiRehydrationError('working-dir-missing', `session ${sessionId} has no working directory`);
     }
     const createOpts = buildCreateOptsWithStderr({
       id: sessionId,
@@ -8743,12 +8755,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       createOpts.remoteHostId,
     );
     if (!workDirExists) {
-      throw new Error(`working directory is missing for session ${sessionId}`);
+      throw new ColdPiRehydrationError('working-dir-missing', `working directory is missing for session ${sessionId}`);
     }
     await synthesizeOrcaVendorOptionsFromDb(sessionId, createOpts);
     const extraDirs = await readSessionExtraDirsFromDb(sessionId);
     if (extraDirs.length > 0) createOpts.extraDirs = extraDirs;
-    await bootstrapSession(createOpts);
+    try {
+      await bootstrapSession(createOpts);
+    } catch (error) {
+      throw new ColdPiRehydrationError(
+        'bootstrap-failed',
+        error instanceof Error ? error.message : String(error),
+        { cause: error },
+      );
+    }
   }
 
   const agentSwitchDeps: MakerSessionAgentSwitchHandlerDeps = {
@@ -18395,17 +18415,42 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           } else {
             try {
               await rehydrateColdPiRuntimeForWindowVerification(sessionId);
-            } catch {
+            } catch (error) {
+              // 原始失败原因必须留下来（#5508）：同一条冷路径每次重试都会再失败，
+              // 没有类别与原因就无法区分会话行缺失、工作目录丢失还是 bootstrap 失败。
+              const failure = describeColdPiRehydrationFailure(error);
+              log.warn('set-model: cold Pi runtime rehydration failed; runtime selection unchanged', {
+                sessionId,
+                category: failure.category,
+                reason: failure.reason,
+                fromModel: currentRuntimeModel ?? null,
+                toModel: model,
+                currentProviderId,
+                nextProviderId: targetRouteProviderId,
+              });
               throwIpcError(
                 localModelWindowSwitchErrorCode('MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN'),
-                'Pi current runtime could not be verified; runtime selection was not changed',
+                coldPiRehydrationFailureMessage(failure),
               );
             }
             liveSessionBeforeRouteChange = maker.getSession(sessionId);
             if (!liveSessionBeforeRouteChange) {
+              const failure = {
+                category: 'runtime-not-live' as const,
+                reason: 'rehydrated Pi runtime is not live after bootstrap',
+              };
+              log.warn('set-model: cold Pi runtime rehydration failed; runtime selection unchanged', {
+                sessionId,
+                category: failure.category,
+                reason: failure.reason,
+                fromModel: currentRuntimeModel ?? null,
+                toModel: model,
+                currentProviderId,
+                nextProviderId: targetRouteProviderId,
+              });
               throwIpcError(
                 localModelWindowSwitchErrorCode('MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN'),
-                'Pi current runtime could not be verified; runtime selection was not changed',
+                coldPiRehydrationFailureMessage(failure),
               );
             }
             rehydratedColdPiRuntime = liveSessionBeforeRouteChange;

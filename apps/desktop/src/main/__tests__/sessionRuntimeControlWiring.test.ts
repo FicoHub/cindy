@@ -11,6 +11,10 @@ const registerSource = readFileSync(resolve(mainRoot, 'maker-ipc/register.ts'), 
   /\r\n?/g,
   '\n',
 );
+const coldPiRehydrationFailureSource = readFileSync(
+  resolve(mainRoot, 'maker-ipc/coldPiRehydrationFailure.ts'),
+  'utf8',
+);
 const runtimeControlSource = readFileSync(
   resolve(mainRoot, 'maker-ipc/sessionRuntimeControl.ts'),
   'utf8',
@@ -1003,7 +1007,40 @@ describe('session runtime control wiring', () => {
     const apply = setModel.indexOf('await applyRuntimeSetModelChange({');
     expect(rehydrateCall).toBeGreaterThan(-1);
     expect(rehydrateCall).toBeLessThan(apply);
-    expect(setModel).toContain('Pi current runtime could not be verified');
+    // The user-facing message is assembled by the diagnostics helper (#5508); the
+    // established prefix still lives there so copy and remote clients keep matching.
+    expect(setModel).toContain('coldPiRehydrationFailureMessage(failure)');
+    expect(coldPiRehydrationFailureSource).toContain('Pi current runtime could not be verified');
+  });
+
+  it('surfaces why a cold Pi rehydration failed instead of swallowing the error (#5508)', () => {
+    const rehydrate = handlerBody(
+      registerSource,
+      'async function rehydrateColdPiRuntimeForWindowVerification(',
+      'const agentSwitchDeps:',
+    );
+    // Every fail-closed branch carries a category; bootstrap failures keep their cause.
+    for (const category of ['session-row-missing', 'not-local-pi', 'native-session-missing', 'working-dir-missing', 'bootstrap-failed']) {
+      expect(rehydrate).toMatch(new RegExp(`new ColdPiRehydrationError\\(\\s*'${category}'`));
+    }
+    expect(rehydrate).not.toContain('throw new Error(');
+    expect(rehydrate).toContain('{ cause: error }');
+
+    const setModel = handlerBody(
+      registerSource,
+      'const handleSetModel = async (',
+      'const recoverRemoteRuntimeAxisPersistence',
+    );
+    const rehydrateCall = setModel.indexOf('await rehydrateColdPiRuntimeForWindowVerification(sessionId)');
+    const catchBlock = setModel.slice(rehydrateCall, setModel.indexOf('rehydratedColdPiRuntime = liveSessionBeforeRouteChange;'));
+    expect(catchBlock).toContain('} catch (error) {');
+    expect(catchBlock).not.toContain('} catch {');
+    expect(catchBlock).toContain('describeColdPiRehydrationFailure(error)');
+    expect(catchBlock).toContain("log.warn('set-model: cold Pi runtime rehydration failed; runtime selection unchanged'");
+    expect(catchBlock).toContain('coldPiRehydrationFailureMessage(failure)');
+    expect(catchBlock).toContain("category: 'runtime-not-live'");
+    // The error code and fail-closed outcome are unchanged: still no route change on failure.
+    expect(catchBlock.match(/localModelWindowSwitchErrorCode\('MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN'\)/g)).toHaveLength(2);
   });
 
   it('skips the cold Pi window rehydration when the live usage leaves the target headroom', () => {
