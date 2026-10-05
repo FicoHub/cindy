@@ -11,6 +11,10 @@ const registerSource = readFileSync(resolve(mainRoot, 'maker-ipc/register.ts'), 
   /\r\n?/g,
   '\n',
 );
+const coldPiRehydrationSource = readFileSync(
+  resolve(mainRoot, 'maker-ipc/coldPiRehydration.ts'),
+  'utf8',
+);
 const coldPiRehydrationFailureSource = readFileSync(
   resolve(mainRoot, 'maker-ipc/coldPiRehydrationFailure.ts'),
   'utf8',
@@ -981,7 +985,7 @@ describe('session runtime control wiring', () => {
   it('rehydrates a cold Pi runtime before model-window assessment', () => {
     const rehydrate = handlerBody(
       registerSource,
-      'async function rehydrateColdPiRuntimeForWindowVerification(',
+      'const rehydrateColdPiRuntimeForWindowVerification = createColdPiRehydrationForWindowVerification({',
       'const agentSwitchDeps:',
     );
     const rolloverWiring = handlerBody(
@@ -990,9 +994,12 @@ describe('session runtime control wiring', () => {
       'const pendingCredentialSwitchService = new PendingCredentialSwitchService({',
     );
 
-    expect(rehydrate).toContain("row.agentKind !== 'pi'");
+    // The flow itself lives in coldPiRehydration.ts so its failure paths can be executed
+    // in unit tests (#5508); register.ts only wires DB, probe and bootstrap into it.
+    expect(coldPiRehydrationSource).toContain("row.agentKind !== 'pi'");
     expect(rehydrate).toContain('resumeSessionId: row.sdkSessionId');
-    expect(rehydrate).toContain('await bootstrapSession(createOpts)');
+    expect(rehydrate).toContain('bootstrapSession: (createOpts) => bootstrapSession(createOpts)');
+    expect(rehydrate).toContain('checkWorkDirExists(sessionId, workingDir, agentKind, remoteHostId)');
     expect(rehydrate).not.toContain('.send(');
     expect(rolloverWiring).toContain('rehydrateColdPiRuntimeForWindowVerification,');
 
@@ -1009,22 +1016,21 @@ describe('session runtime control wiring', () => {
     expect(rehydrateCall).toBeLessThan(apply);
     // The user-facing message is assembled by the diagnostics helper (#5508); the
     // established prefix still lives there so copy and remote clients keep matching.
-    expect(setModel).toContain('coldPiRehydrationFailureMessage(failure)');
+    expect(setModel).toContain('reportColdPiRehydrationFailure(');
     expect(coldPiRehydrationFailureSource).toContain('Pi current runtime could not be verified');
   });
 
   it('surfaces why a cold Pi rehydration failed instead of swallowing the error (#5508)', () => {
-    const rehydrate = handlerBody(
-      registerSource,
-      'async function rehydrateColdPiRuntimeForWindowVerification(',
-      'const agentSwitchDeps:',
-    );
-    // Every fail-closed branch carries a category; bootstrap failures keep their cause.
-    for (const category of ['session-row-missing', 'not-local-pi', 'native-session-missing', 'working-dir-missing', 'bootstrap-failed']) {
-      expect(rehydrate).toMatch(new RegExp(`new ColdPiRehydrationError\\(\\s*'${category}'`));
+    // Every fail-closed branch carries a category (executed for real in
+    // coldPiRehydration.test.ts); probe/lookup/options/bootstrap stages keep their cause.
+    for (const category of ['session-row-missing', 'not-local-pi', 'native-session-missing', 'working-dir-missing']) {
+      expect(coldPiRehydrationSource).toMatch(new RegExp(`new ColdPiRehydrationError\\(\\s*'${category}'`));
     }
-    expect(rehydrate).not.toContain('throw new Error(');
-    expect(rehydrate).toContain('{ cause: error }');
+    for (const category of ['session-lookup-failed', 'working-dir-probe-failed', 'session-options-failed', 'bootstrap-failed']) {
+      expect(coldPiRehydrationSource).toMatch(new RegExp(`stage\\(\\s*'${category}'`));
+    }
+    expect(coldPiRehydrationSource).not.toContain('throw new Error(');
+    expect(coldPiRehydrationSource).toContain('{ cause: error }');
 
     const setModel = handlerBody(
       registerSource,
@@ -1035,12 +1041,29 @@ describe('session runtime control wiring', () => {
     const catchBlock = setModel.slice(rehydrateCall, setModel.indexOf('rehydratedColdPiRuntime = liveSessionBeforeRouteChange;'));
     expect(catchBlock).toContain('} catch (error) {');
     expect(catchBlock).not.toContain('} catch {');
-    expect(catchBlock).toContain('describeColdPiRehydrationFailure(error)');
-    expect(catchBlock).toContain("log.warn('set-model: cold Pi runtime rehydration failed; runtime selection unchanged'");
-    expect(catchBlock).toContain('coldPiRehydrationFailureMessage(failure)');
-    expect(catchBlock).toContain("category: 'runtime-not-live'");
+    // Both the thrown failure and the "not live after bootstrap" case go through the one
+    // reporter, which logs the full reason and throws the IPC error with a safe detail.
+    expect(catchBlock.match(/reportColdPiRehydrationFailure\(/g)).toHaveLength(2);
+    expect(catchBlock).toContain("new ColdPiRehydrationError('runtime-not-live'");
+    expect(catchBlock).toContain('log,');
+    expect(catchBlock).toContain('throwIpcError,');
     // The error code and fail-closed outcome are unchanged: still no route change on failure.
     expect(catchBlock.match(/localModelWindowSwitchErrorCode\('MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN'\)/g)).toHaveLength(2);
+
+    // Raw reasons (which may carry local paths or stderr) stay in the main log; the IPC
+    // message only carries the category and the name/code-based detail.
+    const reporterStart = coldPiRehydrationFailureSource.indexOf('export function reportColdPiRehydrationFailure(');
+    expect(reporterStart).toBeGreaterThan(-1);
+    const reporter = coldPiRehydrationFailureSource.slice(reporterStart);
+    expect(reporter).toContain('reason: failure.reason');
+    expect(reporter).toContain('coldPiRehydrationFailureMessage(failure)');
+    const messageBuilder = handlerBody(
+      coldPiRehydrationFailureSource,
+      'export function coldPiRehydrationFailureMessage(',
+      'export interface ColdPiRehydrationFailureContext',
+    );
+    expect(messageBuilder).toContain('failure.detail');
+    expect(messageBuilder).not.toContain('failure.reason');
   });
 
   it('skips the cold Pi window rehydration when the live usage leaves the target headroom', () => {

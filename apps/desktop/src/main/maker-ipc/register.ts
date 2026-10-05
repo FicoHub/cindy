@@ -432,11 +432,8 @@ import {
 } from '../../shared/orca-worker-permission-mode.js';
 import { t } from '../i18n.js';
 import { createLogger } from '../logger.js';
-import {
-  ColdPiRehydrationError,
-  coldPiRehydrationFailureMessage,
-  describeColdPiRehydrationFailure,
-} from './coldPiRehydrationFailure.js';
+import { createColdPiRehydrationForWindowVerification } from './coldPiRehydration.js';
+import { ColdPiRehydrationError, reportColdPiRehydrationFailure } from './coldPiRehydrationFailure.js';
 import {
   desktopClaudeAuthAdapter,
   desktopCodexAuthAdapter,
@@ -8711,65 +8708,42 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
   }
 
-  async function rehydrateColdPiRuntimeForWindowVerification(sessionId: string): Promise<void> {
-    if (maker.getSession(sessionId)) return;
-    const [row] = await getDbClient()
-      .drizzle.select()
-      .from(sessions)
-      .where(eq(sessions.id, sessionId))
-      .limit(1);
-    // 失败分类只为诊断（#5508）：每个分支仍 fail-closed，切模不会继续。
-    if (!row) {
-      throw new ColdPiRehydrationError('session-row-missing', `session ${sessionId} has no database row`);
-    }
-    if (row.agentKind !== 'pi' || row.remoteHostId) {
-      throw new ColdPiRehydrationError(
-        'not-local-pi',
-        `session ${sessionId} is not a local Pi runtime (agentKind=${row.agentKind}${row.remoteHostId ? ', remote' : ''})`,
-      );
-    }
-    if (!row.sdkSessionId) {
-      throw new ColdPiRehydrationError('native-session-missing', `session ${sessionId} has no native Pi session to resume`);
-    }
-    if (!row.workingDir) {
-      throw new ColdPiRehydrationError('working-dir-missing', `session ${sessionId} has no working directory`);
-    }
-    const createOpts = buildCreateOptsWithStderr({
-      id: sessionId,
-      agentKind: 'pi',
-      workingDir: row.workingDir,
-      model: row.model,
-      providerId: row.providerId,
-      effort: (row.effort ?? undefined) as CreateOpts['effort'],
-      fastMode: !!row.fastMode,
-      permissionMode: (row.permissionMode ?? 'ask') as CreateOpts['permissionMode'],
-      planMode: !!row.planModeEnabled,
-      title: row.title ?? undefined,
-      resumeSessionId: row.sdkSessionId,
-      orcaRole: row.orcaRole ?? undefined,
-    });
-    const workDirExists = await checkWorkDirExists(
-      sessionId,
-      createOpts.workingDir,
-      createOpts.agentKind,
-      createOpts.remoteHostId,
-    );
-    if (!workDirExists) {
-      throw new ColdPiRehydrationError('working-dir-missing', `working directory is missing for session ${sessionId}`);
-    }
-    await synthesizeOrcaVendorOptionsFromDb(sessionId, createOpts);
-    const extraDirs = await readSessionExtraDirsFromDb(sessionId);
-    if (extraDirs.length > 0) createOpts.extraDirs = extraDirs;
-    try {
-      await bootstrapSession(createOpts);
-    } catch (error) {
-      throw new ColdPiRehydrationError(
-        'bootstrap-failed',
-        error instanceof Error ? error.message : String(error),
-        { cause: error },
-      );
-    }
-  }
+  // 冷 Pi 切模核实前的运行时恢复（#5508）：流程在 coldPiRehydration.ts 内，每条失败
+  // 路径都带类别；这里只接 DB、工作目录探测与 bootstrap。
+  const rehydrateColdPiRuntimeForWindowVerification = createColdPiRehydrationForWindowVerification({
+    hasLiveSession: (sessionId) => !!maker.getSession(sessionId),
+    loadSessionRow: async (sessionId) => {
+      const [row] = await getDbClient()
+        .drizzle.select()
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      return row;
+    },
+    buildCreateOpts: (sessionId, row) =>
+      buildCreateOptsWithStderr({
+        id: sessionId,
+        agentKind: 'pi',
+        workingDir: row.workingDir,
+        model: row.model,
+        providerId: row.providerId,
+        effort: (row.effort ?? undefined) as CreateOpts['effort'],
+        fastMode: !!row.fastMode,
+        permissionMode: (row.permissionMode ?? 'ask') as CreateOpts['permissionMode'],
+        planMode: !!row.planModeEnabled,
+        title: row.title ?? undefined,
+        resumeSessionId: row.sdkSessionId,
+        orcaRole: row.orcaRole ?? undefined,
+      }),
+    checkWorkDirExists: (sessionId, workingDir, agentKind, remoteHostId) =>
+      checkWorkDirExists(sessionId, workingDir, agentKind, remoteHostId),
+    prepareCreateOpts: async (sessionId, createOpts) => {
+      await synthesizeOrcaVendorOptionsFromDb(sessionId, createOpts);
+      const extraDirs = await readSessionExtraDirsFromDb(sessionId);
+      if (extraDirs.length > 0) createOpts.extraDirs = extraDirs;
+    },
+    bootstrapSession: (createOpts) => bootstrapSession(createOpts),
+  });
 
   const agentSwitchDeps: MakerSessionAgentSwitchHandlerDeps = {
     withSessionLock: withSendToSessionLock,
@@ -18413,44 +18387,39 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               nextProviderId: targetRouteProviderId,
             });
           } else {
+            // 原始失败原因必须留下来（#5508）：同一条冷路径每次重试都会再失败，
+            // 没有类别与原因就无法区分会话行缺失、工作目录丢失还是 bootstrap 失败。
+            // 完整原因只进 Main 日志；IPC 错误只带类别与脱敏概述，错误码与 fail-closed 不变。
+            const coldPiFailureContext = {
+              sessionId,
+              fromModel: currentRuntimeModel ?? null,
+              toModel: model,
+              currentProviderId,
+              nextProviderId: targetRouteProviderId,
+            };
             try {
               await rehydrateColdPiRuntimeForWindowVerification(sessionId);
             } catch (error) {
-              // 原始失败原因必须留下来（#5508）：同一条冷路径每次重试都会再失败，
-              // 没有类别与原因就无法区分会话行缺失、工作目录丢失还是 bootstrap 失败。
-              const failure = describeColdPiRehydrationFailure(error);
-              log.warn('set-model: cold Pi runtime rehydration failed; runtime selection unchanged', {
-                sessionId,
-                category: failure.category,
-                reason: failure.reason,
-                fromModel: currentRuntimeModel ?? null,
-                toModel: model,
-                currentProviderId,
-                nextProviderId: targetRouteProviderId,
-              });
-              throwIpcError(
-                localModelWindowSwitchErrorCode('MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN'),
-                coldPiRehydrationFailureMessage(failure),
+              reportColdPiRehydrationFailure(
+                {
+                  log,
+                  throwIpcError,
+                  errorCode: localModelWindowSwitchErrorCode('MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN'),
+                },
+                coldPiFailureContext,
+                error,
               );
             }
             liveSessionBeforeRouteChange = maker.getSession(sessionId);
             if (!liveSessionBeforeRouteChange) {
-              const failure = {
-                category: 'runtime-not-live' as const,
-                reason: 'rehydrated Pi runtime is not live after bootstrap',
-              };
-              log.warn('set-model: cold Pi runtime rehydration failed; runtime selection unchanged', {
-                sessionId,
-                category: failure.category,
-                reason: failure.reason,
-                fromModel: currentRuntimeModel ?? null,
-                toModel: model,
-                currentProviderId,
-                nextProviderId: targetRouteProviderId,
-              });
-              throwIpcError(
-                localModelWindowSwitchErrorCode('MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN'),
-                coldPiRehydrationFailureMessage(failure),
+              reportColdPiRehydrationFailure(
+                {
+                  log,
+                  throwIpcError,
+                  errorCode: localModelWindowSwitchErrorCode('MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN'),
+                },
+                coldPiFailureContext,
+                new ColdPiRehydrationError('runtime-not-live', 'rehydrated Pi runtime is not live after bootstrap'),
               );
             }
             rehydratedColdPiRuntime = liveSessionBeforeRouteChange;
