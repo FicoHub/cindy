@@ -75,6 +75,7 @@ import {
 } from '../maker-ipc/agentHandoff.js';
 import { agentHandoffPending } from '../maker-ipc/agentHandoffPendingSingleton.js';
 import { summarizeOpenPlan, buildPlanReconcileNote } from '../maker-ipc/planReconcile.js';
+import { peekGoalInactiveNote } from '../goal-host/inactiveNote.js';
 import { listMessagesForAgentHandoff } from '../localDb/ipc/messages.js';
 import { enqueueDurableWrite } from '../messagePersistBroadcaster.js';
 import { toDesktopSessionDispatchOutcome } from '../maker-host/send-outcome.js';
@@ -922,6 +923,7 @@ export function createMakerHookSessionRunner(deps: {
         kind: 'scheduler',
         scheduleId: `hook:${req.origin.connectionId}`,
         scheduleName: `Hook · ${req.origin.connectionName}`,
+        ...(req.source?.im ? { surface: 'im' as const } : {}),
       } as const;
 
       // 入站附件: 解码后图片/文件分流(server 2026-07 起全 MIME 转发) ->
@@ -1163,9 +1165,16 @@ export function createMakerHookSessionRunner(deps: {
             return null;
           }
         })() : null;
-        const outgoingMessage: UserMessage = planReconcileNote
+        const withPlanReconcile: UserMessage = planReconcileNote
           ? (prependNoteToWireUserMessage(withHandoff, planReconcileNote) as UserMessage)
           : withHandoff;
+        // 目标状态说明:与 makerSendTransaction 同语义,读库失败静默跳过。
+        const goalInactiveNote = await enqueueDurableWrite(`goal-inactive-read:${session.id}`, () =>
+          peekGoalInactiveNote(session.id),
+        ).catch(() => null);
+        const outgoingMessage: UserMessage = goalInactiveNote
+          ? (prependNoteToWireUserMessage(withPlanReconcile, goalInactiveNote) as UserMessage)
+          : withPlanReconcile;
         const trustedChannelOrigin = mainOwnedChannelOrigin(req.source?.im);
         const sendResult = await session.send(outgoingMessage, {
           origin,

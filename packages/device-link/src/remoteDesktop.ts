@@ -167,6 +167,14 @@ export interface RemoteDesktopCapabilities {
    * send them otherwise: older hosts end the session on unknown channel data.
    */
   channelRequests?: boolean;
+  /** Display changes requested with `keepVideo` may keep the live video stream. */
+  liveDisplaySwitch?: boolean;
+  /**
+   * `start` and display changes accept `control: true`: the host takes control
+   * (starts input) within the same request and replies `controlling: true`, so
+   * the viewer needs no separate `control` request.
+   */
+  autoControl?: boolean;
   backgroundViewing?: boolean;
   cursorOverlay?: boolean;
   clipboardText?: boolean;
@@ -176,6 +184,11 @@ export interface RemoteDesktopCapabilities {
   clipboardInline?: boolean;
   privacyScreen?: boolean;
   hostMute?: boolean;
+  /**
+   * Accepts `viewerHidden`: the host stops sending video while the viewer is
+   * hidden, keeping audio, input and the lease. Each new offer starts unpaused.
+   */
+  viewerHidden?: boolean;
   /** Explicit host actions, independent of user-configured keyboard bindings. */
   windowActions?: boolean;
   workspaceNavigation?: boolean;
@@ -204,6 +217,8 @@ export interface RemoteDesktopLease {
   controlling: boolean;
   /** Acknowledges the requested virtual mode when OS logical geometry differs. */
   viewerDisplayRequest?: { width: number; height: number };
+  /** The display change kept the existing video stream; no new offer is needed. */
+  videoKept?: boolean;
 }
 export type RemoteDesktopRequest =
   | { op: "windowAction"; lease: string; action: "list" | "desktop" }
@@ -220,13 +235,20 @@ export type RemoteDesktopRequest =
       lockOnExit?: boolean;
     }
   | { op: "hostMute"; lease: string; enabled: boolean }
+  | { op: "viewerHidden"; lease: string; hidden: boolean }
   | { op: "clipboardSync"; lease: string; enabled: boolean }
   | { op: "clipboardVersion"; lease: string }
   | RemoteDesktopIceRequest
   | ClipboardContentRequest
   | { op: "capabilities" }
   | { op: "permissions"; action: "check" | "guide" }
-  | { op: "start"; displayId: string; resume?: boolean; takeover?: boolean }
+  | {
+      op: "start";
+      displayId: string;
+      resume?: boolean;
+      takeover?: boolean;
+      control?: boolean;
+    }
   | { op: "heartbeat"; lease: string }
   | { op: "stop"; lease: string; lockScreen?: boolean }
   | { op: "frame"; lease: string; cursorOverlay?: boolean }
@@ -243,9 +265,28 @@ export type RemoteDesktopRequest =
   | { op: "clipboard"; lease: string; action: "copy" }
   | { op: "clipboard"; lease: string; action: "paste"; text: string }
   | { op: "displayModes"; lease: string }
-  | { op: "viewerDisplay"; lease: string; width: number; height: number }
-  | { op: "restoreViewerDisplay"; lease: string }
-  | { op: "resolution"; lease: string; modeId: string; temporary?: boolean };
+  | {
+      op: "viewerDisplay";
+      lease: string;
+      width: number;
+      height: number;
+      keepVideo?: boolean;
+      control?: boolean;
+    }
+  | {
+      op: "restoreViewerDisplay";
+      lease: string;
+      keepVideo?: boolean;
+      control?: boolean;
+    }
+  | {
+      op: "resolution";
+      lease: string;
+      modeId: string;
+      temporary?: boolean;
+      keepVideo?: boolean;
+      control?: boolean;
+    };
 
 export function parseRemoteDesktopRequest(
   value: unknown,
@@ -253,6 +294,13 @@ export function parseRemoteDesktopRequest(
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("INVALID_REQUEST");
   const v = value as Record<string, unknown>;
+  // Optional on start and display changes; older hosts drop it and the viewer
+  // asks for control separately.
+  const control = () => {
+    if (v.control !== undefined && typeof v.control !== "boolean")
+      throw new Error("INVALID_REQUEST");
+    return v.control === true ? { control: true as const } : {};
+  };
   if (v.op === "capabilities") return { op: v.op };
   if (v.op === "permissions" && (v.action === "check" || v.action === "guide"))
     return { op: v.op, action: v.action };
@@ -272,6 +320,7 @@ export function parseRemoteDesktopRequest(
       displayId: v.displayId,
       ...(v.takeover === true ? { takeover: true } : {}),
       ...(typeof v.resume === "boolean" ? { resume: v.resume } : {}),
+      ...control(),
     };
   }
   if (typeof v.lease !== "string" || v.lease.length > 128 || !v.lease)
@@ -314,6 +363,8 @@ export function parseRemoteDesktopRequest(
   )
     return { op: v.op, lease, enabled: v.enabled };
   if (v.op === "clipboardVersion") return { op: v.op, lease };
+  if (v.op === "viewerHidden" && typeof v.hidden === "boolean")
+    return { op: v.op, lease, hidden: v.hidden };
   if (v.op === "ice") {
     if (!isDesktopAttemptId(v.attemptId) || !isDesktopIceCursor(v.after))
       throw new Error("INVALID_REQUEST");
@@ -362,7 +413,14 @@ export function parseRemoteDesktopRequest(
     typeof v.enabled === "boolean"
   )
     return { op: v.op, lease, enabled: v.enabled };
-  if (v.op === "restoreViewerDisplay") return { op: v.op, lease };
+  // Optional on display changes only; older hosts drop it and tear down video.
+  const keepVideo = () => {
+    if (v.keepVideo !== undefined && typeof v.keepVideo !== "boolean")
+      throw new Error("INVALID_REQUEST");
+    return v.keepVideo === true ? { keepVideo: true as const } : {};
+  };
+  if (v.op === "restoreViewerDisplay")
+    return { op: v.op, lease, ...keepVideo(), ...control() };
   if (v.op === "displayModes") return { op: v.op, lease };
   if (v.op === "viewerDisplay") {
     if (
@@ -380,6 +438,8 @@ export function parseRemoteDesktopRequest(
       lease,
       width: v.width as number,
       height: v.height as number,
+      ...keepVideo(),
+      ...control(),
     };
   }
   if (
@@ -393,7 +453,8 @@ export function parseRemoteDesktopRequest(
       op: v.op,
       lease,
       modeId: v.modeId,
-      ...(v.temporary === true ? { temporary: true } : {}),
+      ...(v.temporary === true ? { temporary: true, ...control() } : {}),
+      ...keepVideo(),
     };
   }
   if (v.op === "offer" && typeof v.sdp === "string" && v.sdp.length <= 64_000) {
