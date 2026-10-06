@@ -25,7 +25,8 @@ import {
 import { AGENT_ISLAND_DISPLAY_CONFIG } from '../displayConfig.js';
 import type { AgentIslandNativeFrame } from '../MacAgentIslandNativeHost.js';
 import { markAppContentWindow } from '../../windowFocusClassifier.js';
-import type { AgentIslandService } from '../service.js';
+// Load the service during collection so cold module loading is not timed as behavior.
+import { AgentIslandService } from '../service.js';
 import { setDeepLinkMainWindow, takePendingDeepLink } from '../../deepLink.js';
 
 const REMOTE_DAEMON_CLOSED_REASON = 'remote_daemon_closed';
@@ -524,8 +525,7 @@ describe('Agent Island expanded content height', () => {
 });
 
 describe('AgentIslandService native publishing', () => {
-  it('keeps compact activity broadcasting alive in headless mode', async () => {
-    const { AgentIslandService } = await import('../service.js');
+  it('keeps compact activity broadcasting alive in headless mode', () => {
     const service = new AgentIslandService({
       getMainWindow: () => null,
       nativeHost: {
