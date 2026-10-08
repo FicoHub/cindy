@@ -348,9 +348,15 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
         : null;
       if (!groupId) throw new RemoteResourceRegistryError('INVALID_PARAMS', 'INVALID_PARAMS');
       // Every action re-checks that the phone may still see this group, and any teammate it names.
-      await readVisibleGroup(groupId);
+      const visibleGroup = await readVisibleGroup(groupId);
       if (actionId === 'update' && typeof input.organizerBotId === 'string') await assertBotsVisible([input.organizerBotId]);
-      if (actionId === 'set-members') await assertBotsVisible(botIdsInput());
+      if (actionId === 'set-members') {
+        // Phones send the whole member list. A server group can hold people and other accounts'
+        // companions with no local profile; the visible group already admits them, so only
+        // members being added need the check. Keep their ids: setMembers drops unlisted bots.
+        const currentMemberIds = new Set(visibleGroup.members.map((member) => member.botId));
+        await assertBotsVisible(botIdsInput().filter((botId) => !currentMemberIds.has(botId)));
+      }
       if (actionId === 'plan-edit' && typeof input.botId === 'string') await assertBotsVisible([input.botId]);
       const current = ownerService();
       const planInput = { groupId, planId: input.planId };

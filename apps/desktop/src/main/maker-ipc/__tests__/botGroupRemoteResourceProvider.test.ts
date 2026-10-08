@@ -251,6 +251,30 @@ describe('bot group remote resources', () => {
     expect(service.stopRound).not.toHaveBeenCalled();
   });
 
+  it('lets a phone add and remove companions in a server group with people and other accounts’ companions', async () => {
+    const serverMembers: BotGroupSummary['members'] = [
+      { botId: 'mimi', actorId: 'cloud-mimi', actorKind: 'bot', isOwned: true, name: '咪咪', avatar: '', avatarColor: 'red', status: 'active' },
+      { botId: 'person', actorId: 'person', actorKind: 'human', isOwned: false, name: 'Guest', avatar: '', avatarColor: 'blue', status: 'active' },
+      { botId: 'guest-bot', actorId: 'guest-bot', actorKind: 'bot', isOwned: false, name: 'Guest Bot', avatar: '', avatarColor: 'green', status: 'active' },
+    ];
+    service.getGroup.mockResolvedValue({ ok: true, group: detail({ serverBacked: true, members: serverMembers }) });
+    const setMembers = (botIds: string[]) => remoteResourceRegistry.invoke(context, {
+      client: client(), collectionId: BOT_GROUP_REMOTE_COLLECTION_ID, actionId: 'set-members', resourceRef: ref('g1'),
+      input: { botIds },
+    });
+
+    await setMembers(['mimi', 'person', 'guest-bot', 'abu']);
+    expect(service.setMembers).toHaveBeenLastCalledWith({ groupId: 'g1', botIds: ['mimi', 'person', 'guest-bot', 'abu'] });
+    await setMembers(['person', 'guest-bot']);
+    expect(service.setMembers).toHaveBeenLastCalledWith({ groupId: 'g1', botIds: ['person', 'guest-bot'] });
+
+    service.setMembers.mockClear();
+    for (const added of ['ghost', 'missing']) {
+      await expect(setMembers(['mimi', 'person', 'guest-bot', added])).rejects.toMatchObject({ message: 'MEMBER_UNAVAILABLE' });
+    }
+    expect(service.setMembers).not.toHaveBeenCalled();
+  });
+
   it('passes a phone’s attachments on with the phone that sent them', async () => {
     const attachments = [{ id: 'a1', name: 'photo.jpg', path: 'cindy-peer-attach://x', category: 'image', mimeType: 'image/jpeg' }];
     await remoteResourceRegistry.invoke(context, {
