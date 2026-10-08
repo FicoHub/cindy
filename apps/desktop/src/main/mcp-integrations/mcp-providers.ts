@@ -1,4 +1,5 @@
 import { getTelegramDeliveryBridge } from '../hook-control/telegramDelivery.js';
+import { t } from '../i18n.js';
 import { executeTaskTags } from '../localDb/ipc/taskTags.js';
 import { getPluginMarketService } from '../plugin-market/service.js';
 import { resolveHelperSurface } from './helperSurface.js';
@@ -780,6 +781,11 @@ export function createDesktopMcpProviders(deps: DesktopMcpProvidersDeps): LiziMc
         },
       },
       botMessaging: {
+        sendToUser: async (params) => {
+          const svc = tryGetBotDirectMessageService();
+          if (!svc) return { ok: false, errorCode: 'HOST_NOT_READY', message: t('groupTools.privateUnavailable') };
+          return svc.sendToUser(params);
+        },
         checkMessage: async (params) => {
           const svc = tryGetBotDirectMessageService();
           if (!svc) return { ok: false, errorCode: 'HOST_NOT_READY', message: 'Teammate messaging is unavailable' };
