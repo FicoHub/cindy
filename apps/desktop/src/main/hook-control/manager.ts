@@ -34,6 +34,10 @@ import {
   HOOK_FEATURE_SESSION_PICKER,
   HOOK_FEATURE_SESSION_NEW,
   HOOK_FEATURE_SLACK_TOOLS,
+  HOOK_FEATURE_TELEGRAM_CARD_OPS,
+  HOOK_FEATURE_TELEGRAM_COMMANDS,
+  HOOK_FEATURE_TELEGRAM_FINAL_OPS,
+  HOOK_FEATURE_TELEGRAM_PROGRESS_OPS,
   HOOK_FEATURE_TURN_DELIVERY,
   makeBindRevoke,
   makeBindStart,
@@ -705,6 +709,13 @@ export function createHookControlManager(deps: HookControlManagerDeps): HookCont
       // 不接入(#1855 的红线之一)。
       HOOK_FEATURE_MESSAGE_OPS,
       HOOK_FEATURE_TELEGRAM_DM_SEND,
+      // 进度消息、成功终稿、交互卡由客户端渲染并经 msg.op 发布, 命令菜单以客户端注册表
+      // 为准(dispatcher 的 telegramTurnCarrier / telegramCardOps / provider.commands.set)。
+      // 每项都要服务端同时宣告才启用; 否则那一项继续由服务端渲染。
+      HOOK_FEATURE_TELEGRAM_PROGRESS_OPS,
+      HOOK_FEATURE_TELEGRAM_FINAL_OPS,
+      HOOK_FEATURE_TELEGRAM_CARD_OPS,
+      HOOK_FEATURE_TELEGRAM_COMMANDS,
       HOOK_FEATURE_SESSION_NEW,
     ],
     isEnabled: () => store.get().telegramEnabled,
