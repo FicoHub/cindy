@@ -28,7 +28,8 @@ export function CindyDevicePicker({
       label={t('bots.devicePicker.switchDevice', { device: current.label })}
       value={current.key}
       truncateOptions
-      className={cn('h-6 max-w-none px-2 text-11', className)}
+      className={cn('h-6 w-fit max-w-full px-2 text-11', className)}
+      contentClassName="w-64 max-w-[var(--radix-select-content-available-width)]"
       triggerAdornment={otherUnread ? (
         <span
           aria-label={t('bots.devicePicker.otherUnread')}
@@ -41,7 +42,7 @@ export function CindyDevicePicker({
         title: option.deviceName,
         endAdornment: option.unread || !option.online ? (
           <>
-            {!option.online ? <span className="text-11 text-[var(--text-secondary)]">{t('bots.remote.offline')}</span> : null}
+            {!option.online ? <span className="text-11 text-[var(--text-secondary)]">{t('deviceId' in option.bot && option.bot.connectionKnown === false ? 'bots.remote.unknown' : 'bots.remote.offline')}</span> : null}
             {option.unread ? (
               option.unreadCount ? (
                 <span
@@ -94,7 +95,7 @@ export function CindyHeaderDevicePicker({ bot }: { bot: BotChatIdentity }) {
       options={options}
       current={current}
       onSelect={(option) => navigate(option.route)}
-      className="w-44 max-w-full"
+      className="max-w-44 shrink"
     />
   );
 }

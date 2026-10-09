@@ -1,4 +1,7 @@
 import type { Session } from '@cindy/maker-core';
+import { publishChannelTurn } from './channelTurnSignal';
+import { MANAGED_LLAMACPP_PROVIDER_ID } from '../../shared/llamaCpp.js';
+import { ensureManagedOllamaReadyForSession } from '../local-model-runtime/preflight.js';
 import { createLogger } from '../logger.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import { getSessionProvider } from '../maker-host/session-provider-store.js';
@@ -23,7 +26,10 @@ export interface InstallSessionTurnObserverDeps {
 export function installSessionTurnObserver(deps: InstallSessionTurnObserverDeps, session: Session) {
   session.setTurnLifecycleObserver({
     beforeProviderStart: async (turnGeneration) => {
-      if (session.remoteHostId) return;
+      if (session.remoteHostId) {
+        await publishChannelTurn(session, 'starting');
+        return;
+      }
       await deps.beforeLocalProviderStart?.(session);
       // 每条本地 Session.send 都经过这一个 Main-owned 边界，包括 renderer、IM、
       // Goal、Learn、Hook 与 Scheduler。付费权限不能只挂在普通 IPC 发送事务上。
@@ -51,6 +57,12 @@ export function installSessionTurnObserver(deps: InstallSessionTurnObserverDeps,
           throwIpcError('INVALID_PARAMS', describeModelRouteRejection(verdict.reason, model, getSessionProvider(session.id)));
         }
       }
+      // Existing tasks must restore the managed service after a manual stop too.
+      // Reuse the common send boundary so IM/Goal/Scheduler get the same behavior.
+      const providerId = getSessionProvider(session.id);
+      if (providerId === MANAGED_LLAMACPP_PROVIDER_ID) {
+        await ensureManagedOllamaReadyForSession({ providerId, onlyIfStopped: true });
+      }
       deps.silentStopTurnLeaseGate.supersede(session.id);
       // Keep Review's exact-instance liveness listener lazy. PID-only turn
       // leases remain fail-closed until this process actually starts Review.
@@ -58,8 +70,10 @@ export function installSessionTurnObserver(deps: InstallSessionTurnObserverDeps,
         session.id,
         deps.providerTurnLeaseId(session.instanceId, turnGeneration),
       );
+      await publishChannelTurn(session, 'starting');
     },
     onUndispatched: async (turnGeneration) => {
+      await publishChannelTurn(session, 'undispatched');
       if (session.remoteHostId) return;
       await deps.sessionTurnLeaseTracker.markTurnEnded(
         session.id,

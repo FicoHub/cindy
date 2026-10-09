@@ -48,6 +48,8 @@ const {
   },
 }));
 
+// 供应商组一行有自己的测试(features/provider-group)；这里只验证详情页其余部分。
+vi.mock('@/features/provider-group/ProviderGroupRow', () => ({ ProviderGroupRow: () => null }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -288,10 +290,10 @@ describe('ProvidersSection — Cindy AI 账户资产模块', () => {
     );
 
     const buyPlan = screen.getByText('settings.providers.xd.asset.buyPlan').closest('button');
-    expect(buyPlan?.className).toContain('bg-[var(--accent-cta-bg-pure)]');
+    expect(buyPlan?.className).toContain('[--button-face-bg:var(--accent-cta-bg-pure)]');
     expect(buyPlan?.className).toContain('text-[var(--accent-pure-cta-fg)]');
     const usageButton = screen.getByText('settings.providers.xd.asset.viewUsage').closest('button');
-    expect(usageButton?.className).toContain('bg-[var(--surface-elevated)]');
+    expect(usageButton?.className).toContain('[--button-face-bg:var(--surface-elevated)]');
     expect(usageButton?.className).toContain('text-[var(--text-primary)]');
     expect(screen.queryByText('billing.settings.topupCard.action')).toBeNull();
     expect(screen.queryByText('settings.providers.xd.asset.upgradePlan')).toBeNull();
@@ -310,7 +312,7 @@ describe('ProvidersSection — Cindy AI 账户资产模块', () => {
     expect(screen.queryByText('billing.settings.topupCard.action')).toBeNull();
 
     const upgrade = screen.getByText('settings.providers.xd.asset.upgradePlan').closest('button');
-    expect(upgrade?.className).toContain('bg-[var(--accent-cta-bg-pure)]');
+    expect(upgrade?.className).toContain('[--button-face-bg:var(--accent-cta-bg-pure)]');
     expect(upgrade?.className).toContain('text-[var(--accent-pure-cta-fg)]');
 
     fireEvent.click(screen.getByText('settings.providers.xd.asset.upgradePlan'));
@@ -331,7 +333,7 @@ describe('ProvidersSection — Cindy AI 账户资产模块', () => {
     expect(screen.queryByText('settings.providers.xd.asset.upgradePlan')).toBeNull();
 
     const topup = screen.getByText('billing.settings.topupCard.action').closest('button');
-    expect(topup?.className).toContain('bg-[var(--accent-cta-bg-pure)]');
+    expect(topup?.className).toContain('[--button-face-bg:var(--accent-cta-bg-pure)]');
     expect(topup?.className).toContain('text-[var(--accent-pure-cta-fg)]');
 
     fireEvent.click(screen.getByText('billing.settings.topupCard.action'));
