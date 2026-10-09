@@ -20,19 +20,19 @@ function between(start: string, end: string, from = 0) {
   if (a < 0 || b < 0) throw new Error('cold dispatch source boundary changed');
   return source.slice(a, b);
 }
-const reconcile = between('  async function reconcileCreateOptsAgainstDb(', '  async function rehydrateColdPiRuntimeForWindowVerification(');
+const reconcile = between('  async function reconcileCreateOptsAgainstDb(', '  const rehydrateColdPiRuntimeForWindowVerification =');
 const cold = between('        const createOpts = buildCreateOptsWithStderr({',
   '        const { session } = await bootstrapSession(createOpts);',
   source.indexOf("lockStage = 'lazy-resume-bootstrap'"));
 // Run every production statement up to and including the actual native create
 // call. The stub stops execution there, before post-create hydration can hide a bug.
-const bootstrap = between('    if (o.id && o.workingDir',
+const bootstrap = between('    if (o.id && o.agentDeviceId === undefined && !o.remoteHostId) {',
   '    await markProjectContextIfNeeded(', source.indexOf('  async function bootstrapSession('));
 const compiled = transpileModule(`${reconcile}\nasync function bootstrapSession(o, assertAccess) { ${bootstrap} }\nreturn async () => { ${cold}\nawait bootstrapSession(createOpts); };`, {
   compilerOptions: { target: ScriptTarget.ES2022 },
 }).outputText;
 
-function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai', remoteHostId: string | null = null, supportsFastMode = true) {
+function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai', remoteHostId: string | null = null, supportsFastMode = true, providerGroup = false) {
   const row = { agentKind: 'codex', model: 'gpt-6-astra', providerId,
     sdkSessionId: 'native-child', effort, fastMode: true, remoteHostId };
   const read = vi.fn(async () => [row]);
@@ -41,7 +41,13 @@ function harness(effort: string | null, runtimeOverride: Record<string, unknown>
     if (remoteHostId) input.createOpts.remoteHostId = remoteHostId;
   });
   const boundary = new Error('native creation boundary');
-  const createSession = vi.fn(async (_opts: unknown) => { throw boundary; });
+  // Snapshot each attempt: bootstrap mutates the same options object between retries.
+  const attempts: Record<string, unknown>[] = [];
+  const createSession = vi.fn(async (opts: Record<string, unknown>) => {
+    attempts.push({ ...opts });
+    if (providerGroup && attempts.length === 1) throw new Error('first group computer failed to start');
+    throw boundary;
+  });
   const deps = {
     targetSessionId: 'child', dbRow: row,
     meta: { agentKind: 'codex', model: row.model, workDir: 'child-workdir', sdkSessionId: row.sdkSessionId },
@@ -70,15 +76,26 @@ function harness(effort: string | null, runtimeOverride: Record<string, unknown>
     })) }),
     findCatalogModel, resolveDesktopModelContextProviderId,
     resolveCompatibleSessionRuntimeEffort, maker: { createSession },
+    // Local task with no provider group: the device and group branches stay inert.
+    readSessionAgentDeviceId: async () => null,
+    applyProviderGroupAssignment: async (o: Record<string, unknown>) => {
+      if (!providerGroup) return null;
+      o.providerId = 'xd';
+      return { route: { providerId: 'xd', agentDeviceId: null } };
+    },
+    // One spare computer: the second failure (the test boundary) ends the retries.
+    providerGroupService: providerGroup ? { nextAfterStartFailure: vi.fn(async (): Promise<{ route: { providerId: string; agentDeviceId: null } } | null> => null)
+      .mockResolvedValueOnce({ route: { providerId: 'openai', agentDeviceId: null } }) } : null,
+    worktreeManager: { assertPrecreatedSessionNotCancelled: () => undefined },
     log: { warn: vi.fn() },
   };
   const run = new Function(...Object.keys(deps), compiled)(...Object.values(deps)) as () => Promise<Record<string, unknown>>;
   const capture = async () => {
     try { await run(); } catch (err) { if (err !== boundary) throw err; }
-    expect(createSession).toHaveBeenCalledTimes(1);
-    return createSession.mock.calls[0][0] as Record<string, unknown>;
+    expect(createSession).toHaveBeenCalledTimes(providerGroup ? 2 : 1);
+    return attempts[attempts.length - 1];
   };
-  return { run: capture, read, remoteReady, createSession };
+  return { run: capture, read, remoteReady, createSession, attempts };
 }
 
 describe('background child first native creation options', () => {
@@ -143,6 +160,14 @@ describe('background child first native creation options', () => {
   it('preserves SSH Fast when the controller model has no Fast capability', async () => {
     const opts = await harness(null, null, [], null, 'ssh-host', false).run();
     expect(opts.fastMode).toBe(true);
+  });
+
+  it('re-normalizes from the requested effort when a provider group moves to the next computer', async () => {
+    // First computer's model (xd) only offers low; the next one (openai) offers high.
+    const h = harness('high', null, ['medium', 'high'], 'openai', null, true, true);
+    const final = await h.run();
+    expect(h.attempts[0]).toMatchObject({ providerId: 'xd', effort: 'low' });
+    expect(final).toMatchObject({ providerId: 'openai', effort: 'high', fastMode: true });
   });
 
   it('refuses native startup if persisted configuration cannot be read', async () => {
