@@ -321,8 +321,6 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:usage:codex-rate-limits',
   // Existing read-only host channels, now consumed by the mobile Home Screen widget projection.
   'maker:usage:account',
-  'maker:usage:claude-subscription',
-  'maker:usage:xai-subscription',
   'maker:usage:codex-rate-limit-reset',
   // 订阅账号余量快照(只读;Claude / SuperGrok)与 cc 默认路由会话的生效计费路由。
   // 老被控端 CHANNEL_NOT_ALLOWED → 任务菜单保留「暂未获取账号配额」。
@@ -398,6 +396,7 @@ export const MOBILE_REMOTE_INVOKE_CHANNELS = [
   'maker:input:resume',
   'maker:input:retry-last-error',
   'maker:input:clear-error',
+  'maker:input:cancel-usage-limit-wait',
   'maker:input:remove',
   'maker:input:update-text',
   'maker:input:update-content',
