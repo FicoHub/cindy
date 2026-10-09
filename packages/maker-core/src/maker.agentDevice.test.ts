@@ -94,6 +94,8 @@ describe('Maker: agent on another computer', () => {
       options: expect.objectContaining({ sessionId: 'task-1', workingDir: '/repo', model: 'spark/qwen', providerId: 'spark' }),
     });
     expect(store.rows.get('task-1')?.agentDeviceId).toBe('dev-b');
+    // 发送边界据此判断供应商目录在对端，不能拿本机目录裁决。
+    expect(session.agentDeviceId).toBe('dev-b');
     // 那台的 Cindy 不能转发对话截断时不提供回退(文件按本机保存点回退，对话在那台截断)。
     expect(session.capabilities.rewind).toMatchObject({
       supported: false,
@@ -120,6 +122,7 @@ describe('Maker: agent on another computer', () => {
     const maker = new Maker({ agents: { pi: agent }, storage: storage(), logger });
     const session = await maker.createSession({ id: 'task-l', agentKind: 'pi', workingDir: '/repo', model: 'm' });
     expect(session.capabilities).toBe(agent.capabilities);
+    expect(session.agentDeviceId).toBeNull();
     await maker.shutdown();
   });
 

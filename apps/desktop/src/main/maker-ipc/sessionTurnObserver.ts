@@ -29,8 +29,11 @@ export function installSessionTurnObserver(deps: InstallSessionTurnObserverDeps,
       await deps.beforeLocalProviderStart?.(session);
       // 每条本地 Session.send 都经过这一个 Main-owned 边界，包括 renderer、IM、
       // Goal、Learn、Hook 与 Scheduler。付费权限不能只挂在普通 IPC 发送事务上。
+      // Agent 在另一台电脑（含 `share:` 分享来源）上运行时，供应商目录在对端，由对端启动时裁决。
+      // 本机目录里没有对端的来源，这里只跳过本机供应商预检，provider 原样保留。
+      const providerOnOtherDevice = session.agentDeviceId !== null;
       const model = session.model;
-      if (model) {
+      if (model && !providerOnOtherDevice) {
         const verdict = await verdictForModelRoute(
           session.agentKind,
           model,
@@ -56,7 +59,7 @@ export function installSessionTurnObserver(deps: InstallSessionTurnObserverDeps,
       // Existing tasks must restore the managed service after a manual stop too.
       // Reuse the common send boundary so IM/Goal/Scheduler get the same behavior.
       const providerId = getSessionProvider(session.id);
-      if (providerId === MANAGED_LLAMACPP_PROVIDER_ID) {
+      if (!providerOnOtherDevice && providerId === MANAGED_LLAMACPP_PROVIDER_ID) {
         await ensureManagedOllamaReadyForSession({ providerId, onlyIfStopped: true });
       }
       deps.silentStopTurnLeaseGate.supersede(session.id);
