@@ -57,16 +57,26 @@ describe('installSessionTurnObserver provider precheck', () => {
     expect(deps.sessionTurnLeaseTracker.markTurnStarted).not.toHaveBeenCalled();
   });
 
-  it('lets a shared or other-device Agent send without judging its source against this computer', async () => {
+  it('does not treat a source missing from this computer as gone when the Agent runs elsewhere', async () => {
     for (const agentDeviceId of ['share:abc', 'device-2']) {
       h.verdict.mockClear();
       const { deps, start } = setup({ agentDeviceId });
       await expect(start()).resolves.toBeUndefined();
-      expect(h.verdict).not.toHaveBeenCalled();
+      expect(h.verdict).toHaveBeenCalledWith('pi', 'some-model', 'magpie-2e446a11');
       expect(deps.beforeLocalProviderStart).toHaveBeenCalledTimes(1);
       expect(deps.silentStopTurnLeaseGate.supersede).toHaveBeenCalledWith('s1');
       expect(deps.sessionTurnLeaseTracker.markTurnStarted).toHaveBeenCalledWith('s1', 'i1:1');
     }
+  });
+
+  it('keeps the paid-model gate for an Agent on another computer', async () => {
+    h.verdict.mockResolvedValue({ kind: 'reject', reason: 'payment-required' });
+    const rejected = setup({ agentDeviceId: 'device-2' });
+    await expect(rejected.start()).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(rejected.deps.sessionTurnLeaseTracker.markTurnStarted).not.toHaveBeenCalled();
+    h.verdict.mockResolvedValue({ kind: 'reroute', providerId: 'paid', reason: 'payment-required' });
+    const rerouted = setup({ agentDeviceId: 'share:abc' });
+    await expect(rerouted.start()).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
   });
 
   it('does not start this computer\'s managed llama.cpp for an Agent on another computer', async () => {
