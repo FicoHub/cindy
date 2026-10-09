@@ -1109,6 +1109,7 @@ import {
   recordRecoveredSessionRuntimeAxisMutation,
   recordUserSessionRuntimeAxisMutation,
   recordUserSessionRuntimeMutation,
+  normalizeRuntimeAxesForModel,
   resolveCompatibleSessionRuntimeEffort,
   resolveCompatibleSessionRuntimeAxisPatch,
   resolveSessionRuntimeAxes,
@@ -7581,10 +7582,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const provider = catalog.providers.find((candidate) => candidate.id === effortProviderId);
       const model = findCatalogModel(provider, o.model, o.agentKind);
       if (!model) return;
-      if (o.effort !== undefined) {
-        o.effort = resolveCompatibleSessionRuntimeEffort(model, o.effort) ?? undefined;
-      }
-      o.fastMode = o.fastMode === true && model.supportsFastMode === true;
+      const axes = normalizeRuntimeAxesForModel(model, {
+        effort: o.effort ?? null, fastMode: o.fastMode === true,
+      });
+      if (o.effort !== undefined) o.effort = axes.effort ?? undefined;
+      o.fastMode = axes.fastMode;
     };
     assertAccess?.();
     let session: Awaited<ReturnType<typeof maker.createSession>> | undefined;
@@ -7652,7 +7654,27 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         .from(sessions)
         .where(eq(sessions.id, session.id))
         .limit(1);
-      if (runtimeOverride) {
+      // Local routes: the bridge store must carry the same per-route normalized axes
+      // the native adapter just captured, or the first bridge request can still send
+      // an obsolete effort / unsupported Fast. SSH and other-computer routes are
+      // validated by the remote side, so their stored values pass through as before.
+      const localRoute = !o.remoteHostId && !o.agentDeviceId;
+      const localHydrateModel = localRoute
+        ? findCatalogModel(
+          getActiveCatalog().providers.find(
+            (candidate) => candidate.id === (getSessionProvider(session.id) ?? o.providerId ?? null),
+          ),
+          session.model,
+          o.agentKind,
+        )
+        : undefined;
+      if (localHydrateModel) {
+        const axes = normalizeRuntimeAxesForModel(localHydrateModel, runtimeOverride
+          ? { effort: runtimeOverride.effort, fastMode: runtimeOverride.fastMode }
+          : { effort: efRow?.effort ?? null, fastMode: !!efRow?.fastMode });
+        setSessionEffort(session.id, axes.effort);
+        setSessionFastMode(session.id, axes.fastMode);
+      } else if (runtimeOverride) {
         setSessionEffort(session.id, runtimeOverride.effort);
         setSessionFastMode(session.id, runtimeOverride.fastMode);
       } else {

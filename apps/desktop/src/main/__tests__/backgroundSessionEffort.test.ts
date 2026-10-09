@@ -9,7 +9,7 @@ vi.mock('../maker-host/claude-credentials-store.js', () => ({ hasClaudeAiOAuth: 
 vi.mock('../maker-host/provider-route.js', () => ({ gatewayDefaultRouteDecision: () => null }));
 vi.mock('../maker-host/model-context-limit-store.js', () => ({ readModelContextLimit: () => null }));
 import { resolveDesktopModelContextProviderId } from '../maker-host/model-context-settings.js';
-import { resolveCompatibleSessionRuntimeEffort } from '../maker-ipc/sessionRuntimeControl.js';
+import { normalizeRuntimeAxesForModel, resolveCompatibleSessionRuntimeEffort } from '../maker-ipc/sessionRuntimeControl.js';
 
 // Execute the real cold-dispatch option assembly and DB reconciliation without
 // booting Electron or touching the user's database/native model account.
@@ -32,7 +32,7 @@ const compiled = transpileModule(`${reconcile}\nasync function bootstrapSession(
   compilerOptions: { target: ScriptTarget.ES2022 },
 }).outputText;
 
-function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai', remoteHostId: string | null = null, supportsFastMode = true, providerGroup = false) {
+function harness(effort: string | null, runtimeOverride: Record<string, unknown> | null = null, efforts = ['medium', 'high'], providerId: string | null = 'openai', remoteHostId: string | null = null, supportsFastMode = true, providerGroup = false, effortsUnknown = false) {
   const row = { agentKind: 'codex', model: 'gpt-6-astra', providerId,
     sdkSessionId: 'native-child', effort, fastMode: true, remoteHostId };
   const read = vi.fn(async () => [row]);
@@ -72,9 +72,10 @@ function harness(effort: string | null, runtimeOverride: Record<string, unknown>
     pinExclusiveSessionProvider: async () => null,
     getActiveCatalog: () => ({ providers: ['openai', 'xd', 'custom'].map(id => ({
       id, routing: { codex: {} }, models: { codex: [{ id: runtimeOverride?.model ?? row.model, supportsFastMode,
-        efforts: id === 'xd' ? ['low'] : efforts, defaultEffort: id === 'xd' ? 'low' : efforts[0] }] },
+        efforts: id === 'xd' ? ['low'] : efforts, defaultEffort: id === 'xd' ? 'low' : efforts[0],
+        ...(effortsUnknown && id !== 'xd' ? { effortsUnknown: true } : {}) }] },
     })) }),
-    findCatalogModel, resolveDesktopModelContextProviderId,
+    findCatalogModel, resolveDesktopModelContextProviderId, normalizeRuntimeAxesForModel,
     resolveCompatibleSessionRuntimeEffort, maker: { createSession },
     // Local task with no provider group: the device and group branches stay inert.
     readSessionAgentDeviceId: async () => null,
@@ -168,6 +169,22 @@ describe('background child first native creation options', () => {
     const final = await h.run();
     expect(h.attempts[0]).toMatchObject({ providerId: 'xd', effort: 'low' });
     expect(final).toMatchObject({ providerId: 'openai', effort: 'high', fastMode: true });
+  });
+
+  it('keeps the saved effort when a custom model has no declared effort levels', async () => {
+    // effortsUnknown: `efforts: []` is a placeholder, not a fixed-effort model (#5535).
+    const opts = await harness('low', null, [], 'openai', null, true, false, true).run();
+    expect(opts).toMatchObject({ providerId: 'openai', effort: 'low' });
+  });
+
+  it('hydrates the bridge store from the same per-route normalization on local routes', () => {
+    // Post-create hydration feeds bridge requests; raw override / DB Fast would undo
+    // the native normalization above. Remote routes keep their stored values.
+    const hydration = between('      const localRoute = !o.remoteHostId && !o.agentDeviceId;',
+      '      } else if (runtimeOverride) {', source.indexOf('  async function bootstrapSession('));
+    expect(hydration).toContain('normalizeRuntimeAxesForModel(localHydrateModel, runtimeOverride');
+    expect(hydration).toContain('setSessionEffort(session.id, axes.effort);');
+    expect(hydration).toContain('setSessionFastMode(session.id, axes.fastMode);');
   });
 
   it('refuses native startup if persisted configuration cannot be read', async () => {
