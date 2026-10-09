@@ -126,6 +126,20 @@ describe('Maker: agent on another computer', () => {
     await maker.shutdown();
   });
 
+  it('marks the session by the branch that actually started it, not a stored device id', async () => {
+    const store = storage();
+    await store.create({ id: 'task-d', agentKind: 'pi', workDir: '/repo', title: 't', model: 'm', agentDeviceId: 'dev-b' } as SessionMeta);
+    const agent = localAgent();
+    const startDeviceAgentSession = vi.fn(async () => handle('remote-sdk'));
+    const maker = new Maker({ agents: { pi: agent }, storage: store, logger, startDeviceAgentSession });
+    // 宿主读取任务记录失败、按本机降级启动时不带 agentDeviceId；事后读回的记录仍写着那台电脑。
+    const session = await maker.createSession({ id: 'task-d', agentKind: 'pi', workingDir: '/repo', model: 'm' });
+    expect(startDeviceAgentSession).not.toHaveBeenCalled();
+    expect(agent.startSession).toHaveBeenCalledTimes(1);
+    expect(session.agentDeviceId).toBeNull();
+    await maker.shutdown();
+  });
+
   it('refuses to mix with SSH hosts and reports a missing starter instead of running here', async () => {
     const maker = new Maker({ agents: { pi: localAgent() }, storage: storage(), logger });
     await expect(maker.createSession({ id: 't2', agentKind: 'pi', workingDir: '/repo', model: 'm', agentDeviceId: 'dev-b' }))
