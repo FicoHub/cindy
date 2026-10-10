@@ -681,7 +681,7 @@ export function registerScheduleHandlers(getMaker?: () => Maker | null): void {
             body.overrides as Partial<CreateScheduleInput> & { intervalMs?: number | null },
           )
         : {};
-    return withScheduler(({ scheduler }) => {
+    return withScheduler(async ({ scheduler }) => {
       const template = findTemplate(templateId);
       if (!template) throwIpcError('NOT_FOUND', `template ${templateId} not found`);
       const prompt = applyTemplateParams(
@@ -689,7 +689,12 @@ export function registerScheduleHandlers(getMaker?: () => Maker | null): void {
         paramValues,
         template.parameters,
       );
-      return scheduler.create(buildCreateScheduleInput(template, prompt, overrides));
+      // overrides 可带 preRunHook:与普通创建走同一套路径稳定化与语法校验。
+      const normalized = await stabilizePreRunHookForCreate(
+        buildCreateScheduleInput(template, prompt, overrides),
+        hookPathDeps,
+      );
+      return scheduler.create(normalized);
     });
   });
 
