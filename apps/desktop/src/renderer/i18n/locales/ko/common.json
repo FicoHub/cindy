@@ -407,18 +407,16 @@
     },
     "page": {
       "title": "{{provider}} · 원격 및 공유",
-      "description": "이 컴퓨터에 있는 {{provider}}의 제공자 그룹과 공유 설정입니다.",
-      "descriptionWithDevice": "이 컴퓨터({{device}})에 있는 {{provider}}의 제공자 그룹과 공유 설정입니다.",
       "shareTitle": "공유"
     },
     "section": {
       "title": "제공자 그룹",
       "addComputer": "컴퓨터 추가",
       "delete": "그룹 삭제",
-      "empty": "아직 제공자 그룹이 없습니다. 다른 컴퓨터의 {{provider}}을(를) 추가하면 이 컴퓨터의 세션이 자동으로 한 대를 골라 실행합니다.",
+      "empty": "다른 컴퓨터의 {{provider}}을(를) 추가하면 세션이 자동으로 한 대를 골라 실행합니다",
       "loading": "제공자 그룹을 불러오는 중…",
       "loadFailed": "제공자 그룹을 불러오지 못했습니다",
-      "note": "이 컴퓨터의 세션은 그룹에 따라 배정되고, Agent는 선택된 컴퓨터에서 실행됩니다. 내 다른 컴퓨터나 공유한 사람이 이 컴퓨터를 통해 사용할 때는 당분간 이 컴퓨터에서 실행됩니다."
+      "note": "이 컴퓨터의 세션은 Agent가 그룹이 선택한 컴퓨터에서 실행됩니다"
     },
     "strategy": {
       "label": "그룹 배정 방식",
@@ -427,32 +425,31 @@
       "order": "순서대로",
       "weight": "가중치",
       "description": {
-        "least": "실행 중인 세션이 가장 적은 컴퓨터에 배정합니다",
-        "round": "사용 가능한 컴퓨터에 차례로 배정합니다",
-        "order": "목록 앞쪽의 컴퓨터를 우선하고, 사용할 수 없을 때만 뒤쪽 컴퓨터를 씁니다",
-        "weight": "가중치 비율로 배정합니다"
+        "least": "가장 여유로운 컴퓨터로",
+        "round": "차례대로 배정",
+        "order": "목록 앞쪽 우선",
+        "weight": "가중치 비율로"
       }
     },
     "autoSwitch": {
       "label": "컴퓨터 자동 전환",
-      "description": "그룹의 컴퓨터가 사용량 한도에 도달했거나, 로그인이 만료되었거나, 연결되지 않으면 다른 컴퓨터에서 이어서 진행합니다"
+      "description": "한도 초과, 연결 불가, 로그인 만료 시 전환합니다"
     },
     "member": {
       "local": "이 컴퓨터",
       "sourceDevice": "내 다른 컴퓨터",
       "sourceShare": "{{name}}님의 공유",
-      "runningLabel": "실행 중 / 한도",
+      "runningCount_other": "{{count}}개 실행 중",
       "limitAria": "{{name}}의 동시 실행 한도",
-      "limitOption_other": "최대 {{count}}개",
+      "limitOption_other": "한도 {{count}}",
       "weightAria": "{{name}}의 가중치",
       "weightOption": "가중치 {{weight}}",
-      "localAria": "이 컴퓨터에도 배정",
-      "pause": "배정 일시 중지",
-      "resume": "배정 재개",
+      "assignAria": "{{name}}에 배정",
+      "moreAria": "{{name}} 추가 작업",
       "remove": "그룹에서 제외",
       "status": {
         "checking": "확인 중…",
-        "available": "사용 가능",
+        "idle": "대기 중",
         "full": "한도 도달",
         "paused": "배정 일시 중지됨",
         "cooling": "대기 중",
@@ -482,7 +479,7 @@
       "sourceAria": "컴퓨터 출처",
       "tabAvailable": "이미 사용 가능",
       "tabLink": "공유 링크",
-      "availableDescription": "이 컴퓨터가 이미 사용할 수 있는 {{provider}}입니다. 내 다른 컴퓨터와 나에게 공유된 것이 포함되며, 모델 목록의 원격 제공자와 같습니다. 선택만 하면 추가되고 요청은 필요 없습니다.",
+      "availableDescription": "내 다른 컴퓨터와 나에게 공유된 것입니다. 선택만 하면 추가되고 요청은 필요 없습니다.",
       "loading": "추가할 수 있는 컴퓨터를 찾는 중…",
       "loadFailed": "추가할 수 있는 컴퓨터를 불러오지 못했습니다",
       "empty": "추가할 수 있는 컴퓨터가 없습니다. 다른 컴퓨터에서 {{provider}}의 원격 사용 허용을 켜거나, 다른 사람의 공유 링크로 요청하세요.",
@@ -495,8 +492,6 @@
     "toast": {
       "added_other": "컴퓨터 {{count}}대를 {{provider}} 제공자 그룹에 추가했습니다",
       "removed": "{{name}}을(를) 제공자 그룹에서 제외했습니다",
-      "paused": "{{name}}에 대한 배정을 일시 중지했습니다",
-      "resumed": "{{name}}에 대한 배정을 재개했습니다",
       "deleted": "{{provider}} 제공자 그룹을 삭제했습니다"
     }
   },
@@ -11470,7 +11465,11 @@
       "untitled": "제목 없는 세션",
       "moreActions": "더 보기",
       "agentDevice": "Agent가 {{device}}에서 실행 중",
-      "agentDeviceOffline": "Agent가 {{device}}에서 실행 중이지만 그 컴퓨터가 오프라인입니다. 다시 연결되면 계속됩니다"
+      "agentDeviceOffline": "Agent가 {{device}}에서 실행 중이지만 그 컴퓨터가 오프라인입니다. 다시 연결되면 계속됩니다",
+      "orcaRemoteLead": "{{device}}에서 온 협업",
+      "orcaRemoteLeadReleased": "협업 종료됨 · {{device}}에서",
+      "orcaRemoteLeadUnknownDevice": "다른 컴퓨터",
+      "orcaRemoteLeadTip": "{{device}}에 있는 “{{lead}}”의 Worker입니다. 작업, 폴더, 명령은 이 컴퓨터에서 실행됩니다. 여기서 보낸 메시지는 Lead에 보고되지 않습니다."
     },
     "gitContext": {
       "detached": "Detached HEAD",
@@ -13533,7 +13532,25 @@
       "optional": "(선택)",
       "initialTaskPlaceholder": "이 Worker 에게 보낼 선택적 첫 작업",
       "enableCollabTitle": "협업 시작",
-      "enableCollabSubmit": "협업 시작"
+      "enableCollabSubmit": "협업 시작",
+      "executionDeviceLabel": "실행 기기",
+      "thisComputer": "이 기기",
+      "deviceOnline": "온라인",
+      "deviceNeedsUpdate": "업데이트 필요",
+      "executionDeviceHint": "같은 계정에서 온라인이고 원격 제어를 켠 컴퓨터만 표시됩니다.",
+      "executionDeviceRemoteHint": "Worker의 작업, 폴더, 명령은 모두 {{device}}에 있습니다.",
+      "remoteDirLabel": "{{device}}의 작업 폴더",
+      "remoteDirChat": "채팅",
+      "remoteDirPath": "폴더 지정",
+      "remoteDirChatHint": "{{device}}에서 프로젝트에 연결하지 않은 채팅 세션을 만듭니다.",
+      "remoteDirPathHint": "{{device}}에서 확인합니다. 없으면 오류가 나며, 이 컴퓨터의 폴더로 대신하지 않습니다.",
+      "remoteDirInvalid": "{{device}}의 절대 경로를 입력하세요.",
+      "errors": {
+        "deviceUnreachable": "{{device}}을(를) 지금 사용할 수 없습니다. 온라인이고 원격 제어가 켜져 있어야 합니다. Worker가 생성되지 않았습니다.",
+        "deviceOutdated": "{{device}}의 Cindy 버전이 오래되었습니다. 업데이트해야 Worker를 실행할 수 있습니다.",
+        "dirRejected": "{{device}}에서 이 폴더를 찾을 수 없거나 사용할 수 없습니다. Worker가 생성되지 않았습니다.",
+        "dirUnavailable": "{{device}}의 폴더를 일시적으로 사용할 수 없습니다. 연결 또는 네트워크 드라이브를 확인한 후 다시 시도하세요. Worker가 생성되지 않았습니다."
+      }
     },
     "rolePill": {
       "unread": "읽지 않은 업데이트",
@@ -13555,13 +13572,19 @@
       "scrollWorkersLeftEdge": "이미 첫 Worker 를 표시하고 있습니다",
       "scrollWorkersRightEdge": "이미 마지막 Worker 를 표시하고 있습니다",
       "errorBadge": "오류",
-      "errorBadgeAria": "오류가 발생한 Worker 가 있습니다"
+      "errorBadgeAria": "오류가 발생한 Worker 가 있습니다",
+      "executionDevice": "{{device}}에서 실행",
+      "deviceUnreachable": "상태를 가져올 수 없음",
+      "unknownDevice": "다른 컴퓨터",
+      "archiveRemoteWorkerConfirmDesc": "이 협업에서 제거하고 {{device}}에서 진행 중인 라운드를 중지합니다. {{device}}의 작업, 기록, 파일은 유지되며 「협업 종료됨」으로 표시되어 그 컴퓨터에서 계속 볼 수 있습니다."
     },
     "split": {
       "leadLabel": "Lead ({{agent}})",
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "Orca lead session 을 찾을 수 없습니다",
       "waitingForWorker": "Worker 대기 중",
+      "remoteWorkerLoading": "{{device}}의 작업을 불러오는 중…",
+      "remoteWorkerUnreachable": "{{device}}에 지금 연결할 수 없습니다. 다시 연결되면 이 Worker의 작업이 다시 표시됩니다.",
       "closeAria": "닫기"
     }
   },
@@ -13586,17 +13609,12 @@
     "pluginDisabled": "비활성화됨",
     "pluginAgentInvoked": "Agent가 자동으로 사용",
     "pluginNoCommand": "여기에서 사용할 수 없음",
-    "sectionTitle": "참조 디렉터리(읽기 전용)",
+    "sectionTitle": "디렉터리",
     "empty": "아직 참조 디렉터리가 없습니다",
     "add": "디렉터리 추가…",
     "addReadOnly": "읽기 전용 디렉터리 추가…",
-    "addWritable": "읽기·쓰기 디렉터리 추가…",
-    "writableSectionTitle": "읽기·쓰기 디렉터리",
-    "writableEmpty": "아직 읽기·쓰기 디렉터리가 없습니다",
     "atLimit": "최대 {{max}}개 도달",
     "remove": "{{name}} 제거",
-    "parentConfirmTitle": "상위 디렉터리를 추가할까요?",
-    "parentConfirmDescription": "선택한 디렉터리는 현재 작업 디렉터리의 상위 또는 조상 디렉터리입니다. Agent가 작업 디렉터리 밖의 내용까지 볼 수 있어 표시 범위가 넓어집니다.\n\n그래도 추가할까요?\n\n{{path}}",
     "writableParentConfirmTitle": "상위 디렉터리 읽기·쓰기를 허용할까요?",
     "writableParentConfirmDescription": "선택한 디렉터리는 현재 작업 디렉터리의 상위 또는 조상 디렉터리입니다. Agent가 그 안의 파일을 읽고, 만들고, 수정하고, 삭제할 수 있습니다.\n\n그래도 허용할까요?\n\n{{path}}",
     "parentConfirmAccept": "그래도 추가",

@@ -407,18 +407,16 @@
     },
     "page": {
       "title": "{{provider}} · 遠端與分享",
-      "description": "這臺電腦上 {{provider}} 的供應商組與分享設定。",
-      "descriptionWithDevice": "這臺電腦（{{device}}）上 {{provider}} 的供應商組與分享設定。",
       "shareTitle": "分享"
     },
     "section": {
       "title": "供應商組",
       "addComputer": "新增電腦",
-      "delete": "刪除供應商組",
-      "empty": "還沒有供應商組。加入其他電腦上的 {{provider}}，這臺電腦上的任務會自動選一臺執行。",
+      "delete": "刪除組",
+      "empty": "加入其他電腦上的 {{provider}}，任務會自動選一臺執行",
       "loading": "正在讀取供應商組…",
       "loadFailed": "未能讀取供應商組",
-      "note": "這臺電腦上的任務按組分配，Agent 在被選中的電腦上執行；你的其他電腦和你分享的人經這臺電腦使用時，暫時仍在這臺電腦上執行。"
+      "note": "這臺電腦上的任務，Agent 在被選中的電腦上執行"
     },
     "strategy": {
       "label": "組策略",
@@ -427,32 +425,31 @@
       "order": "依順序",
       "weight": "依權重",
       "description": {
-        "least": "新任務給正在執行任務最少的那臺",
-        "round": "新任務依序分給可用的電腦",
-        "order": "排在前面的優先，前面的不可用才用後面的",
-        "weight": "依權重比例分配新任務"
+        "least": "給最閒的那臺",
+        "round": "依序輪流",
+        "order": "排前面的優先",
+        "weight": "依權重比例"
       }
     },
     "autoSwitch": {
       "label": "自動換電腦",
-      "description": "組裡的電腦達到用量上限、登入失效或連不上時，自動換一臺接著執行"
+      "description": "達到上限、連不上或登入失效時自動換一臺"
     },
     "member": {
       "local": "本機",
       "sourceDevice": "我的其他電腦",
       "sourceShare": "來自 {{name}} 的分享",
-      "runningLabel": "執行中 / 上限",
+      "runningCount_other": "{{count}} 個任務執行中",
       "limitAria": "{{name}} 的並行上限",
-      "limitOption_other": "最多 {{count}} 個",
+      "limitOption_other": "上限 {{count}}",
       "weightAria": "{{name}} 的權重",
       "weightOption": "權重 {{weight}}",
-      "localAria": "本機參與分配",
-      "pause": "暫停分配",
-      "resume": "恢復分配",
+      "assignAria": "給 {{name}} 分配任務",
+      "moreAria": "{{name}} 的更多操作",
       "remove": "移出組",
       "status": {
         "checking": "正在檢查…",
-        "available": "可用",
+        "idle": "空閒",
         "full": "已滿",
         "paused": "已暫停分配",
         "cooling": "冷卻中",
@@ -482,7 +479,7 @@
       "sourceAria": "電腦來源",
       "tabAvailable": "已經能用的",
       "tabLink": "分享連結",
-      "availableDescription": "這臺電腦已經能用的 {{provider}}：你的其他電腦和別人分享給你的，與模型清單裡的遠端供應商一致。勾選即可加入，不需要再申請。",
+      "availableDescription": "你的其他電腦和別人分享給你的，勾選即可加入，不用再申請",
       "loading": "正在尋找可以加入的電腦…",
       "loadFailed": "未能讀取可以加入的電腦",
       "empty": "沒有可以加入的電腦。在其他電腦上對 {{provider}} 開啟「允許遠端呼叫」，或用別人的分享連結申請。",
@@ -495,8 +492,6 @@
     "toast": {
       "added_other": "已把 {{count}} 臺電腦加入 {{provider}} 的供應商組",
       "removed": "已把 {{name}} 移出供應商組",
-      "paused": "已暫停給 {{name}} 分配任務",
-      "resumed": "已恢復給 {{name}} 分配任務",
       "deleted": "已刪除 {{provider}} 的供應商組"
     }
   },
@@ -11470,7 +11465,11 @@
       "untitled": "未命名任務",
       "moreActions": "更多操作",
       "agentDevice": "Agent 在 {{device}} 上執行",
-      "agentDeviceOffline": "Agent 在 {{device}} 上執行，那臺電腦目前離線，連上後才能繼續"
+      "agentDeviceOffline": "Agent 在 {{device}} 上執行，那臺電腦目前離線，連上後才能繼續",
+      "orcaRemoteLead": "來自 {{device}} 的協同",
+      "orcaRemoteLeadReleased": "協同已結束 · 來自 {{device}}",
+      "orcaRemoteLeadUnknownDevice": "另一臺電腦",
+      "orcaRemoteLeadTip": "{{device}} 上「{{lead}}」的 Worker。任務、目錄和命令都在這臺電腦執行；你在這裡傳送的訊息不會回報給 Lead。"
     },
     "gitContext": {
       "detached": "分離 HEAD",
@@ -13533,7 +13532,25 @@
       "optional": "（可選）",
       "initialTaskPlaceholder": "給這個 Worker 的可選第一條任務",
       "enableCollabTitle": "開啟協同",
-      "enableCollabSubmit": "開啟協同"
+      "enableCollabSubmit": "開啟協同",
+      "executionDeviceLabel": "執行裝置",
+      "thisComputer": "本機",
+      "deviceOnline": "線上",
+      "deviceNeedsUpdate": "版本過舊，需更新",
+      "executionDeviceHint": "只列出同帳號、線上並開啟遠端控制的電腦。",
+      "executionDeviceRemoteHint": "Worker 的任務、目錄和指令都在 {{device}}。",
+      "remoteDirLabel": "{{device}} 上的工作目錄",
+      "remoteDirChat": "對話",
+      "remoteDirPath": "指定目錄",
+      "remoteDirChatHint": "在 {{device}} 上建立對話任務，不連結專案。",
+      "remoteDirPathHint": "在 {{device}} 上檢查；不存在時報錯，不會換成這台電腦的目錄。",
+      "remoteDirInvalid": "請輸入 {{device}} 上的絕對路徑。",
+      "errors": {
+        "deviceUnreachable": "{{device}} 目前無法使用：需要在線並開啟遠端控制。Worker 沒有建立。",
+        "deviceOutdated": "{{device}} 的 Cindy 版本過舊，更新後才能執行 Worker。",
+        "dirRejected": "{{device}} 上找不到這個目錄或不允許使用。Worker 沒有建立。",
+        "dirUnavailable": "{{device}} 上的目錄暫時無法存取。請檢查連線或網路磁碟後重試。Worker 沒有建立。"
+      }
     },
     "rolePill": {
       "unread": "未讀更新",
@@ -13555,13 +13572,19 @@
       "scrollWorkersLeftEdge": "已是最左側的 Worker",
       "scrollWorkersRightEdge": "已是最右側的 Worker",
       "errorBadge": "錯誤",
-      "errorBadgeAria": "有 Worker 出錯"
+      "errorBadgeAria": "有 Worker 出錯",
+      "executionDevice": "在 {{device}} 執行",
+      "deviceUnreachable": "暫時無法取得狀態",
+      "unknownDevice": "另一台電腦",
+      "archiveRemoteWorkerConfirmDesc": "它會從這個協同裡移除，並停止 {{device}} 上正在進行的這一輪。{{device}} 上的任務、記錄和檔案都會保留，標註「協同已結束」，可以在那台繼續查看。"
     },
     "split": {
       "leadLabel": "Lead ({{agent}})",
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "找不到 Orca lead 任務",
       "waitingForWorker": "等待 Worker",
+      "remoteWorkerLoading": "正在讀取 {{device}} 上的任務…",
+      "remoteWorkerUnreachable": "{{device}} 目前無法連線，恢復後會自動顯示這個 Worker 的任務。",
       "closeAria": "關閉"
     }
   },
@@ -13586,17 +13609,12 @@
     "pluginDisabled": "未生效",
     "pluginAgentInvoked": "Agent 自動呼叫",
     "pluginNoCommand": "不可直接使用",
-    "sectionTitle": "引用目錄(只讀)",
+    "sectionTitle": "目錄",
     "empty": "還沒有引用目錄",
     "add": "新增目錄…",
     "addReadOnly": "新增唯讀目錄…",
-    "addWritable": "新增可讀寫目錄…",
-    "writableSectionTitle": "可讀寫目錄",
-    "writableEmpty": "還沒有可讀寫目錄",
     "atLimit": "已達上限 {{max}} 個",
     "remove": "移除 {{name}}",
-    "parentConfirmTitle": "新增父目錄？",
-    "parentConfirmDescription": "選中的目錄是當前工作目錄的父級或祖先。這會擴大 Agent 的可見範圍，使其能看到工作目錄之外的內容。\n\n仍要新增嗎？\n\n{{path}}",
     "writableParentConfirmTitle": "允許讀寫父目錄？",
     "writableParentConfirmDescription": "選中的目錄是當前工作目錄的父級或祖先。Agent 將能讀取、建立、修改和刪除其中的檔案。\n\n仍要允許嗎？\n\n{{path}}",
     "parentConfirmAccept": "仍然新增",

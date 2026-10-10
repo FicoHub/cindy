@@ -410,18 +410,16 @@
     },
     "page": {
       "title": "{{provider}} · Remote & Sharing",
-      "description": "Provider group and sharing for {{provider}} on this computer.",
-      "descriptionWithDevice": "Provider group and sharing for {{provider}} on this computer ({{device}}).",
       "shareTitle": "Sharing"
     },
     "section": {
       "title": "Provider Group",
       "addComputer": "Add Computer",
       "delete": "Delete Group",
-      "empty": "No provider group yet. Add {{provider}} from other computers, and tasks on this computer will pick one automatically.",
+      "empty": "Add {{provider}} from your other computers and tasks will pick one automatically",
       "loading": "Loading provider group…",
       "loadFailed": "Couldn’t load the provider group",
-      "note": "Tasks on this computer are assigned by the group, and the Agent runs on the chosen computer. When your other computers or people you share with use it through this computer, the Agent still runs here for now."
+      "note": "For tasks on this computer, the Agent runs on the computer the group picks"
     },
     "strategy": {
       "label": "Group Strategy",
@@ -430,33 +428,33 @@
       "order": "In Order",
       "weight": "By Weight",
       "description": {
-        "least": "New tasks go to the computer running the fewest tasks",
-        "round": "New tasks rotate across available computers",
-        "order": "Computers higher in the list come first; later ones are used only when earlier ones are unavailable",
-        "weight": "New tasks are split by weight"
+        "least": "Goes to the least busy one",
+        "round": "Rotates across computers",
+        "order": "Earlier in the list first",
+        "weight": "Split by weight"
       }
     },
     "autoSwitch": {
       "label": "Switch Computers Automatically",
-      "description": "When a computer in the group hits its usage limit, is signed out, or can’t be reached, the task continues on another one"
+      "description": "Switches when one hits its limit, is unreachable or is signed out"
     },
     "member": {
       "local": "This Computer",
       "sourceDevice": "My other computer",
       "sourceShare": "Shared by {{name}}",
-      "runningLabel": "running / limit",
+      "runningCount_one": "{{count}} task running",
+      "runningCount_other": "{{count}} tasks running",
       "limitAria": "Task limit for {{name}}",
-      "limitOption_one": "Up to {{count}} task",
-      "limitOption_other": "Up to {{count}} tasks",
+      "limitOption_one": "Max {{count}}",
+      "limitOption_other": "Max {{count}}",
       "weightAria": "Weight for {{name}}",
       "weightOption": "Weight {{weight}}",
-      "localAria": "Assign tasks to this computer",
-      "pause": "Pause Assignments",
-      "resume": "Resume Assignments",
+      "assignAria": "Assign tasks to {{name}}",
+      "moreAria": "More actions for {{name}}",
       "remove": "Remove from Group",
       "status": {
         "checking": "Checking…",
-        "available": "Available",
+        "idle": "Idle",
         "full": "Full",
         "paused": "Assignments paused",
         "cooling": "Cooling down",
@@ -486,7 +484,7 @@
       "sourceAria": "Computer source",
       "tabAvailable": "Already Available",
       "tabLink": "Share Link",
-      "availableDescription": "{{provider}} that this computer can already use: your other computers and providers shared with you, the same as the remote providers in the model list. Select one to add it—no request needed.",
+      "availableDescription": "Your other computers and providers shared with you. Select to add—no request needed.",
       "loading": "Looking for computers to add…",
       "loadFailed": "Couldn’t load computers to add",
       "empty": "No computers to add. Enable “Allow remote use” for {{provider}} on another computer, or request access with someone’s share link.",
@@ -500,8 +498,6 @@
       "added_one": "Added {{count}} computer to the {{provider}} provider group",
       "added_other": "Added {{count}} computers to the {{provider}} provider group",
       "removed": "Removed {{name}} from the provider group",
-      "paused": "Paused assignments to {{name}}",
-      "resumed": "Resumed assignments to {{name}}",
       "deleted": "Deleted the {{provider}} provider group"
     }
   },
@@ -11501,7 +11497,11 @@
       "untitled": "Untitled session",
       "moreActions": "More actions",
       "agentDevice": "Agent runs on {{device}}",
-      "agentDeviceOffline": "Agent runs on {{device}}, which is offline — it continues once that computer is back"
+      "agentDeviceOffline": "Agent runs on {{device}}, which is offline — it continues once that computer is back",
+      "orcaRemoteLead": "Collaboration from {{device}}",
+      "orcaRemoteLeadReleased": "Collaboration ended · from {{device}}",
+      "orcaRemoteLeadUnknownDevice": "another computer",
+      "orcaRemoteLeadTip": "A Worker for “{{lead}}” on {{device}}. Its task, folder and commands run on this computer. Messages you send here are not reported to the Lead."
     },
     "gitContext": {
       "detached": "Detached HEAD",
@@ -13565,7 +13565,25 @@
       "optional": "(optional)",
       "initialTaskPlaceholder": "Optional first task for this worker",
       "enableCollabTitle": "Start Collaboration",
-      "enableCollabSubmit": "Start Collaboration"
+      "enableCollabSubmit": "Start Collaboration",
+      "executionDeviceLabel": "Run on",
+      "thisComputer": "Local",
+      "deviceOnline": "Online",
+      "deviceNeedsUpdate": "Needs update",
+      "executionDeviceHint": "Only computers on this account that are online and have remote control enabled are listed.",
+      "executionDeviceRemoteHint": "The Worker's task, folder and commands all stay on {{device}}.",
+      "remoteDirLabel": "Folder on {{device}}",
+      "remoteDirChat": "Chat",
+      "remoteDirPath": "Specify folder",
+      "remoteDirChatHint": "Create a chat session on {{device}} without linking it to a project.",
+      "remoteDirPathHint": "Checked on {{device}}. If it doesn't exist, creation fails; a folder on this computer is never used instead.",
+      "remoteDirInvalid": "Enter an absolute path on {{device}}.",
+      "errors": {
+        "deviceUnreachable": "{{device}} isn't available: it must be online with remote control enabled. The Worker wasn't created.",
+        "deviceOutdated": "Cindy on {{device}} is out of date. Update it to run Workers there.",
+        "dirRejected": "The folder wasn't found on {{device}} or can't be used. The Worker wasn't created.",
+        "dirUnavailable": "The folder on {{device}} is temporarily unavailable. Check the connection or network drive, then try again. The Worker wasn't created."
+      }
     },
     "rolePill": {
       "unread": "Unread update",
@@ -13588,13 +13606,19 @@
       "scrollWorkersLeftEdge": "Already at the earliest worker",
       "scrollWorkersRightEdge": "Already at the latest worker",
       "errorBadge": "ERR",
-      "errorBadgeAria": "A worker has an error"
+      "errorBadgeAria": "A worker has an error",
+      "executionDevice": "Runs on {{device}}",
+      "deviceUnreachable": "Status unavailable",
+      "unknownDevice": "Another computer",
+      "archiveRemoteWorkerConfirmDesc": "Removes it from this collaboration and stops the current round on {{device}}. The task, history and files on {{device}} are kept and marked “Collaboration ended”, so you can keep viewing them there."
     },
     "split": {
       "leadLabel": "Lead ({{agent}})",
       "workerLabel": "Worker ({{agent}})",
       "leadNotFound": "Orca lead session not found",
       "waitingForWorker": "Waiting for worker",
+      "remoteWorkerLoading": "Loading the task on {{device}}…",
+      "remoteWorkerUnreachable": "{{device}} can't be reached right now. This Worker's task will appear again once it reconnects.",
       "closeAria": "Close"
     }
   },
@@ -13619,17 +13643,12 @@
     "pluginDisabled": "Disabled",
     "pluginAgentInvoked": "Used automatically by Agent",
     "pluginNoCommand": "Not available here",
-    "sectionTitle": "Reference directories (read-only)",
+    "sectionTitle": "Directories",
     "empty": "No reference directories yet",
     "add": "Add directory…",
     "addReadOnly": "Add read-only directory…",
-    "addWritable": "Add read-write directory…",
-    "writableSectionTitle": "Read-write directories",
-    "writableEmpty": "No read-write directories yet",
     "atLimit": "Limit reached ({{max}})",
     "remove": "Remove {{name}}",
-    "parentConfirmTitle": "Add a parent directory?",
-    "parentConfirmDescription": "The selected directory is a parent or ancestor of the current working directory. This expands the Agent's visible scope beyond the working directory.\n\nAdd it anyway?\n\n{{path}}",
     "writableParentConfirmTitle": "Allow read-write access to a parent directory?",
     "writableParentConfirmDescription": "The selected directory is a parent or ancestor of the current working directory. The Agent will be able to read, create, modify, and delete files inside it.\n\nAllow it anyway?\n\n{{path}}",
     "parentConfirmAccept": "Add anyway",
