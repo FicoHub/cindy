@@ -107,6 +107,12 @@ Claude Code 终态 error 事件可带 `usageResetAt`（unix ms）。服务端无
 不合法时照常显示 `usage-limit-reset` 的文案，旧客户端忽略该字段。P1 不改远程 Agent 协议：被分配到别的电脑的
 任务就是普通的远程 Agent 任务。分享的人这边的自动换电脑(P2c，2026-10-10)另加可选字段 `groupSwitch: { cause }`
 (不带电脑名称)，Desktop 与 Mobile 显示「已自动换一台电脑继续」；旧客户端忽略，显示「用量已恢复，已自动继续」。
+换电脑期间不报错(2026-10-10)：被控端判断供应商组会先试着换电脑时，输入投影里先不带这次 `error`(也不带
+`usageLimitWait`)，改带 `autoResumePending`，其中新增可选字段 `groupSwitchPending: { cause }`，次数字段为 0、
+`error` 只用于控制端认出随后的终态 event 是同一次失败的回声；新 Desktop 与 Mobile 据此显示「正在换一台电脑继续」，
+并且不论哪种 Agent 都不再用这次终态 event 点亮横幅。换成了投影直接进入续跑；没换成投影恢复带 `error`。旧客户端忽略该
+字段，按普通「重新连接中」显示(不带次数)；旧 Desktop 控制端对 Claude Code / Pi 仍会被终态 event 短暂点亮横幅，
+下一份投影即收回。只改投影内容，不新增 invoke 或推送通道，服务端无需改动。
 
 ## Agent 跨设备历史发现与搜索
 
@@ -624,7 +630,7 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   这一行仍显示但开关不可用，并提示先开启远程控制(供应商分享入口也在这一行)。授权按账号存在 B 本地(`remote-provider-access-prefs.json`)，凭证与路由细节不出 B。
   `maker:provider:list` 每条供应商附带 `remoteInvocationEnabled: boolean`，**只作标记、不裁剪目录**：
   远程控制与 Mobile 仍看到全部供应商，忽略该字段即可。A 的远程 Agent 入口(模型选择器左侧栏、换模型、
-  协同 Worker、定时任务读的那台目录)只用值为 `true` 的供应商，缺少该字段按未开放。B 是最终裁决方：
+  协同 Worker(含 Worker 自己选的那台)、定时任务读的那台目录)只用值为 `true` 的供应商，缺少该字段按未开放。B 是最终裁决方：
   `open` 时把来源落到已开放的供应商上(A 没指定来源时只在已开放的里按默认规则挑)并以显式来源启动；
   `setModel` 显式换来源时同样核对；关掉后进行中的这一轮照常结束，下一次 `send` 被拒。拒绝统一回
   `REMOTE_AGENT_PROVIDER_NOT_ALLOWED`，A 按 `chat.remoteError` 提示去那台电脑打开开关或换模型。
@@ -658,7 +664,21 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   Mobile 新建任务(2026-10-08)同样列出这些供应商与分享来的供应商，选中后 `maker:create-session` 带
   `agentDeviceId`(与桌面新建同一参数，A 已接受)；只有 A 的 `maker:provider:list` 带 `remoteInvocationEnabled`
   布尔标记时才提供(该标记与远程 Agent 同一版加入，旧 A 不列)。手机不按 A 的目录与登录校准这份选择，由运行 Agent
-  的那台在首条消息时核对；协同草稿与之互斥。
+  的那台在首条消息时核对；A 声明 `supportsOrcaWorkerAgentDevice` 时协同草稿与之不互斥(见下一条)，旧 A 仍互斥。
+- **协同 Worker 的 Agent 位置**(2026-10-10)：远程供应商与本机供应商一视同仁，每个 Worker 可以单独选 Agent 所在
+  电脑或分享，缺省跟 Lead。`maker:worker:create` 与 `maker:session:enable-orca`(首个 Worker)新增可选
+  `agentDeviceId: string | null`：不带 = 跟 Lead(旧控制端行为)，null = 任务所在电脑，string = 同账号电脑的设备 id
+  或 `share:<id>`。旧 A 会静默丢掉这个字段、把 Worker 建在 Lead 那里，所以 A 在 `maker:get-capabilities` 声明
+  `supportsOrcaWorkerAgentDevice: true` 后，控制端(桌面远控、Mobile)才在 Worker 的模型面板列远程供应商、才发这个
+  字段；这两个协议位是整台 A 的，控制端用 A 一定注册的 Claude Code 读(Worker 选的 Agent 可能只装在 Agent 所在
+  电脑上)。开启协同提交前再按能力核对一次，降级的 A 直接失败、不静默建错；控制端读不到 Lead 所在位置的目录时
+  (控制端自己、只有 A 收到的分享)维持 A 的目录、不发这个字段。A 在占槽与启动前读那台的目录，读不到回
+  `REMOTE_AGENT_DEVICE_UNREACHABLE` / `REMOTE_AGENT_SHARE_*`；与运行设备(`executionDeviceId`)同给、SSH Lead 回
+  `INVALID_PARAMS`。Worker 列表(`local-db:orca-workflows:list-workers-by-lead` 的 `session.agentDeviceId`)只在 Agent
+  不在任务所在电脑时带值，旧端忽略即可。Lead 的 MCP 工具同步：`list_available_models` 可选 `agent_device_id` 并返回
+  `locations`，`create_worker` / `create_workers` 可选 `agent_device_id`(`"local"` = 任务所在电脑)。不新增 channel，
+  allowlist 不变。回归见 `orcaWorkerCreationService.test.ts`、`CreateWorkerPopover.test.tsx`、Mobile
+  `orcaTeam.test.ts` / `useOrcaWorkerForm.test.tsx`。
 - **账号余量**(2026-10-09)：这一轮消耗的是 Agent 所在那台(B)的账号，桌面底部用量 chip 与手机任务菜单都改读 B 的
   余量，不读任务所在电脑(本机或被控电脑)的同名账号。直接经 device-link 调 B 已有的 `maker:usage:*` 读取与推送
   (与模型选择器读 B 的余量同一份镜像)，不新增 channel；任务价值与上下文仍读任务所在电脑。远程控制的任务把 Agent

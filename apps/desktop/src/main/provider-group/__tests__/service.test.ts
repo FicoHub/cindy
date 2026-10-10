@@ -236,6 +236,38 @@ describe('assignBeforeStart', () => {
     expect(h.bindings.has('s1')).toBe(false);
     expect(h.released.get('s1')).toEqual({ providerId: 'anthropic', groupDeviceId: null });
   });
+
+  it('assigns a brand-new collaboration Worker from its start options before its task record exists', async () => {
+    const h = harness({ offline: ['local'] });
+    h.deps.readSessionRow.mockResolvedValue(null as unknown as ProviderGroupSessionRow);
+    const context = await h.service.assignBeforeStart({
+      sessionId: 'w1',
+      agentKind: 'claude-code',
+      model: MODEL,
+      startRow: { ...h.row },
+    });
+    expect(context?.member.key).toBe(MINI.key);
+    expect(context?.route).toEqual({ agentDeviceId: 'mini', providerId: 'anthropic-1a2b3c4d' });
+    expect(h.bindings.get('w1')).toMatchObject({ providerId: 'anthropic', memberKey: MINI.key });
+  });
+
+  it('prefers the task record over start options once the record exists', async () => {
+    const h = harness({ row: { sdkSessionId: 'native-1' } });
+    expect(await h.service.assignBeforeStart({
+      sessionId: 's1',
+      agentKind: 'claude-code',
+      model: MODEL,
+      startRow: { ...h.row, sdkSessionId: null },
+    })).toBeNull();
+    expect(h.deps.persistRoute).not.toHaveBeenCalled();
+  });
+
+  it('does not assign without a record or start options', async () => {
+    const h = harness();
+    h.deps.readSessionRow.mockResolvedValue(null as unknown as ProviderGroupSessionRow);
+    expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
+    expect(h.deps.writeBinding).not.toHaveBeenCalled();
+  });
 });
 
 describe('nextAfterStartFailure', () => {
@@ -647,5 +679,82 @@ describe('onTurnError for a shared user (the sharer’s group picks the computer
     expect(h.guestSwitch.takeForOpen('s1')).toBeUndefined();
     expect(h.deps.continueSession).not.toHaveBeenCalled();
     expect(h.deps.fallback).toHaveBeenCalledWith('s1', { sdkError: 'rate_limit' }, 4);
+  });
+});
+
+describe('no error while switching (mayHandleTurnError + hooks)', () => {
+  const LIMIT = { sdkError: 'rate_limit' };
+
+  it('predicts a switch only for bound tasks in a group that can still move them', () => {
+    const h = harness();
+    // 没归组、也没有分享者的凭证：照常先报错。
+    expect(h.service.mayHandleTurnError('s1', LIMIT)).toBe(false);
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    expect(h.service.mayHandleTurnError('s1', LIMIT)).toBe(true);
+    // 换到哪台都一样的失败不换。
+    expect(h.service.mayHandleTurnError('s1', { message: 'prompt is too long', sdkError: 'invalid_request' })).toBe(false);
+
+    const off = harness({ autoSwitch: false });
+    off.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    expect(off.service.mayHandleTurnError('s1', LIMIT)).toBe(false);
+
+    // 组里只剩这一台电脑：换不了。
+    const alone = harness({ members: [LOCAL] });
+    alone.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    expect(alone.service.mayHandleTurnError('s1', LIMIT)).toBe(false);
+  });
+
+  it('predicts a switch for a shared task only with a fresh token from the group computer', () => {
+    let clock = 0;
+    const guestSwitch = createProviderGroupGuestSwitch(() => clock);
+    const h = harness({ row: { agentDeviceId: 'share:share-from-alice', providerId: 'alice-anthropic' } });
+    const service = createProviderGroupService({ ...h.deps, guestSwitch });
+    expect(service.mayHandleTurnError('s1', LIMIT)).toBe(false);
+    guestSwitch.offer('s1', 'token-aaaaaaaaaaaaaaaa');
+    expect(service.mayHandleTurnError('s1', LIMIT)).toBe(true);
+    // 只看不取：之后的换电脑仍拿得到凭证。
+    expect(guestSwitch.claim('s1')).toBe(true);
+    guestSwitch.offer('s1', 'token-bbbbbbbbbbbbbbbb');
+    clock += PROVIDER_GROUP_SWITCH_OFFER_TTL_MS + 1;
+    expect(service.mayHandleTurnError('s1', LIMIT)).toBe(false);
+  });
+
+  it('reports a successful switch and never hands back', async () => {
+    const h = harness();
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    const hooks = { beforeFallback: vi.fn(), resumed: vi.fn() };
+    await h.service.onTurnError('s1', LIMIT, 7, hooks);
+    expect(hooks.resumed).toHaveBeenCalledTimes(1);
+    expect(hooks.beforeFallback).not.toHaveBeenCalled();
+    expect(h.deps.fallback).not.toHaveBeenCalled();
+  });
+
+  it('lets the caller surface the error right before handing back to the existing handling', async () => {
+    const order: string[] = [];
+    const h = harness({ offline: [MINI.key, STUDIO.key] });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    h.deps.fallback.mockImplementation(() => { order.push('fallback'); });
+    const hooks = { beforeFallback: vi.fn(() => { order.push('surface'); }), resumed: vi.fn() };
+    // 组里没有别的电脑能接：全部试过才报错。
+    await h.service.onTurnError('s1', LIMIT, 7, hooks);
+    expect(order).toEqual(['surface', 'fallback']);
+    expect(hooks.resumed).not.toHaveBeenCalled();
+
+    // 不归组管的错误同样先放出来再交回。
+    const plain = harness({ row: { providerId: 'openai' } });
+    const plainHooks = { beforeFallback: vi.fn(), resumed: vi.fn() };
+    await plain.service.onTurnError('s1', LIMIT, 1, plainHooks);
+    expect(plainHooks.beforeFallback).toHaveBeenCalledTimes(1);
+    expect(plain.deps.fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report success when the continuation did not go through', async () => {
+    const h = harness();
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
+    h.deps.continueSession.mockResolvedValueOnce('no-progress' as never);
+    const hooks = { beforeFallback: vi.fn(), resumed: vi.fn() };
+    await h.service.onTurnError('s1', LIMIT, 7, hooks);
+    expect(hooks.resumed).not.toHaveBeenCalled();
+    expect(h.deps.cancelContinue).toHaveBeenCalledWith('s1', 99);
   });
 });
