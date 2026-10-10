@@ -18,7 +18,8 @@ const PRESENCE_DOT = 6;
 
 /**
  * 伙伴私聊顶栏（C1，与群聊顶栏同一个 ChatIdentityHeader）：返回 + 身份（32 头像、名字、在线点与
- * 电脑名）+ 伙伴设置。点身份区与设置按钮都打开伙伴资料；切换伙伴回到列表里做。
+ * 电脑名）+ 伙伴设置；宿主提供 Todo 能力时增加独立入口。点身份区与设置按钮都打开
+ * 伙伴资料；切换伙伴回到列表里做。
  */
 export function CompanionHeader(props: {
   resource: RemoteResource; deviceId: string; deviceName: string; online: boolean; controlsReady?: boolean;
@@ -60,7 +61,7 @@ function CompanionHeaderContent({ resource, deviceId, deviceName, online, contro
       controlsReady={controlsReady}
       onBack={onBack}
       onOpenSettings={() => { setInitialPage('home'); setProfile(true); }}
-      accessory={resource.links?.some(link=>link.target.kind==='resource'&&link.target.ref.id==='todos:'+resource.ref.id)?<HomeHeaderGlassButton testID="companion.todos.open" accessibilityLabel={t('devices.teammateTodo.title')} onPress={()=>setTodos(true)}><ListTodo size={iconSize.lg} strokeWidth={iconStroke.regular} color={colors.textPrimary}/></HomeHeaderGlassButton>:undefined}
+      accessory={resource.links?.some(link=>link.target.kind==='resource'&&link.target.ref.id==='todos:'+resource.ref.id)?<HomeHeaderGlassButton testID="companion.todos.open" disabled={!controlsReady} accessibilityLabel={t('devices.teammateTodo.title')} onPress={()=>setTodos(true)}><ListTodo size={iconSize.lg} strokeWidth={iconStroke.regular} color={colors.textPrimary}/></HomeHeaderGlassButton>:undefined}
       settingsLabel={t('devices.companionProfile.settingsTitle')} />
     <CompanionTodos visible={todos} onClose={()=>setTodos(false)} botId={resource.ref.id} deviceId={deviceId} deviceName={deviceName} online={online}/>
     <CompanionProfileSheet initialPage={initialPage} visible={profile} onClose={() => setProfile(false)} onClosed={() => { const action = pending.current; pending.current = null; action?.(); }}

@@ -1,7 +1,7 @@
 import { Pressable, View } from 'react-native';
 import { MoreHorizontal } from 'lucide-react-native';
 import { Text } from '@/components/AppText';
-import { useTheme, useThemedStyles } from '@/theme';
+import { iconSize, useTheme, useThemedStyles } from '@/theme';
 import {
   effectiveTodoDeadline,
   todoDateLabel,
@@ -94,7 +94,7 @@ export function CompanionTodoRow({
           onPress={onMore}
           style={styles.icon}
         >
-          <MoreHorizontal color={colors.textSecondary} size={20} />
+          <MoreHorizontal color={colors.textSecondary} size={iconSize.action} />
         </Pressable>
       </View>
     </View>

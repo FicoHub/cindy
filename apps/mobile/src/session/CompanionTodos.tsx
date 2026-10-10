@@ -11,6 +11,7 @@ import { useDeviceLink } from '@/device-link/DeviceLinkContext';
 import { getRemoteResource, invokeRemoteResourceAction } from '@/device-link/remoteResources';
 import { Text, TextInput } from '@/components/AppText';
 import {
+  iconSize,
   fontWeight,
   lineHeight,
   radius,
@@ -568,7 +569,7 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
                 accessibilityLabel={tr('new')}
                 onPress={() => edit(null, 'edit')}
               >
-                <Plus color={colors.textPrimary} size={20} />
+                <Plus color={colors.textPrimary} size={iconSize.action} />
               </Pressable>
             </View>
             <View style={styles.toolbar}>
@@ -655,9 +656,9 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
               }}
             >
               {filter.view === 'done' ? (
-                <ChevronDown color={colors.textSecondary} size={16} />
+                <ChevronDown color={colors.textSecondary} size={iconSize.md} />
               ) : (
-                <ChevronRight color={colors.textSecondary} size={16} />
+                <ChevronRight color={colors.textSecondary} size={iconSize.md} />
               )}
               <Text style={styles.caption}>
                 {tr('done')} · {page.completedTotal}
