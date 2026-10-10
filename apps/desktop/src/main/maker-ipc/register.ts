@@ -52,7 +52,10 @@ import {
   type ProviderGroupService,
   type ProviderGroupSessionRow,
   type ProviderGroupStartContext,
+  type ProviderGroupTurnErrorHooks,
 } from '../provider-group/service.js';
+import { createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
+import { classifyProviderGroupSwitchCause } from '../provider-group/switchCause.js';
 import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
 import {
   isRemoteProviderInvocationAllowed,
@@ -640,6 +643,7 @@ import {
 } from '../maker-host/session-storage.js';
 import { libraryExtraDirSyncTargets } from './libraryExtraDirSyncTargets.js';
 import {
+  captureDeferredTurnError,
   clearSessionPersistState,
   clearSessionThinkingSnapshots,
   consumeLastAssistantPersistId,
@@ -660,10 +664,12 @@ import {
   sealAssistantBlockForLateFinal,
   markAutoResumeOutcome,
   onTurnErrorEvent,
+  persistDeferredTurnError,
   prepareSyntheticToolEventForBroadcast,
   redactToolInputForUntrustedBoundary,
   resetTurnPersistState,
   saveTurnStartedAtForDeferred,
+  type DeferredTurnErrorRow,
 } from '../messagePersistBroadcaster.js';
 import { ensureCcManagerInstalledOrInstall } from '../remote-ssh/cc-manager-install.js';
 import {
@@ -1619,6 +1625,33 @@ const autoResumeBookkeeping = new AutoResumeBookkeeping({
     failPendingSchedulerAutoResume(sessionId, attemptToken),
   log: (message, fields) => log.debug(message, fields),
 });
+
+/**
+ * 供应商组自动换电脑期间先不呈现的那次失败(provider-group/heldTurnErrors.ts)：error 行暂存在这里，换成了丢掉，
+ * 没换成补落并放出横幅与 Agent Island 提醒。
+ */
+const providerGroupHeldErrors = createProviderGroupHeldTurnErrors<DeferredTurnErrorRow>({
+  // 暂存那一刻(仍在失败那一轮里)取好补落要用的一切；补落只写这一行，不碰那时正在进行的一轮，
+  // 按出错的时刻排序：换电脑途中用户发了新消息，补落的错误卡仍排在那条消息之前。
+  capture: (sessionId, data, agentMeta) =>
+    captureDeferredTurnError(
+      sessionId,
+      data as { message?: unknown; reason?: unknown; sdkError?: unknown; toolLoop?: unknown } | null,
+      (agentMeta ?? null) as AgentMeta | null,
+    ),
+  persist: (sessionId, row) => {
+    persistDeferredTurnError(sessionId, row);
+  },
+  surface: (sessionId, detail) => surfaceSuppressedAutoResumeErrorInAgentIsland(sessionId, detail),
+  // holder 是可变绑定,必须懒读。
+  releaseHold: (sessionId, holdId) =>
+    agentInputCoordinatorHolder?.releaseProviderGroupSwitchHold(sessionId, holdId) ?? false,
+  ownerKey: () => activeOwnerScopeKey(),
+  log: (message, meta) => log.info(message, meta),
+});
+
+/** 换电脑这一趟久久没有结局(交接卡住等)时不再瞒着：先把错误放出来，换成了照常续跑。 */
+const PROVIDER_GROUP_SWITCH_HOLD_MAX_MS = 3 * 60_000;
 
 /**
  * Continuation-only auto-retry is scheduled against the current runtime
@@ -4308,9 +4341,11 @@ function handleAgentIslandEventAfterBroadcast(
       return;
     }
     const terminalError = event.type === 'error' && isTerminalTurnErrorEvent(event);
+    // 供应商组正在为这次失败换电脑：与中断自愈同样先不提醒，没换成时由 providerGroupHeldErrors 补上。
     const autoResumePendingOrDeferred =
       agentInputCoordinatorHolder?.isAutoResumePending(session.id) === true ||
-      agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true;
+      agentInputCoordinatorHolder?.isAutoResumeDeferred(session.id) === true ||
+      (agentInputCoordinatorHolder?.getProviderGroupSwitchHoldId(session.id) ?? null) !== null;
     const autoResumeOwnsError =
       autoResumePendingOrDeferred ||
       autoResumeBookkeeping.shouldSuppressAgentIslandError(session.id);
@@ -5191,6 +5226,8 @@ const sessionEventDependencies: SessionEventDependencies = {
   get autoResumeBookkeeping() {
     return autoResumeBookkeeping;
   },
+  stashProviderGroupHeldError: (sessionId, holdId, data, agentMeta) =>
+    providerGroupHeldErrors.stash(sessionId, holdId, data, agentMeta),
   get pendingFailedTurnAssistantPersistId() {
     return pendingFailedTurnAssistantPersistId;
   },
@@ -16498,10 +16535,45 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 两处必须同判据 —— 否则会出现"按住了却永远不接管"或"没按住却接管"的错配。
     isResumableTurnErrorCandidate: canRecoverTurn,
     // 被按住的 error 最终没接管 → 只补落 error 行(横幅 coordinator 自己设)。
+    // 纯判定：供应商组会先试着换电脑时，这次错误先不呈现(provider-groups.md §6.1)。
+    providerGroupSwitchCandidate: (sessionId, signals) =>
+      providerGroupService?.mayHandleTurnError(sessionId, signals)
+        ? classifyProviderGroupSwitchCause(signals)
+        : null,
     onUsageLimitedTurnError: (sessionId, signals, _item, candidateToken) => {
       // 供应商组分配的任务先试自动换电脑，不换时由它交回额度重置后自动继续。
-      if (providerGroupService) providerGroupService.onTurnError(sessionId, signals, candidateToken);
-      else usageLimitAutoResume.onTurnError(sessionId, signals, candidateToken);
+      if (!providerGroupService) {
+        usageLimitAutoResume.onTurnError(sessionId, signals, candidateToken);
+        return;
+      }
+      // 先不呈现的那次错误：换成了丢掉，不换了先放出来再交回原有处理；一直没有结局时到点放出来。
+      const holdId = inputCoordinator.getProviderGroupSwitchHoldId(sessionId);
+      let hooks: ProviderGroupTurnErrorHooks | undefined;
+      let holdTimer: ReturnType<typeof setTimeout> | undefined;
+      if (holdId !== null) {
+        hooks = {
+          beforeFallback: () => providerGroupHeldErrors.release(sessionId, holdId),
+          resumed: () => providerGroupHeldErrors.discard(sessionId, holdId),
+        };
+        holdTimer = setTimeout(
+          () => providerGroupHeldErrors.release(sessionId, holdId),
+          PROVIDER_GROUP_SWITCH_HOLD_MAX_MS,
+        );
+      }
+      void providerGroupService
+        .onTurnError(sessionId, signals, candidateToken, hooks)
+        .catch((error: unknown) => {
+          log.warn('provider group: handling a failed turn did not complete', {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(() => {
+          if (holdId === null) return;
+          clearTimeout(holdTimer);
+          // 用户中途接手、错误已被新的一轮换掉等：补落 error 行，错误已不是当前状态时不再呈现。
+          providerGroupHeldErrors.release(sessionId, holdId);
+        });
     },
     onResumableTurnErrorDiscarded: (
       sessionId: string,

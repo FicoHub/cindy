@@ -10565,7 +10565,8 @@
       },
       "autoResumePending": {
         "label": "再接続中",
-        "labelWithProgress": "再接続中 {{attempt}}/{{total}}"
+        "labelWithProgress": "再接続中 {{attempt}}/{{total}}",
+        "groupSwitch": "別のパソコンに切り替え中"
       },
       "agentSwitch": {
         "label": "{{from}} から {{to}} に切り替えました",

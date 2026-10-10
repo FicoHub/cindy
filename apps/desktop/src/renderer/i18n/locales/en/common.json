@@ -10589,7 +10589,8 @@
       },
       "autoResumePending": {
         "label": "Reconnecting",
-        "labelWithProgress": "Reconnecting {{attempt}}/{{total}}"
+        "labelWithProgress": "Reconnecting {{attempt}}/{{total}}",
+        "groupSwitch": "Switching to another computer"
       },
       "agentSwitch": {
         "label": "Switched from {{from}} to {{to}}",

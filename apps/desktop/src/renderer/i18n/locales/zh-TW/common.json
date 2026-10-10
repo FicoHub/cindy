@@ -10564,7 +10564,8 @@
       },
       "autoResumePending": {
         "label": "重新連線中",
-        "labelWithProgress": "重新連線中 {{attempt}}/{{total}}"
+        "labelWithProgress": "重新連線中 {{attempt}}/{{total}}",
+        "groupSwitch": "正在換一台電腦繼續"
       },
       "agentSwitch": {
         "label": "已從 {{from}} 切換到 {{to}}",
