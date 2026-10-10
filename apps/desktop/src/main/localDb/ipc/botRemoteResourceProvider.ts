@@ -99,7 +99,7 @@ export function registerBotRemoteResourceProvider(management?: typeof botRemoteM
         if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new RemoteResourceRegistryError('NOT_FOUND', 'Account changed');
         const page = queryTodoItems(all.items, request.query ? JSON.parse(request.query) as TodoListQuery : {});
         return {ref:request.ref,revision:createHash('sha256').update(JSON.stringify(all.items)).digest('hex'),display:{title:source.name},links:[],
-          blocks:[{id:'todos',primitive:'teammate-todos',fallbackMarkdown:page.items.map(t=>t.title+' — '+t.progress).join('\n'),data:page}]};
+          blocks:[{id:'todos',primitive:'teammate-todos',fallbackMarkdown:page.items.map(t=>t.title+' — '+t.progress).join('\n').slice(0,8000),data:page}]};
       }
 
       if (management && (request.ref.id === 'create' || request.ref.id.startsWith('settings:'))) {

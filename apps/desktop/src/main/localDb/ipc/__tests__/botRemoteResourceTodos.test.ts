@@ -125,3 +125,17 @@ it('does not read invisible teammates or leak a result across account changes', 
     }),
   ).rejects.toMatchObject({ code: 'NOT_FOUND' });
 });
+
+it('bounds text fallback independently of legitimate long-page data', async () => {
+  const access = await env.access();
+  for (let n = 0; n < 25; n++)
+    await access.patch({
+      key: 'long' + n,
+      title: '长说明'.repeat(30),
+      outcome: '完成条件',
+      progress: '详细进展'.repeat(1000),
+    });
+  const resource = await remoteResourceRegistry.get(context, { client, ref });
+  expect(resource.blocks?.[0].fallbackMarkdown.length).toBeLessThanOrEqual(8000);
+  expect((resource.blocks?.[0].data as { items: unknown[] }).items).toHaveLength(25);
+});

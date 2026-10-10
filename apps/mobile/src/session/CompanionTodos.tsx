@@ -83,6 +83,7 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
   const [form, setForm] = useState<Record<string, string>>({});
   const [showActions, setShowActions] = useState(false);
   const pending = useRef(false);
+  const formRevision = useRef<number | undefined>(undefined);
   const epoch = useRef(0),
     binding = useRef(''),
     mounted = useRef(true);
@@ -242,6 +243,7 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
     );
   };
   const edit = (x: TeammateTodo | null, mode: NonNullable<typeof editing>) => {
+    formRevision.current = x?.revision;
     setDetail(x);
     setEditing(mode);
     setShowActions(false);
@@ -318,7 +320,7 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
                 },
               }
             : { operation: 'later', until: form.until };
-    if (detail) update(detail, patch);
+    if (detail) void run({ ...patch, id: detail.id, expectedRevision: formRevision.current });
     else
       void run({
         ...patch,

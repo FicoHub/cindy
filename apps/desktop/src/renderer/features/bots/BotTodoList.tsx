@@ -73,7 +73,8 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
     [origin, setOrigin] = useState('all'),
     [order, setOrder] = useState('dueOrder'),
     [page, setPage] = useState(0),
-    [doneOpen, setDoneOpen] = useState(false);
+    [doneOpen, setDoneOpen] = useState(false),
+    [donePage, setDonePage] = useState(0);
   const [detail, setDetail] = useState<string | null>(null),
     [form, setForm] = useState<Partial<
       Record<
@@ -83,6 +84,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
     > | null>(null),
     [mode, setMode] = useState<'edit' | 'deadline' | 'complete' | 'later'>('edit');
   const pending = useRef(false);
+  const formRevision = useRef<number | undefined>(undefined);
   const scope = useRef(getDataOwnerGeneration()),
     epoch = useRef(0),
     mounted = useRef(true),
@@ -142,10 +144,14 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
         .toLocaleLowerCase()
         .includes(query.toLocaleLowerCase()));
   const rows = items
-    .filter((x) => x.status === 'open' && (view === 'hidden' ? !todoVisible(x) : todoVisible(x)))
+    .filter((x) => (view === 'hidden' ? !todoVisible(x) : x.status === 'open' && todoVisible(x)))
     .filter(matches)
     .sort((a, b) => initialOrder.current.indexOf(a.id) - initialOrder.current.indexOf(b.id));
-  const completed = items.filter((x) => x.status === 'done' && todoVisible(x)).filter(matches);
+  const completed = items
+    .filter((x) => x.status === 'done' && todoVisible(x))
+    .filter(matches)
+    .sort((a, b) => initialOrder.current.indexOf(a.id) - initialOrder.current.indexOf(b.id));
+  const visibleDonePage = Math.min(donePage, Math.max(0, Math.ceil(completed.length / 25) - 1));
   const visiblePage = Math.min(page, Math.max(0, Math.ceil(rows.length / 25) - 1));
   const run = async (fn: () => Promise<unknown>, close = false) => {
     if (pending.current) return;
@@ -171,6 +177,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
   const update = (x: TeammateTodo, patch: TodoPatch, close = false) =>
     run(() => api.current.update({ ...patch, id: x.id, expectedRevision: x.revision }), close);
   const edit = (x: TeammateTodo | undefined, m: typeof mode) => {
+    formRevision.current = x?.revision;
     setDetail(x?.id ?? 'new');
     setMode(m);
     const d = x ? effectiveTodoDeadline(x) : null;
@@ -346,7 +353,16 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
           value={type === 'datetime-local' ? localInput(form?.[key]) : (form?.[key] ?? '')}
           onChange={(e) => {
             if (type !== 'datetime-local') {
-              setForm({ ...form, [key]: e.target.value });
+              if (type === 'date' && form?.time) {
+                const moved = new Date(form.time),
+                  parts = e.target.value.split('-').map(Number);
+                moved.setFullYear(parts[0], parts[1] - 1, parts[2]);
+                setForm({
+                  ...form,
+                  date: e.target.value,
+                  time: Number.isFinite(moved.getTime()) ? moved.toISOString() : '',
+                });
+              } else setForm({ ...form, [key]: e.target.value });
               return;
             }
             const date = new Date(e.target.value),
@@ -385,7 +401,12 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
                 completion: { summary: form.summary!, ...(form.ref ? { ref: form.ref } : {}) },
               }
             : { operation: 'later', until: form.until };
-    if (selected) void update(selected, patch, true);
+    if (selected)
+      void run(
+        () =>
+          api.current.update({ ...patch, id: selected.id, expectedRevision: formRevision.current }),
+        true,
+      );
     else
       void run(
         () =>
@@ -398,6 +419,39 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
         true,
       );
   };
+  const pagination = (
+    count: number,
+    currentPage: number,
+    change: (page: number) => void,
+    label: string,
+  ) =>
+    count > 25 && (
+      <nav className="todo-pages" aria-label={label}>
+        <Button
+          variant="secondary"
+          tone="quiet"
+          disabled={!currentPage}
+          onClick={() => change(currentPage - 1)}
+        >
+          {tr('previous')}
+        </Button>
+        <span>
+          {tr('page', {
+            start: currentPage * 25 + 1,
+            end: Math.min(count, currentPage * 25 + 25),
+            count,
+          })}
+        </span>
+        <Button
+          variant="secondary"
+          tone="quiet"
+          disabled={(currentPage + 1) * 25 >= count}
+          onClick={() => change(currentPage + 1)}
+        >
+          {tr('following')}
+        </Button>
+      </nav>
+    );
   return (
     <section className="todo-panel" aria-label={tr('title')}>
       <header className="todo-header">
@@ -419,6 +473,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
           onChange={(e) => {
             setQuery(e.target.value);
             setPage(0);
+            setDonePage(0);
           }}
         />
         <select
@@ -427,6 +482,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
           onChange={(e) => {
             setView(e.target.value as typeof view);
             setPage(0);
+            setDonePage(0);
           }}
         >
           <option value="open">{tr('open')}</option>
@@ -440,6 +496,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
           onChange={(e) => {
             setOrigin(e.target.value);
             setPage(0);
+            setDonePage(0);
           }}
         >
           {['all', 'assigned', 'discovered'].map((k) => (
@@ -455,6 +512,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
             setOrder(e.target.value);
             initialOrder.current = sorted(items, e.target.value).map((x) => x.id);
             setPage(0);
+            setDonePage(0);
           }}
         >
           {['dueOrder', 'createdOrder'].map((k) => (
@@ -479,33 +537,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
       ) : (
         <p className="todo-empty">{tr(query ? 'noMatch' : 'empty')}</p>
       )}
-      {rows.length > 25 && (
-        <nav className="todo-pages" aria-label={tr('title')}>
-          <Button
-            variant="secondary"
-            tone="quiet"
-            disabled={!visiblePage}
-            onClick={() => setPage(visiblePage - 1)}
-          >
-            {tr('previous')}
-          </Button>
-          <span>
-            {tr('page', {
-              start: visiblePage * 25 + 1,
-              end: Math.min(rows.length, visiblePage * 25 + 25),
-              count: rows.length,
-            })}
-          </span>
-          <Button
-            variant="secondary"
-            tone="quiet"
-            disabled={(visiblePage + 1) * 25 >= rows.length}
-            onClick={() => setPage(visiblePage + 1)}
-          >
-            {tr('following')}
-          </Button>
-        </nav>
-      )}
+      {pagination(rows.length, visiblePage, setPage, tr('title'))}
       <button
         className="todo-done-toggle"
         aria-expanded={doneOpen}
@@ -514,7 +546,14 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
         {doneOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />} {tr('done')} ·{' '}
         {completed.length}
       </button>
-      {doneOpen && <ul className="todo-list">{list(completed)}</ul>}
+      {doneOpen && (
+        <>
+          <ul className="todo-list">
+            {list(completed.slice(visibleDonePage * 25, visibleDonePage * 25 + 25))}
+          </ul>
+          {pagination(completed.length, visibleDonePage, setDonePage, tr('done'))}
+        </>
+      )}
       <ConfirmDialog
         open={detail !== null}
         onOpenChange={(open) => {

@@ -272,3 +272,15 @@ it('a source label refresh retains its existing evidence and scope when optional
     label: '新报价',
   });
 });
+
+it('normalizes problem keys before lookup and preflight rather than creating duplicate stored keys', () => {
+  const s = emptyTodoState();
+  const t = applyTodoPatch(s, { ...patch, key: 'quote:1' }, 'one', now);
+  expect(() => applyTodoPatch(s, { ...patch, key: ' quote:1 ' }, 'two', now)).toThrow('CONFLICT');
+  const ignored = applyTodoPatch(s, { id: t.id, expectedRevision: 1, operation: 'mute' }, '', now);
+  expect(
+    preflightTodoEvents(s, [{ source: 'mail', sequence: 1, key: ' quote:1 ' }], [])[0].decision,
+  ).toBe('suppressed');
+  expect(s.items).toHaveLength(1);
+  expect(ignored.key).toBe('quote:1');
+});

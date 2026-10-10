@@ -5,6 +5,7 @@ import {
   applyTodoPatch,
   emptyTodoState,
   TodoError,
+  normalizeTodoKey,
   todoVisible,
   validateTodoDeadline,
   type TodoPatch,
@@ -47,6 +48,61 @@ export function createBotTodoStore(
   legacy: () => Promise<Record<string, WorkbenchTaskJudgment>>,
   assertCurrent = () => {},
 ): BotTodoStore {
+  const fingerprint = (j: WorkbenchTaskJudgment) =>
+    createHash('sha256').update(JSON.stringify(j)).digest('hex');
+  const legacyItem = (legacyId: string, j: WorkbenchTaskJudgment): TeammateTodo | null => {
+    const ref = parseWorkbenchTaskId(legacyId);
+    if (!ref || !['github', 'idea'].includes(ref.kind)) return null;
+    const at = j.updatedAt;
+    return {
+      id: 'todo:legacy-' + createHash('sha256').update(legacyId).digest('hex').slice(0, 24),
+      revision: 1,
+      key: 'legacy:' + legacyId,
+      origin: j.verdict === 'idea' ? 'discovered' : 'assigned',
+      title: j.title,
+      progress: j.next ?? '',
+      outcome: j.title,
+      value: '',
+      next:
+        j.verdict === 'done'
+          ? null
+          : { label: 'Continue', instruction: j.next || j.title, kind: 'advance' },
+      sources: [
+        {
+          kind: ref.kind === 'github' ? 'github' : 'conversation',
+          id: legacyId,
+          label: j.title,
+          ...(j.ref && /^https:\/\//.test(j.ref) ? { ref: j.ref } : {}),
+          project: j.project,
+        },
+      ],
+      associations:
+        ref.kind === 'github' && ref.type === 'pr'
+          ? [{ kind: 'pr', id: legacyId, label: j.title }]
+          : [],
+      status: j.verdict === 'done' ? 'done' : 'open',
+      createdAt: at,
+      updatedAt: at,
+      sourceDeadline: null,
+      deadlineCandidate: null,
+      suggestedDate: null,
+      decision: null,
+      history:
+        j.verdict === 'done'
+          ? [
+              {
+                summary: j.next || 'Legacy completion evidence was not recorded',
+                ...(j.ref ? { ref: j.ref } : {}),
+                at,
+              },
+            ]
+          : [],
+      action: null,
+      legacyId,
+      legacyFingerprint: fingerprint(j),
+      legacyVerdict: j.verdict,
+    };
+  };
   async function read(): Promise<TodoState> {
     assertCurrent();
     let state: TodoState;
@@ -126,14 +182,24 @@ export function createBotTodoStore(
         )
           throw new TodoError('CORRUPT_STORE');
         if (
+          typeof t.id !== 'string' ||
           !t.id ||
+          t.id.length > 512 ||
+          typeof t.key !== 'string' ||
           !t.key ||
+          t.key.length > 512 ||
           !Number.isSafeInteger(t.revision) ||
           t.revision < 1 ||
-          !t.title ||
-          !t.outcome ||
+          typeof t.title !== 'string' ||
+          !t.title.trim() ||
+          t.title.length > 300 ||
+          typeof t.outcome !== 'string' ||
+          !t.outcome.trim() ||
+          t.outcome.length > 4000 ||
           typeof t.progress !== 'string' ||
+          t.progress.length > 4000 ||
           typeof t.value !== 'string' ||
+          t.value.length > 4000 ||
           !['assigned', 'discovered'].includes(t.origin) ||
           !Number.isFinite(Date.parse(t.createdAt)) ||
           !Number.isFinite(Date.parse(t.updatedAt))
@@ -151,58 +217,41 @@ export function createBotTodoStore(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       state = emptyTodoState();
-      // Old session judgments remain task metadata. Only actual old PR/idea Todo entries migrate.
-      for (const [legacyId, j] of Object.entries(await legacy())) {
-        const ref = parseWorkbenchTaskId(legacyId);
-        if (!ref || !['github', 'idea'].includes(ref.kind)) continue;
-        const at = j.updatedAt;
-        state.items.push({
-          id: 'todo:legacy-' + createHash('sha256').update(legacyId).digest('hex').slice(0, 24),
-          revision: 1,
-          key: 'legacy:' + legacyId,
-          origin: j.verdict === 'idea' ? 'discovered' : 'assigned',
-          title: j.title,
-          progress: j.next ?? '',
-          outcome: j.title,
-          value: '',
-          next:
-            j.verdict === 'done'
-              ? null
-              : { label: 'Continue', instruction: j.next || j.title, kind: 'advance' },
-          sources: [
-            {
-              kind: ref.kind === 'github' ? 'github' : 'conversation',
-              id: legacyId,
-              label: j.title,
-              ...(j.ref && /^https:\/\//.test(j.ref) ? { ref: j.ref } : {}),
-              project: j.project,
-            },
-          ],
-          associations:
-            ref.kind === 'github' && ref.type === 'pr'
-              ? [{ kind: 'pr', id: legacyId, label: j.title }]
-              : [],
-          status: j.verdict === 'done' ? 'done' : 'open',
-          createdAt: at,
-          updatedAt: at,
-          sourceDeadline: null,
-          deadlineCandidate: null,
-          suggestedDate: null,
-          decision: null,
-          history:
-            j.verdict === 'done'
-              ? [
-                  {
-                    summary: j.next || 'Legacy completion evidence was not recorded',
-                    ...(j.ref ? { ref: j.ref } : {}),
-                    at,
-                  },
-                ]
-              : [],
-          action: null,
-          legacyId,
-        });
+    }
+    // Reconcile legacy writes on every read, not just before the first new-format save.
+    // Only fields the legacy tool can represent are mapped. Decisions, dates, outcome and links survive.
+    for (const [legacyId, j] of Object.entries(await legacy())) {
+      const imported = legacyItem(legacyId, j);
+      if (!imported) continue;
+      const old = state.items.find((t) => t.legacyId === legacyId);
+      if (!old) {
+        state.items.push(imported);
+        continue;
       }
+      if (old.legacyFingerprint === imported.legacyFingerprint) continue;
+      old.title = imported.title;
+      old.progress = imported.progress;
+      old.origin = imported.origin;
+      old.sources = old.sources.map((source) =>
+        source.id === legacyId
+          ? {
+              ...source,
+              label: j.title,
+              ...(imported.sources[0].ref ? { ref: imported.sources[0].ref } : {}),
+            }
+          : source,
+      );
+      const verdictChanged = old.legacyVerdict !== j.verdict;
+      if (old.next?.label === 'Continue' || (verdictChanged && !old.next)) old.next = imported.next;
+      if (verdictChanged) {
+        if (old.status !== imported.status && imported.status === 'done')
+          old.history.push(...imported.history);
+        old.status = imported.status;
+      }
+      old.legacyVerdict = j.verdict;
+      old.legacyFingerprint = imported.legacyFingerprint;
+      old.revision++;
+      old.updatedAt = [old.updatedAt, j.updatedAt].sort().at(-1)!;
     }
     assertCurrent();
     return state;
@@ -257,9 +306,9 @@ export function createBotTodoStore(
         )
           return { duplicate: true };
         if (!params.patch && !params.skip) throw new TodoError('INVALID_EVENT');
-        const existing = s.items.find(
-          (t) => t.key === params.patch?.key || t.id === params.patch?.id,
-        );
+        const key =
+          params.patch?.key === undefined ? undefined : normalizeTodoKey(params.patch.key);
+        const existing = s.items.find((t) => t.key === key || t.id === params.patch?.id);
         const suppressed = (!!existing && !todoVisible(existing)) || existing?.status === 'done';
         const saved =
           params.patch && !suppressed

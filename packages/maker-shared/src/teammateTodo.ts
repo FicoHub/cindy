@@ -56,6 +56,8 @@ export interface TeammateTodo {
     error?: string;
   } | null;
   legacyId?: string;
+  legacyFingerprint?: string;
+  legacyVerdict?: 'unfinished' | 'idea' | 'done';
 }
 export interface TodoPatch {
   id?: string;
@@ -227,12 +229,15 @@ export function preflightTodoEvents(
         : e.sequence <= (Object.hasOwn(state.cursors, e.source) ? state.cursors[e.source] : -1) ||
             Object.hasOwn(state.receipts, e.source + ':' + e.sequence)
           ? 'duplicate'
-          : state.items.some((t) => t.key === e.key && !todoVisible(t))
+          : state.items.some((t) => t.key === normalizeTodoKey(e.key) && !todoVisible(t))
             ? 'suppressed'
-            : state.items.some((t) => t.key === e.key && t.status === 'done')
+            : state.items.some((t) => t.key === normalizeTodoKey(e.key) && t.status === 'done')
               ? 'resolved'
               : ('review' as const),
   }));
+}
+export function normalizeTodoKey(key: unknown): string {
+  return text(key, 512, true);
 }
 export function applyTodoPatch(
   state: TodoState,
@@ -242,10 +247,12 @@ export function applyTodoPatch(
 ): TeammateTodo {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch))
     throw new TodoError('INVALID_INPUT');
+  const key = patch.key === undefined ? undefined : normalizeTodoKey(patch.key);
   const old = patch.id
     ? state.items.find((t) => t.id === patch.id)
-    : state.items.find((t) => t.key === patch.key);
+    : state.items.find((t) => t.key === key);
   if (patch.id && !old) throw new TodoError('NOT_FOUND');
+  if (old && key !== undefined && key !== old.key) throw new TodoError('KEY_MISMATCH');
   if (old && patch.expectedRevision !== old.revision) throw new TodoError('CONFLICT');
   if (!old && patch.expectedRevision !== undefined) throw new TodoError('CONFLICT');
   if (!old && state.items.length >= 10000) throw new TodoError('CAPACITY_REACHED'); // reject, never evict history
@@ -254,7 +261,7 @@ export function applyTodoPatch(
     : {
         id,
         revision: 0,
-        key: text(patch.key, 512, true),
+        key: normalizeTodoKey(patch.key),
         origin: 'assigned',
         title: '',
         progress: '',

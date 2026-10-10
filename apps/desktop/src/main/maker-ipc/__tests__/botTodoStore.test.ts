@@ -198,3 +198,94 @@ it('expired deferral allows advancing the same next step without altering its re
   expect((await s.prepareAction(t.id, later.revision, 'after')).dispatch).toBe(true);
   expect((await s.read()).items[0].sourceDeadline?.date).toBe('2026-10-10');
 });
+
+it('reconciles later legacy writes into the same record after new-format persistence, preserving dates and rejection', async () => {
+  const { file } = await fixture();
+  let legacy: Record<string, import('../../../shared/botWorkbench.js').WorkbenchTaskJudgment> = {};
+  const s = createBotTodoStore(file, async () => legacy);
+  await s.patch(p);
+  const j = {
+    project: '/cindy',
+    title: '旧工具创建',
+    verdict: 'unfinished' as const,
+    next: '准备草稿',
+    ref: 'https://example.test/legacy',
+    updatedAt: '2026-10-01T00:00:00Z',
+  };
+  legacy = { 'idea:later': j };
+  let t = (await s.read()).items.find((t) => t.legacyId === 'idea:later')!;
+  t = await s.patch({
+    id: t.id,
+    expectedRevision: t.revision,
+    deadlineOverride: { value: { kind: 'date', date: '2026-10-11', timeZone: 'UTC' } },
+    operation: 'mute',
+  });
+  legacy = {
+    'idea:later': {
+      ...j,
+      title: '旧工具最新进展',
+      next: '报价草稿已准备',
+      ref: null,
+      updatedAt: '2026-10-02T00:00:00Z',
+    },
+  };
+  const changed = (await s.read()).items.find((x) => x.id === t.id)!;
+  expect(changed.title).toBe('旧工具最新进展');
+  expect(changed.progress).toBe('报价草稿已准备');
+  expect(changed.deadlineOverride).toEqual(t.deadlineOverride);
+  expect(changed.decision?.kind).toBe('muted');
+  expect(changed.sources[0].ref).toBe(j.ref);
+  expect((await s.read()).items).toHaveLength(2);
+  await s.patch({ id: changed.id, expectedRevision: changed.revision, operation: 'restore' });
+  expect((await s.read()).items.find((x) => x.id === changed.id)?.revision).toBe(
+    changed.revision + 1,
+  );
+});
+
+it('keeps a user-reopened legacy completion open when only its old description changes', async () => {
+  const { file } = await fixture();
+  let j = {
+    project: '/cindy',
+    title: '原约定',
+    verdict: 'done' as const,
+    next: '原依据',
+    ref: null,
+    updatedAt: '2026-10-01T00:00:00Z',
+  };
+  const s = createBotTodoStore(file, async () => ({ 'idea:reopened': j }));
+  const initial = (await s.read()).items[0];
+  const reopened = await s.patch({
+    id: initial.id,
+    expectedRevision: initial.revision,
+    operation: 'reopen',
+    next: { label: '验收', instruction: '确认约定', kind: 'decide' },
+  });
+  j = { ...j, title: '旧工具补充标题', updatedAt: '2026-10-02T00:00:00Z' };
+  const changed = (await s.read()).items[0];
+  expect(changed.status).toBe('open');
+  expect(changed.next).toEqual(reopened.next);
+  expect(changed.history).toEqual(reopened.history);
+});
+
+it('rejects valid JSON with corrupt or overlong text without rewriting the file', async () => {
+  const { file } = await fixture();
+  const s = createBotTodoStore(file, async () => ({}));
+  const t = await s.patch(p);
+  const clean = await s.read();
+  for (const fields of [
+    { title: {} },
+    { outcome: [] },
+    { title: 'x'.repeat(301) },
+    { progress: 'x'.repeat(4001) },
+  ]) {
+    const corrupt = structuredClone(clean);
+    Object.assign(corrupt.items[0], fields);
+    const content = JSON.stringify(corrupt);
+    await writeFile(file, content);
+    await expect(s.read()).rejects.toThrow('CORRUPT_STORE');
+    await expect(
+      s.patch({ id: t.id, expectedRevision: t.revision, progress: '不能写入' }),
+    ).rejects.toThrow('CORRUPT_STORE');
+    expect(await readFile(file, 'utf8')).toBe(content);
+  }
+});
