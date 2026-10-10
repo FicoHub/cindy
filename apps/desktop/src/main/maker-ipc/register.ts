@@ -9717,6 +9717,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await withSendToSessionLock(sessionId, run);
     },
     isTurnRunning: (sessionId) => maker.getSession(sessionId)?.isTurnRunning() ?? false,
+    // 没有开着的会话(或已出错)时这次发送要重新打开 Agent 所在电脑上的会话：发送前现读那台的状态。
+    hasLiveSession: (sessionId) => {
+      const live = maker.getSession(sessionId);
+      return live?.getStatus() === 'active';
+    },
     // 分享来的供应商被分享者建成了组：组所在电脑发来「需要换一台」时自动交接(provider-groups.md §6.1)。
     guestSwitch: getProviderGroupGuestSwitch(),
     continueSession: async (sessionId, token, info) =>
@@ -15472,14 +15477,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     isCindyMakeSession: async (sessionId) =>
       (await readSessionSource(sessionId)) === CINDY_MAKE_SESSION_SOURCE,
-    applyPendingAgentSwitch: async (sessionId) => {
+    applyPendingAgentSwitch: async (sessionId, options) => {
       await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
-      // 已归组的任务所在那台现在不能用时，先换到组里下一台再发(失败不影响这次发送)。
-      await providerGroupService?.beforeSend(sessionId).catch((error) => {
+      // 已归组的任务所在那台现在不能用时，先换到组里下一台再发(失败不影响这次发送)；离线时先等它恢复，
+      // 等的时候进行中行显示「重新连接中 n/5」。
+      await providerGroupService?.beforeSend(sessionId, {
+        ...(options?.signal ? { signal: options.signal } : {}),
+        progress: (state) => agentInputCoordinatorHolder?.setProviderGroupSendReconnect(sessionId, state),
+      }).catch((error) => {
         log.warn('provider group: pre-send check failed', {
           sessionId,
           error: error instanceof Error ? error.message : String(error),
         });
+      }).finally(() => {
+        agentInputCoordinatorHolder?.setProviderGroupSendReconnect(sessionId, null);
       });
     },
     prepareUnhealthySession: (sessionId) =>
@@ -16653,15 +16664,30 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       let hooks: ProviderGroupTurnErrorHooks | undefined;
       let holdTimer: ReturnType<typeof setTimeout> | undefined;
       if (holdId !== null) {
+        // 久久没有结局时到点放出来。每次重试、开始换电脑时重新计时：等原电脑恢复本身就可能要一两分钟，
+        // 不让等的时间吃掉换电脑的时间(到点放出会把协同 Worker 的异常终止回报给 Lead)。
+        const armHoldTimer = () => {
+          clearTimeout(holdTimer);
+          holdTimer = setTimeout(
+            () => releaseProviderGroupHeld(sessionId, holdId),
+            PROVIDER_GROUP_SWITCH_HOLD_MAX_MS,
+          );
+        };
         // 协同 Worker 的终态与 error 行按同一次登记结算：换成了不回报这次异常终止，没换成才回报给 Lead。
         hooks = {
           beforeFallback: () => releaseProviderGroupHeld(sessionId, holdId),
           resumed: () => discardProviderGroupHeld(sessionId, holdId),
+          // 先等原电脑恢复时进行中行显示「重新连接中 n/5」，开始换电脑时改回「正在换一台电脑继续」。
+          reconnecting: (attempt, maxAttempts) => {
+            armHoldTimer();
+            inputCoordinator.setProviderGroupSwitchHoldProgress(sessionId, holdId, { attempt, maxAttempts });
+          },
+          switching: () => {
+            armHoldTimer();
+            inputCoordinator.setProviderGroupSwitchHoldProgress(sessionId, holdId, null);
+          },
         };
-        holdTimer = setTimeout(
-          () => releaseProviderGroupHeld(sessionId, holdId),
-          PROVIDER_GROUP_SWITCH_HOLD_MAX_MS,
-        );
+        armHoldTimer();
       }
       void providerGroupService
         .onTurnError(sessionId, signals, candidateToken, hooks)
