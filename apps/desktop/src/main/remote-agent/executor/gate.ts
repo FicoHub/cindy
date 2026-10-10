@@ -12,7 +12,9 @@
  *    电脑不可信时也不能绕过本机用户的目录授权；
  *  - 抓取网页：本机地址、内网与云 metadata 这类地址(与本机任务里 WebFetch / curl 同一判定)
  *    只认本机用户刚批准过的同一地址；批准过的地址抓取时放开内网(域名也可能解析到内网)；
- *  - 计划模式：只允许读取、抓取网页和静态可证只读的命令，其余同样要本机用户批准过。
+ *  - 计划模式：只允许读取、抓取网页和静态可证只读的命令，其余同样要本机用户批准过；
+ *  - 供应商分享的受邀者任务：内容会经过分享者的电脑，凭证类的读写与读取凭证的命令即使在全权下
+ *    也只认本机用户批准过的同一操作(credentials.ts)。
  * 批准记录只在短时间内有效；命令与抓取的批准用一次即失效，路径批准在有效期内覆盖同一路径的读写
  * (编辑会先读后写)。
  */
@@ -20,7 +22,8 @@ import path from 'node:path';
 
 import { classifyShellCommand, reviewAction } from '@cindy/maker-core';
 
-import type { ExecutorWorkspace } from './workspace';
+import { isShareCredentialCommand, isShareCredentialPath } from '../credentials';
+import { realPathOrAncestor, type ExecutorWorkspace } from './workspace';
 
 /**
  * 与本机任务权限对应的上限档位：`full` = 全权；`plan` = 计划模式；其余权限档统一为 `normal`
@@ -87,6 +90,11 @@ function approvalOf(action: ExecutorAction): { kind: Approval['kind']; key: stri
   }
 }
 
+export interface ExecutorGateOptions {
+  /** 供应商分享的受邀者任务：凭证类操作不论权限档都要本机用户确认。 */
+  confirmCredentials?: boolean;
+}
+
 export class ExecutorGate {
   private mode: ExecutorGateMode;
   private approvals: Approval[] = [];
@@ -95,6 +103,7 @@ export class ExecutorGate {
     private readonly workspace: ExecutorWorkspace,
     mode: ExecutorGateMode = 'normal',
     private readonly now: () => number = Date.now,
+    private readonly options: ExecutorGateOptions = {},
   ) {
     this.mode = mode;
   }
@@ -114,21 +123,36 @@ export class ExecutorGate {
     if (this.approvals.length > MAX_APPROVALS) this.approvals.splice(0, this.approvals.length - MAX_APPROVALS);
   }
 
+  /**
+   * 这个操作是否要按「凭证类」由本机用户确认(只在供应商分享的受邀者任务里)：读写凭证类路径(链接按
+   * 真实目标再判一次)、目录级读取的根本身是凭证目录，或命令读取 / 打出凭证。
+   */
+  needsCredentialConsent(action: ExecutorAction): boolean {
+    if (!this.options.confirmCredentials) return false;
+    if (action.kind === 'fetch') return false;
+    if (action.kind === 'exec') {
+      return isShareCredentialCommand(action.command, this.workspace.allRoots(), { cwd: action.cwd, platform: process.platform });
+    }
+    return isShareCredentialPath(path.resolve(action.path)) || isShareCredentialPath(realPathOrAncestor(action.path));
+  }
+
   authorize(action: ExecutorAction): ExecutorGateDecision {
-    if (this.mode === 'full') return { ok: true, elevated: true };
+    const credential = this.needsCredentialConsent(action);
+    if (this.mode === 'full' && !credential) return { ok: true, elevated: true };
     // 抓取网页：本机用户批准过这个地址就放开内网。公网样式的域名也可能解析到内网(公司内网域名)，
     // 只看地址文本判定为不必问，但抓取时会按 DNS 结果被拦下。
     if (action.kind === 'fetch' && this.consume(action)) return { ok: true, elevated: true };
-    if (!this.requiresApproval(action)) return { ok: true };
+    if (!credential && !this.requiresApproval(action)) return { ok: true };
     if (this.consume(action)) return { ok: true, elevated: true };
-    return {
-      ok: false,
-      reason: action.kind === 'exec'
-        ? 'This command needs the user\'s confirmation on the computer where the task runs, and it was not confirmed.'
-        : action.kind === 'fetch'
-          ? `Fetching ${action.url} needs the user's confirmation on the computer where the task runs, and it was not confirmed.`
-          : `Access to ${action.path} needs the user's confirmation on the computer where the task runs, and it was not confirmed.`,
-    };
+    return { ok: false, reason: this.deniedReason(action) };
+  }
+
+  private deniedReason(action: ExecutorAction): string {
+    return action.kind === 'exec'
+      ? 'This command needs the user\'s confirmation on the computer where the task runs, and it was not confirmed.'
+      : action.kind === 'fetch'
+        ? `Fetching ${action.url} needs the user's confirmation on the computer where the task runs, and it was not confirmed.`
+        : `Access to ${action.path} needs the user's confirmation on the computer where the task runs, and it was not confirmed.`;
   }
 
   private requiresApproval(action: ExecutorAction): boolean {

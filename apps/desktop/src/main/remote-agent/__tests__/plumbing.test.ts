@@ -9,8 +9,9 @@ import WebSocket from 'ws';
 import { mapClaudeHostedEvent } from '../controller/eventMap';
 import { execServerActions, execServerCommand } from '../controller/execServerRelay';
 import { collectProjectInstructionFiles } from '../controller/projectFiles';
-import { approvalActionsFor, innerShellScript } from '../controller/proxyHandle';
-import { takeGroupSwitchState } from '../controller/startRemote';
+import { approvalActionsFor, createRemoteAgentHandle, innerShellScript } from '../controller/proxyHandle';
+import type { RemoteAgentRunClient } from '../controller/runClient';
+import { credentialConfirmation, takeGroupSwitchState } from '../controller/startRemote';
 import { EventLog, LineSplitter } from '../eventLog';
 import { ExecutorWorkspace } from '../executor/workspace';
 import { createRunTunnel } from '../host/tunnel';
@@ -111,6 +112,45 @@ describe('tunnel', () => {
     } finally {
       await tunnel.close();
     }
+  });
+});
+
+describe('confirmations raised on this computer', () => {
+  it('use the Agent confirmation channel and accept only a one-time allow', async () => {
+    let next = 0;
+    const controller = createRemoteAgentHandle({
+      client: {} as RemoteAgentRunClient,
+      started: { id: 'sdk-1', agentKind: 'claude-code', model: 'm', shadowDir: '', methods: [], state: {} },
+      workspace: new ExecutorWorkspace({ workingDir: root }),
+      recordApproval: () => undefined,
+      newId: () => `req-${(next += 1)}`,
+      dispose: async () => undefined,
+    });
+    const env = path.join(root, '.env');
+    const request = credentialConfirmation({ kind: 'read', path: env }, 'goes through the sharer');
+    // 交互还没接上：按拒绝处理。
+    expect(await controller.confirm(request)).toBe(false);
+    const seen: unknown[] = [];
+    let behavior: 'allow' | 'deny' = 'allow';
+    controller.handle.setInteractionResolver(async (incoming) => {
+      seen.push(incoming);
+      return { kind: 'permission', behavior };
+    });
+    expect(await controller.confirm(request)).toBe(true);
+    expect(seen).toEqual([{
+      kind: 'permission',
+      requestId: 'req-1',
+      toolName: 'Read',
+      input: { file_path: env },
+      description: 'goes through the sharer',
+      metadata: { hostOwnedConfirmation: 'shared_provider_credential' },
+    }]);
+    behavior = 'deny';
+    expect(await controller.confirm(request)).toBe(false);
+    expect(credentialConfirmation({ kind: 'exec', command: 'cat .env', cwd: root }, 'x')).toMatchObject({
+      toolName: 'Bash',
+      input: { command: 'cat .env' },
+    });
   });
 });
 

@@ -9752,6 +9752,9 @@
       "cancelEdit": "편집 취소",
       "saveEdit": "텍스트 저장"
     },
+    "sharedProviderCredential": {
+      "description": "이 작업은 공유받은 제공자를 사용하므로 Agent가 읽은 내용이 공유한 사람의 컴퓨터를 거칩니다. 이 단계는 자격 증명 파일(키, .env 등)과 관련되어 있어 확인한 후에 계속됩니다."
+    },
     "mediaDownload": {
       "title": "생성된 미디어를 다운로드할까요?",
       "description": "미디어가 생성되었습니다. 아래 주소에서 다운로드해야 합니다.",

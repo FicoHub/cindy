@@ -9752,6 +9752,9 @@
       "cancelEdit": "取消编辑",
       "saveEdit": "保存文本"
     },
+    "sharedProviderCredential": {
+      "description": "这个任务用的是分享来的供应商，Agent 读到的内容会经过分享者的电脑。这一步涉及凭证类文件（如密钥、.env），需要你确认后才继续。"
+    },
     "mediaDownload": {
       "title": "允许下载生成的媒体？",
       "description": "媒体已生成，需要从下方地址下载。",

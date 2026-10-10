@@ -9752,6 +9752,9 @@
       "cancelEdit": "取消編輯",
       "saveEdit": "儲存文字"
     },
+    "sharedProviderCredential": {
+      "description": "這個任務用的是分享來的供應商，Agent 讀到的內容會經過分享者的電腦。這一步涉及憑證類檔案（如金鑰、.env），需要你確認後才繼續。"
+    },
     "mediaDownload": {
       "title": "允許下載產生的媒體？",
       "description": "媒體已產生，需要從下方位址下載。",

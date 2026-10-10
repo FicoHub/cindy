@@ -587,7 +587,9 @@ handler 无 sender 依赖；不加入共享任务访客白名单，不进入自�
   `personal`(A 的个人配置：Claude Code 的 `~/.claude/CLAUDE.md`、`skills/agents/commands`、`settings.json`
   里的权限规则；Codex 的 `AGENTS(.override).md`；不含 hooks / env)。两者缺省按空处理。B 把影子目录按
   A 的真实路径逐级镜像在 `<runs>/workspaces/<控制端>/<任务>/fs/` 下，`open` 回包的 `mirrorRoot` 告诉 A
-  镜像根，A 据此把影子路径逐级映射回真实路径；项目里已有的同名文件以项目为准。
+  镜像根，A 据此把影子路径逐级映射回真实路径；项目里已有的同名文件以项目为准。A 收集这些文件时跟随
+  符号链接(与本机 Agent 加载一致，只防链接绕回上级目录与指向整个用户目录)；供应商分享的受邀者任务不把
+  凭证类文件放进载荷(`provider-sharing.md` §9 第 7 条)。载荷格式不变。
 - **本机虚拟工作区**：A 在 open 前先调用 caps，只有 B 回包声明
   virtualWorkspace: true 才发送 open；旧 B 或未声明能力的 B 直接提示升级，不能静默降级到
   暴露 A 真实路径的合同。支持时，B 使用不含 A 真实目录名的固定短父级层级，继续承载最多 24

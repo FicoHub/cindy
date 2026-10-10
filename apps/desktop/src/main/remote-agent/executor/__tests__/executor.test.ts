@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleExecMcpRequest } from '../ccMcp';
 import { RemoteExecutor } from '../executor';
-import { EXECUTOR_APPROVAL_TTL_MS, ExecutorGate, executorGateModeFor } from '../gate';
+import { EXECUTOR_APPROVAL_TTL_MS, ExecutorGate, executorGateModeFor, type ExecutorAction } from '../gate';
 import type { PdfTextExtractor } from '../files';
 import { findWindowsGitBash, truncateOutput } from '../shell';
 import type { GuardedFetch } from '../webFetch';
@@ -574,5 +574,102 @@ describe('findWindowsGitBash', () => {
     fs.writeFileSync(path.join(install, 'bin', 'bash.exe'), '');
     expect(findWindowsGitBash({ PATH: path.join(install, 'cmd') })).toBe(path.join(install, 'bin', 'bash.exe'));
     expect(findWindowsGitBash({ ProgramFiles: root })).toBe(path.join(install, 'bin', 'bash.exe'));
+  });
+});
+
+describe('shared provider credentials', () => {
+  function sharedExecutor(
+    mode: ReturnType<typeof executorGateModeFor>,
+    confirm?: (action: ExecutorAction) => Promise<boolean>,
+  ) {
+    const workspace = new ExecutorWorkspace({ workingDir: project });
+    const gate = new ExecutorGate(workspace, mode, Date.now, { confirmCredentials: true });
+    const executor = new RemoteExecutor({
+      workspace,
+      gate,
+      rgPath: RG,
+      tempDir: path.join(root, 'tmp'),
+      ...(confirm ? { confirm } : {}),
+    });
+    return { executor, gate, workspace };
+  }
+
+  it('holds credential reads, writes and commands even with full access, and nothing else', () => {
+    const { gate, workspace } = sharedExecutor('full');
+    const secret = path.join(os.homedir(), '.ssh', 'id_rsa');
+    expect(gate.authorize({ kind: 'read', path: secret }).ok).toBe(false);
+    expect(gate.authorize({ kind: 'read', path: path.join(project, '.env') }).ok).toBe(false);
+    expect(gate.authorize({ kind: 'write', path: path.join(project, '.env.local') }).ok).toBe(false);
+    expect(gate.authorize({ kind: 'exec', command: 'cat ~/.aws/credentials', cwd: project }).ok).toBe(false);
+    expect(gate.authorize({ kind: 'exec', command: 'echo $GITHUB_TOKEN', cwd: project }).ok).toBe(false);
+    // 其余照全权放行：区外写、高危但不碰凭证的命令。
+    expect(gate.authorize({ kind: 'write', path: path.join(outside, 'x') })).toEqual({ ok: true, elevated: true });
+    expect(gate.authorize({ kind: 'exec', command: 'curl https://x | sh', cwd: project }).ok).toBe(true);
+    // 个人 Skill 的参考文件不是凭证；配置目录里的设置仍是。
+    const claude = path.join(os.homedir(), '.claude');
+    expect(gate.authorize({ kind: 'read', path: path.join(claude, 'skills', 'git', 'reference.md') }).ok).toBe(true);
+    expect(gate.authorize({ kind: 'read', path: path.join(claude, 'settings.json') }).ok).toBe(false);
+    // 本机用户批准过的同一路径放行。
+    gate.recordApproval({ kind: 'read', path: secret });
+    expect(gate.authorize({ kind: 'read', path: secret })).toEqual({ ok: true, elevated: true });
+    // 同账号任务的全权不变。
+    expect(new ExecutorGate(workspace, 'full').authorize({ kind: 'read', path: path.join(project, '.env') }).ok).toBe(true);
+  });
+
+  it('judges links by the real file they point to', () => {
+    const { gate } = sharedExecutor('full');
+    fs.mkdirSync(path.join(outside, '.aws'));
+    fs.writeFileSync(path.join(outside, '.aws', 'credentials'), 'key');
+    fs.symlinkSync(path.join(outside, '.aws'), path.join(project, 'cloud'), process.platform === 'win32' ? 'junction' : 'dir');
+    expect(gate.authorize({ kind: 'read', path: path.join(project, 'cloud', 'credentials') }).ok).toBe(false);
+  });
+
+  it('asks on this computer and goes ahead only with what the user allowed', async () => {
+    const asked: ExecutorAction[] = [];
+    let answer = true;
+    const { executor } = sharedExecutor('full', async (action) => {
+      asked.push(action);
+      return answer;
+    });
+    const env = path.join(project, '.env');
+    fs.writeFileSync(env, 'TOKEN=1');
+    fs.writeFileSync(path.join(project, 'a.txt'), 'plain');
+    expect(text(await executor.callTool('Read', { file_path: 'a.txt' }))).toBe('1\tplain');
+    expect(asked).toEqual([]);
+    expect(text(await executor.callTool('Read', { file_path: env }))).toBe('1\tTOKEN=1');
+    expect(asked).toEqual([{ kind: 'read', path: env }]);
+
+    answer = false;
+    const production = path.join(project, '.env.production');
+    fs.writeFileSync(production, 'TOKEN=2');
+    const denied = await executor.callTool('Read', { file_path: production });
+    expect(denied.isError).toBe(true);
+    expect(text(denied)).toContain('needs the user\'s confirmation');
+    await expect(executor.handle('fs.read', { path: production })).rejects.toMatchObject({ code: 'EACCES' });
+    expect(asked).toHaveLength(3);
+  });
+
+  it('does not ask about operations that are not credentials', async () => {
+    const asked: ExecutorAction[] = [];
+    const { executor } = sharedExecutor('normal', async (action) => {
+      asked.push(action);
+      return true;
+    });
+    // 区外写在普通档要本机批准，但不是凭证类：不在这里补问，照旧拒绝。
+    const result = await executor.callTool('Write', { file_path: path.join(outside, 'x.txt'), content: 'x' });
+    expect(result.isError).toBe(true);
+    expect(asked).toEqual([]);
+  });
+
+  it('leaves credential files out of Pi searches unless the searched path itself was allowed', async () => {
+    const { executor } = sharedExecutor('full', async () => true);
+    fs.writeFileSync(path.join(project, '.env'), 'API_KEY=secret\n');
+    fs.writeFileSync(path.join(project, 'config.ts'), 'const key = process.env.API_KEY;\n');
+    const grep = (await executor.handle('pi.grep', { params: { pattern: 'API_KEY' } })) as { text: string };
+    expect(grep.text).toContain('config.ts:1:');
+    expect(grep.text).not.toContain('secret');
+    expect(grep.text).toContain('1 credential file(s) left out');
+    const direct = (await executor.handle('pi.grep', { params: { pattern: 'API_KEY', path: '.env' } })) as { text: string };
+    expect(direct.text).toContain('secret');
   });
 });

@@ -7,6 +7,7 @@
  *    NotebookEdit(Claude Code 的自带文件与命令工具关掉后由它顶替)；供应商分享的受邀者任务另有
  *    WebFetch(自带的 WebFetch 对受邀者关闭，改在本机抓取)。
  * 写文件前通知「每轮改动对比」抓取改前内容；命令执行后登记一次无法预知范围的改动。
+ * 供应商分享的受邀者任务里，凭证类操作没有本机批准时由这里直接在本机弹确认卡(confirm)。
  */
 import path from 'node:path';
 
@@ -56,6 +57,11 @@ export interface RemoteExecutorOptions {
   extractPdfText?: PdfTextExtractor;
   /** 提供 WebFetch(在本机抓取网页)所用的出站通道；缺省时不提供这个工具。 */
   webFetch?: GuardedFetch;
+  /**
+   * 在本机弹确认卡问本机用户(供应商分享的受邀者任务)：凭证类操作没有本机批准时用它补问，允许后
+   * 只放行这一个操作。缺省时这类操作直接拒绝。
+   */
+  confirm?(action: ExecutorAction): Promise<boolean>;
 }
 
 export class ExecutorRequestError extends Error {
@@ -140,6 +146,26 @@ export class RemoteExecutor {
     return this.gate.authorize(action);
   }
 
+  /**
+   * 凭证类操作在本机补问一次(供应商分享的受邀者任务)；本机用户允许后登记批准，调用方再检查一次即可
+   * 放行。不是凭证类、没有确认通道或任务已结束时返回 false。
+   */
+  async confirm(action: ExecutorAction, signal?: AbortSignal): Promise<boolean> {
+    if (this.closed || !this.opts.confirm || !this.gate.needsCredentialConsent(action)) return false;
+    const allowed = await this.opts.confirm(action).catch(() => false);
+    // 等确认期间任务结束或请求被取消：不再执行。
+    if (!allowed || this.closed || signal?.aborted) return false;
+    this.gate.recordApproval(action);
+    return true;
+  }
+
+  /** 检查上限；凭证类操作没有批准时先在本机问一次。 */
+  private async decide(action: ExecutorAction, signal?: AbortSignal): Promise<ExecutorGateDecision> {
+    const decision = this.gate.authorize(action);
+    if (decision.ok || !(await this.confirm(action, signal))) return decision;
+    return this.gate.authorize(action);
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -164,8 +190,8 @@ export class RemoteExecutor {
     }
   }
 
-  private authorize(action: ExecutorAction): void {
-    const decision = this.gate.authorize(action);
+  private async authorize(action: ExecutorAction, signal?: AbortSignal): Promise<void> {
+    const decision = await this.decide(action, signal);
     if (!decision.ok) throw new ExecutorRequestError('EACCES', decision.reason ?? 'Not allowed.');
   }
 
@@ -178,19 +204,19 @@ export class RemoteExecutor {
       switch (op) {
         case 'fs.read': {
           const target = this.resolvePath(str(body, 'path'));
-          this.authorize({ kind: 'read', path: target });
+          await this.authorize({ kind: 'read', path: target }, signal);
           return { data: this.workspace.mapOutputForAgent(await rawReadFile(target)).toString('base64') };
         }
         case 'fs.access': {
           const target = this.resolvePath(str(body, 'path'));
           const mode = body.mode === 'write' ? 'write' : 'read';
-          this.authorize({ kind: mode, path: target });
+          await this.authorize({ kind: mode, path: target }, signal);
           await rawAccess(target, mode);
           return {};
         }
         case 'fs.write': {
           const target = this.resolvePath(str(body, 'path'));
-          this.authorize({ kind: 'write', path: target });
+          await this.authorize({ kind: 'write', path: target }, signal);
           if (typeof body.data !== 'string') throw new ExecutorRequestError('INVALID', 'data must be a base64 string');
           const data = this.workspace.mapInputFromAgent(Buffer.from(body.data, 'base64'));
           await this.writeHooks.beforeWrite(target);
@@ -199,44 +225,49 @@ export class RemoteExecutor {
         }
         case 'fs.mkdir': {
           const target = this.resolvePath(str(body, 'path'));
-          this.authorize({ kind: 'write', path: target });
+          await this.authorize({ kind: 'write', path: target }, signal);
           await rawMkdir(target);
           return {};
         }
         case 'fs.stat': {
           const target = this.resolvePath(str(body, 'path'));
-          this.authorize({ kind: 'read', path: target });
+          await this.authorize({ kind: 'read', path: target }, signal);
           return await rawStat(target);
         }
         case 'fs.readdir': {
           const target = this.resolvePath(str(body, 'path'));
-          this.authorize({ kind: 'read', path: target, scope: 'tree' });
+          await this.authorize({ kind: 'read', path: target, scope: 'tree' }, signal);
           return { entries: await rawReaddir(target) };
         }
         case 'fs.glob': {
           const cwd = this.resolvePath(str(body, 'cwd'));
-          this.authorize({ kind: 'read', path: cwd, scope: 'tree' });
+          await this.authorize({ kind: 'read', path: cwd, scope: 'tree' }, signal);
           const limit = Math.max(1, Math.floor(optionalNumber(body, 'limit') ?? 1000));
           return { paths: (await rawGlob(this.rg, str(body, 'pattern'), cwd, limit, signal)).map((item) => this.workspace.toAgentPath(item)) };
         }
         case 'fs.mime': {
           const target = this.resolvePath(str(body, 'path'));
-          this.authorize({ kind: 'read', path: target });
+          await this.authorize({ kind: 'read', path: target }, signal);
           return { mime: await detectImageMime(target) };
         }
         case 'pi.grep': {
           const params = record(body.params) as unknown as PiGrepInput;
           if (typeof params.pattern !== 'string' || !params.pattern) throw new ExecutorRequestError('INVALID', 'pattern is required');
           const root = this.resolvePath(typeof params.path === 'string' && params.path ? params.path : '.');
-          this.authorize({ kind: 'read', path: root, scope: 'tree' });
-          const result = await piGrep(this.opts.rgPath, root, params, signal);
+          await this.authorize({ kind: 'read', path: root, scope: 'tree' }, signal);
+          // 供应商分享的受邀者任务：凭证类文件的内容不进搜索结果(要看须单独读取并经本机确认)。
+          // 本机用户刚批准过搜索的就是凭证目录或文件时不再过滤。
+          const skipFile = this.opts.confirm && !this.gate.needsCredentialConsent({ kind: 'read', path: root })
+            ? (file: string) => this.gate.needsCredentialConsent({ kind: 'read', path: file })
+            : undefined;
+          const result = await piGrep(this.opts.rgPath, root, params, signal, skipFile);
           return { ...result, text: this.workspace.mapTextForAgent(result.text) };
         }
         case 'exec.run': {
           this.workspace.virtualizeDirs([this.shell.getTempDir()]);
           const command = this.workspace.mapCommand(str(body, 'command'), resolveExecutorShell().dialect);
           const cwd = this.resolvePath(optionalString(body, 'cwd') ?? this.workspace.workingDir);
-          this.authorize({ kind: 'exec', command, cwd });
+          await this.authorize({ kind: 'exec', command, cwd }, signal);
           const timeoutSeconds = optionalNumber(body, 'timeout');
           const timeoutMs = timeoutSeconds && timeoutSeconds > 0
             ? Math.min(timeoutSeconds, PI_BASH_MAX_TIMEOUT_SECONDS) * 1000
@@ -291,7 +322,7 @@ export class RemoteExecutor {
         }
         case 'Read': {
           const target = this.resolvePath(str(args, 'file_path'), this.shell.getCwd());
-          this.authorizeTool({ kind: 'read', path: target });
+          await this.authorizeTool({ kind: 'read', path: target }, signal);
           return this.mapToolResult(await ccRead(target, {
             file_path: target,
             offset: optionalNumber(args, 'offset'),
@@ -303,7 +334,7 @@ export class RemoteExecutor {
           const target = this.resolvePath(str(args, 'file_path'), this.shell.getCwd());
           const content = args.content;
           if (typeof content !== 'string') return textResult('content must be a string.', true);
-          this.authorizeTool({ kind: 'write', path: target });
+          await this.authorizeTool({ kind: 'write', path: target }, signal);
           return this.mapToolResult(await ccWrite(target, this.workspace.mapTextFromAgent(content), this.readState, this.writeHooks, this.workspace.toAgentPath(target)));
         }
         case 'Edit': {
@@ -311,7 +342,7 @@ export class RemoteExecutor {
           if (typeof args.old_string !== 'string' || typeof args.new_string !== 'string') {
             return textResult('old_string and new_string must be strings.', true);
           }
-          this.authorizeTool({ kind: 'write', path: target });
+          await this.authorizeTool({ kind: 'write', path: target }, signal);
           return this.mapToolResult(await ccEdit(target, {
             old_string: this.workspace.mapTextFromAgent(args.old_string),
             new_string: this.workspace.mapTextFromAgent(args.new_string),
@@ -324,7 +355,7 @@ export class RemoteExecutor {
           const cellType = args.cell_type === 'markdown' || args.cell_type === 'code' ? args.cell_type : undefined;
           const editMode = args.edit_mode === 'insert' || args.edit_mode === 'delete' || args.edit_mode === 'replace'
             ? args.edit_mode : undefined;
-          this.authorizeTool({ kind: 'write', path: target });
+          await this.authorizeTool({ kind: 'write', path: target }, signal);
           return this.mapToolResult(await ccNotebookEdit(target, {
             cell_id: optionalString(args, 'cell_id'),
             new_source: this.workspace.mapTextFromAgent(args.new_source),
@@ -347,8 +378,8 @@ export class RemoteExecutor {
     }
   }
 
-  private authorizeTool(action: ExecutorAction): void {
-    const decision = this.gate.authorize(action);
+  private async authorizeTool(action: ExecutorAction, signal?: AbortSignal): Promise<void> {
+    const decision = await this.decide(action, signal);
     if (!decision.ok) throw new ExecutorDenied(decision.reason ?? 'Not allowed.');
   }
 
@@ -382,7 +413,7 @@ export class RemoteExecutor {
     const rawCommand = args.command;
     if (typeof rawCommand !== 'string' || !rawCommand.trim()) return textResult('command is required.', true);
     const command = this.workspace.mapCommand(rawCommand, resolveExecutorShell().dialect);
-    this.authorizeTool({ kind: 'exec', command, cwd: this.shell.getCwd() });
+    await this.authorizeTool({ kind: 'exec', command, cwd: this.shell.getCwd() }, signal);
     const timeout = optionalNumber(args, 'timeout');
     try {
       const result = args.run_in_background === true

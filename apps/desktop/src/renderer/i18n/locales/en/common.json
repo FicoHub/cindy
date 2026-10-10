@@ -9774,6 +9774,9 @@
       "cancelEdit": "Cancel Editing",
       "saveEdit": "Save Text"
     },
+    "sharedProviderCredential": {
+      "description": "This task uses a provider shared with you, so what the Agent reads passes through the sharer's computer. This step involves a credential file (such as a key or .env), so it continues only after you confirm."
+    },
     "mediaDownload": {
       "title": "Download the generated media?",
       "description": "The media has been generated and needs to be downloaded from the address below.",
