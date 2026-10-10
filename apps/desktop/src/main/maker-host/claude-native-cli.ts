@@ -14,7 +14,7 @@
  * 「断开」只撤销 Cindy 的使用许可(nativeProviderAuthBinding),不登出 CLI。
  */
 
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 
 import { cleanProcessEnv } from '@cindy/maker-core';
@@ -146,33 +146,66 @@ export function parseClaudeCliLoginStatus(stdout: string): ClaudeCliLoginStatus 
  * `Paste code here if prompted >` 用户看不到,也没有地方粘贴授权码。经 `start` 给 CLI
  * 一个独立的控制台窗口:提示与输入都在官方 CLI 里完成,Cindy 不读取、不中转授权码;
  * `/wait` 让 cmd 等 CLI 退出,结论照旧以随后的 `auth status --json` 为准。
- * cmd 取 `%SystemRoot%\System32` 下的固定路径,不信 PATH / ComSpec。参数全是本模块的字面量,
- * binary 是内置 CLI 的路径;整条命令按 Node `shell:true` 的约定包一层引号并原样传递。
+ *
+ * cmd 取 `%SystemRoot%\System32` 下的固定路径,不信 PATH / ComSpec。CLI 路径来自 userData,
+ * 可能含 `%NAME%` 或 `!`:双引号挡不住 cmd 的变量展开,所以路径只经专用环境变量传入,
+ * 命令文本里只有字面量与 `%VAR%` 引用(展开结果不会再被展开),并以 `/v:off` 关闭延迟展开;
+ * 与 scripts/shared/pnpm-invocation.mjs 的 cmd 转发同一做法。
  */
+export const CLAUDE_LOGIN_CLI_ENV = 'CINDY_CLAUDE_LOGIN_CLI';
+
 export function buildWindowsVisibleConsoleSpawn(
   binary: string,
   args: string[],
   systemRoot: string = process.env.SystemRoot ?? 'C:\\Windows',
-): { file: string; args: string[] } {
-  const command = ['start', '"Claude Code"', '/wait', `"${binary}"`, ...args].join(' ');
-  return { file: path.win32.join(systemRoot, 'System32', 'cmd.exe'), args: ['/d', '/s', '/c', `"${command}"`] };
+): { file: string; args: string[]; env: Record<string, string> } {
+  const command = ['start', '"Claude Code"', '/wait', `"%${CLAUDE_LOGIN_CLI_ENV}%"`, ...args].join(' ');
+  return {
+    file: path.win32.join(systemRoot, 'System32', 'cmd.exe'),
+    args: ['/d', '/s', '/v:off', '/c', `"${command}"`],
+    env: { [CLAUDE_LOGIN_CLI_ENV]: binary },
+  };
 }
+
+const TASKKILL_TIMEOUT_MS = 5_000;
 
 /**
  * 结束可见控制台登录:`start /wait` 下 CLI 是 cmd 的子进程,只杀 cmd 会留下登录窗口,
- * 所以在根进程仍存活时按进程树结束(根进程还活着,PID 不会已被复用);失败再回退根进程。
+ * 所以在根进程仍存活时按进程树结束(根进程还活着,PID 不会已被复用)。taskkill 异步执行,
+ * 不阻塞主进程;失败、出错或超时都回退结束根进程。
  */
 function stopVisibleConsoleLogin(child: ChildProcess): void {
-  if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-    const taskkill = path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
-    const tree = spawnSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
-      windowsHide: true,
-      stdio: 'ignore',
-      timeout: 5_000,
-    });
-    if (!tree.error && tree.status === 0) return;
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+    child.kill();
+    return;
   }
-  child.kill();
+  const taskkill = path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+  let settled = false;
+  const fallback = () => {
+    if (settled) return;
+    settled = true;
+    child.kill();
+  };
+  let killer: ChildProcess;
+  try {
+    killer = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+  } catch {
+    fallback();
+    return;
+  }
+  const timer = setTimeout(() => {
+    killer.kill();
+    fallback();
+  }, TASKKILL_TIMEOUT_MS);
+  killer.once('error', () => {
+    clearTimeout(timer);
+    fallback();
+  });
+  killer.once('close', (code) => {
+    clearTimeout(timer);
+    if (code === 0) settled = true;
+    else fallback();
+  });
 }
 
 function runCli(
@@ -189,7 +222,7 @@ function runCli(
         const launch = buildWindowsVisibleConsoleSpawn(binary, args);
         // cmd 本身隐藏;`start` 为 CLI 新建的控制台窗口可见。CLI 的输入输出都在那个窗口里。
         child = spawn(launch.file, launch.args, {
-          env: options.env,
+          env: { ...options.env, ...launch.env },
           stdio: 'ignore',
           windowsHide: true,
           windowsVerbatimArguments: true,

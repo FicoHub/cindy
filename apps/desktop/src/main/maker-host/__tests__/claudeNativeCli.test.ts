@@ -4,7 +4,7 @@
  */
 import { EventEmitter } from 'node:events';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   binary: '/opt/cindy/claude' as string | null,
@@ -13,7 +13,6 @@ const h = vi.hoisted(() => ({
   resolveError: null as Error | null,
   bridge: vi.fn(async () => 'http://127.0.0.1:5555'),
   spawn: vi.fn(),
-  spawnSync: vi.fn(() => ({ status: 0 })),
 }));
 
 vi.mock('electron', () => ({ app: { isPackaged: true, getPath: () => '/tmp/cindy-test-user-data' } }));
@@ -33,10 +32,11 @@ vi.mock('@cindy/anthropic-compat-proxy', async (original) => ({
   hasProxyEnvConfig: () => h.envProxy,
 }));
 vi.mock('../claude-cli-proxy-bridge.js', () => ({ ensureClaudeCliProxyBridge: h.bridge }));
-vi.mock('node:child_process', () => ({ spawn: h.spawn, spawnSync: h.spawnSync }));
+vi.mock('node:child_process', () => ({ spawn: h.spawn }));
 
 import {
   buildWindowsVisibleConsoleSpawn,
+  CLAUDE_LOGIN_CLI_ENV,
   claudeCliNetworkEnv,
   parseClaudeCliLoginStatus,
   parseClaudeCliPlanUsageLine,
@@ -233,7 +233,10 @@ describe('runClaudeCliLogin', () => {
     expect(argsOf(h.spawn.mock.calls[0])).toEqual(['auth', 'status', '--json']);
   });
 
-  it('拉起 `claude auth login --claudeai`,完成后以重读的登录态为结论', async () => {
+  it('拉起 `claude auth login --claudeai`,完成后以重读的登录态为结论(macOS / Linux 直接拉起)', async () => {
+    const realPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    onTestFinished(() => { Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true }); });
     h.spawn
       .mockImplementationOnce(() => fakeChild({ stdout: LOGGED_OUT }))
       .mockImplementationOnce(() => fakeChild({ stdout: 'Login successful.', code: 0 }))
@@ -264,11 +267,11 @@ describe('runClaudeCliLogin', () => {
     const setPlatform = (value: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value, configurable: true });
     beforeEach(() => {
       setPlatform('win32');
-      h.binary = 'C:\\Program Files\\Cindy\\resources\\claude.exe';
+      h.binary = 'C:\\Users\\a%OS%b!c\\AppData\\Roaming\\Cindy\\claude.exe';
     });
     afterEach(() => setPlatform(realPlatform));
 
-    it('经 System32 的 cmd `start /wait` 拉起官方 CLI 的独立控制台;状态读取仍走隐藏子进程', async () => {
+    it('经 System32 的 cmd `start /wait` 拉起官方 CLI 的独立控制台;CLI 路径只经环境变量传入', async () => {
       h.spawn
         .mockImplementationOnce(() => fakeChild({ stdout: LOGGED_OUT }))
         .mockImplementationOnce(() => fakeChild({ code: 0 }))
@@ -278,38 +281,53 @@ describe('runClaudeCliLogin', () => {
       expect(statusFile).toBe(h.binary);
       expect(statusOptions).toMatchObject({ windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       const [file, args, options] = h.spawn.mock.calls[1]!;
-      const expected = buildWindowsVisibleConsoleSpawn(h.binary!, ['auth', 'login', '--claudeai']);
-      expect(file).toBe(expected.file);
       expect(file).toMatch(/System32[\\/]cmd\.exe$/i);
-      expect(args).toEqual(expected.args);
-      expect(args).toEqual(['/d', '/s', '/c', `"start "Claude Code" /wait "${h.binary}" auth login --claudeai"`]);
-      expect(options).toMatchObject({ stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true });
+      expect(args).toEqual(['/d', '/s', '/v:off', '/c', `"start "Claude Code" /wait "%${CLAUDE_LOGIN_CLI_ENV}%" auth login --claudeai"`]);
+      // 含 %OS% / ! 的路径不进命令文本,避免 cmd 展开改写可执行路径。
+      expect((args as string[]).join(' ')).not.toContain('%OS%');
+      expect((args as string[]).join(' ')).not.toContain('!');
+      expect(options).toMatchObject({
+        stdio: 'ignore',
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+        env: expect.objectContaining({ [CLAUDE_LOGIN_CLI_ENV]: h.binary }),
+      });
+      expect(buildWindowsVisibleConsoleSpawn(h.binary!, ['auth', 'login', '--claudeai']).env).toEqual({ [CLAUDE_LOGIN_CLI_ENV]: h.binary });
     });
 
-    it('取消时在根进程存活期间按进程树结束,不留下登录窗口', async () => {
+    it('取消时在根进程存活期间经异步 taskkill 按进程树结束,不留下登录窗口', async () => {
       const login = Object.assign(fakeChild('hang'), { pid: 4242, exitCode: null, signalCode: null });
+      const killer = new EventEmitter() as FakeChild;
+      killer.kill = vi.fn();
       h.spawn
         .mockImplementationOnce(() => fakeChild({ stdout: LOGGED_OUT }))
-        .mockImplementationOnce(() => login);
-      h.spawnSync.mockImplementationOnce(() => {
-        setImmediate(() => login.emit('close', 1));
-        return { status: 0 };
-      });
+        .mockImplementationOnce(() => login)
+        .mockImplementationOnce(() => {
+          setImmediate(() => { killer.emit('close', 0); login.emit('close', 1); });
+          return killer;
+        });
       const abort = new AbortController();
       const pending = runClaudeCliLogin(abort.signal);
       await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
       abort.abort();
       await expect(pending).resolves.toEqual({ ok: false, reason: 'login_cancelled' });
-      expect(h.spawnSync).toHaveBeenCalledWith(expect.stringMatching(/System32[\\/]taskkill\.exe$/i), ['/PID', '4242', '/T', '/F'], expect.objectContaining({ windowsHide: true }));
+      expect(h.spawn.mock.calls[2]![0]).toMatch(/System32[\\/]taskkill\.exe$/i);
+      expect(h.spawn.mock.calls[2]![1]).toEqual(['/PID', '4242', '/T', '/F']);
+      expect(h.spawn.mock.calls[2]![2]).toMatchObject({ windowsHide: true });
       expect(login.kill).not.toHaveBeenCalled();
     });
 
     it('taskkill 失败时回退结束根进程', async () => {
       const login = Object.assign(fakeChild('hang'), { pid: 4243, exitCode: null, signalCode: null });
+      const killer = new EventEmitter() as FakeChild;
+      killer.kill = vi.fn();
       h.spawn
         .mockImplementationOnce(() => fakeChild({ stdout: LOGGED_OUT }))
-        .mockImplementationOnce(() => login);
-      h.spawnSync.mockImplementationOnce(() => ({ status: 128 }));
+        .mockImplementationOnce(() => login)
+        .mockImplementationOnce(() => {
+          setImmediate(() => killer.emit('close', 128));
+          return killer;
+        });
       const abort = new AbortController();
       const pending = runClaudeCliLogin(abort.signal);
       await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
