@@ -461,10 +461,87 @@ describe('Codex device-hosted guest sessions', () => {
     const replacementCall = fixture.request.mock.calls
       .filter(([method]) => method === Method.ThreadStart)[1] as unknown as [string, unknown, unknown] | undefined;
     const replacement = replacementCall?.[2] as Record<string, unknown> | undefined;
+    // 内层 host.request = 外层接受期限(60s 基准 / 30s 静默 / 5min 封顶，见
+    // criticalThreadRpcOptions)+ 5min 晚到响应窗口：接受期限收口后内层还要能收到
+    // 晚到响应跑 onLateResolve 清理，不能两层同上限(#5772 review)。
     expect(replacement).toMatchObject({
-      timeoutMs: 60_000,
-      extendWhileProgress: { idleMs: 30_000, maxMs: 300_000 },
+      timeoutMs: 360_000,
+      extendWhileProgress: { idleMs: 330_000, maxMs: 600_000 },
     });
+    const progress = replacement?.extendWhileProgress as {
+      lastProgressAt(): number | null;
+      describe?(): string;
+    };
+    expect(progress.lastProgressAt()).toBe(1_234);
+    expect(progress.describe?.()).toContain('execution environment answered 3/4 requests');
+    await handle.close();
+  });
+
+  it('keeps the hosted profile lifecycle acceptance open with tunnel progress and cleans up late responses', async () => {
+    let activityAt = 0;
+    const linkActivity = vi.fn(() => ({
+      lastActivityAt: activityAt,
+      execRequests: 4,
+      execResponses: 3,
+      execMaxInFlight: 2,
+      httpInFlight: 0,
+    }));
+    const fixture = await startHosted({ guest: true, linkActivity });
+    const handle = await fixture.started;
+    const host = await fixture.getHost.mock.results[0]!.value;
+    const baseRequest = fixture.request.getMockImplementation()!;
+    let replacementGated = false;
+    let resolveReplacement: (response: unknown) => void = () => undefined;
+    const replacement = new Promise((resolve) => {
+      resolveReplacement = resolve;
+    });
+    fixture.request.mockImplementation(async (method: string, params: unknown) => {
+      // startSession 的首次 thread/start 已经发完；此后唯一的 ThreadStart 就是 profile 替换。
+      if (method === Method.ThreadStart && !replacementGated) {
+        replacementGated = true;
+        return replacement;
+      }
+      return baseRequest(method, params);
+    });
+    await handle.setExtraDirs?.(['/shared-profile']);
+    activityAt = Date.now() + 45_000;
+    vi.useFakeTimers();
+    let sendSettled = false;
+    try {
+      const sendPromise = handle.send(
+        { type: 'user', content: 'use the hosted profile' },
+        { throwOnStartFailure: true },
+      );
+      void sendPromise.then(
+        () => {
+          sendSettled = true;
+        },
+        () => {
+          sendSettled = true;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+      // 基准 60s 到点时链路仍有往来：接受期限顺延，不收口。
+      expect(sendSettled).toBe(false);
+      activityAt = Date.now() + 10_000;
+      await vi.advanceTimersByTimeAsync(40_000);
+      // 往来停满 30s 才按超时收口(实际等了 100s，超过 60s 基准)。
+      await expect(sendPromise).rejects.toThrow(/did not acknowledge within 100000ms/);
+      expect(fixture.request.mock.calls.filter(
+        ([method]) => method === Method.ThreadStart,
+      )).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+    // 接受期限收口后，晚到响应仍到达 onLateResolve：脱线线程被退订，
+    // 而不是被同上限的内层超时丢弃。
+    resolveReplacement({
+      thread: { id: 'late-thread-id' },
+      model: 'gpt-5.5',
+      modelProvider: 'openai',
+      cwd: '/repo',
+    });
+    await vi.waitFor(() => expect(host.unsubscribeThread).toHaveBeenCalledWith('late-thread-id'));
     await handle.close();
   });
 
@@ -474,6 +551,14 @@ describe('Codex device-hosted guest sessions', () => {
     const options = requestOptions(fixture.request, Method.ThreadStart);
     expect(options).toMatchObject({ timeoutMs: 60_000 });
     expect(options).not.toHaveProperty('extendWhileProgress');
+    // 生命周期请求同样走固定 60s 接受期限(不是本地会话的 10s)，内层再留晚到响应窗口。
+    await handle.setExtraDirs?.(['/shared-profile']);
+    await handle.send({ type: 'user', content: 'use the hosted profile' });
+    const replacementCall = fixture.request.mock.calls
+      .filter(([method]) => method === Method.ThreadStart)[1] as unknown as [string, unknown, unknown] | undefined;
+    const replacement = replacementCall?.[2] as Record<string, unknown> | undefined;
+    expect(replacement).toMatchObject({ timeoutMs: 360_000 });
+    expect(replacement).not.toHaveProperty('extendWhileProgress');
     await handle.close();
   });
 
