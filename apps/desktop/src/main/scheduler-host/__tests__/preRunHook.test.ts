@@ -10,7 +10,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertPreRunHookCommandSyntax,
   executePreRunHook,
+  findShellSyntaxError,
+  formatPreRunHookFailure,
   resolvePreRunHookTimeoutMs,
   type PreRunHookStdinPayload,
 } from '../pre-run-hook';
@@ -116,6 +119,22 @@ describe('executePreRunHook', () => {
     expect(result.exitCode).not.toBe(0);
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'shell 语法错误(sh 退出码同为 2)按失败阻止,不当成跳过',
+    async () => {
+      const result = await executePreRunHook({
+        // 2026-10 真实事故:单引号没配平,sh 以 2 退出,被误记为"本轮跳过"
+        command: `node -e "process.exit(0)" '//`,
+        stdinPayload: payload,
+      });
+      expect(result.status).toBe('failed');
+      expect(result.decision).toBe('block');
+      expect(result.error).toMatch(/^shell syntax error in command: /);
+      expect(result.stderr).not.toBe('');
+      expect(formatPreRunHookFailure(result)).toContain('shell syntax error');
+    },
+  );
+
   it('spawn 失败会保留启动错误并阻止执行', async () => {
     const result = await executePreRunHook({
       command: 'node -e "process.exit(0)"',
@@ -168,6 +187,27 @@ describe('executePreRunHook', () => {
     // 树杀 + 1s 强制 settle 兜底:远小于 60s 超时即返回
     expect(Date.now() - startedAt).toBeLessThan(10_000);
   }, 15_000);
+});
+
+describe.skipIf(process.platform === 'win32')('前置检查命令语法预检', () => {
+  it('语法正确的命令(含引号路径、管道、heredoc)不报错,且不会被执行', async () => {
+    await expect(findShellSyntaxError(`node '/a b/x.mjs' --flag`)).resolves.toBeUndefined();
+    await expect(findShellSyntaxError('git fetch -q && python3 - scan <<EOF\nx\nEOF')).resolves.toBeUndefined();
+    // -n 只解析:即使命令会失败也不报语法错误
+    await expect(findShellSyntaxError('exit 7')).resolves.toBeUndefined();
+  });
+
+  it('引号未配平 / 结构未闭合 → 返回 shell 报错', async () => {
+    await expect(findShellSyntaxError(`node '/a b/x.mjs'//'`)).resolves.toBeTruthy();
+    await expect(findShellSyntaxError('if true; then echo')).resolves.toBeTruthy();
+  });
+
+  it('保存时校验:语法错误抛 invalid,正确命令放行', async () => {
+    await expect(assertPreRunHookCommandSyntax(`node '/a b/x.mjs'//'`)).rejects.toThrow(
+      /^invalid pre-run hook configuration: shell syntax error in command: /,
+    );
+    await expect(assertPreRunHookCommandSyntax(`xdt-node '/a b/x.mjs'`)).resolves.toBeUndefined();
+  });
 });
 
 describe('resolvePreRunHookTimeoutMs(无默认超时)', () => {

@@ -59,7 +59,10 @@ import {
 
 import { createLogger } from '../logger.js';
 import type { DrizzleScheduleStorage } from '../scheduler-host/storage.js';
-import { executePreRunHook } from '../scheduler-host/pre-run-hook.js';
+import {
+  assertPreRunHookCommandSyntax,
+  executePreRunHook,
+} from '../scheduler-host/pre-run-hook.js';
 import {
   HookScriptUtilityModelError,
   installHookScript,
@@ -346,8 +349,10 @@ export function registerScheduleHandlers(getMaker?: () => Maker | null): void {
   };
   const hookPathDeps = {
     resolveSessionWorkDir,
-    stabilizeCommand: async (input: { command: string; workingDir?: string }) =>
-      stabilizeHookCommand(input.command, input.workingDir),
+    stabilizeCommand: async (input: { command: string; workingDir?: string }) => {
+      await assertPreRunHookCommandSyntax(input.command);
+      return stabilizeHookCommand(input.command, input.workingDir);
+    },
   };
 
   ipcMain.handle(MAKER_INVOKE.SCHEDULE_LIST, async (_e, filter: unknown) =>

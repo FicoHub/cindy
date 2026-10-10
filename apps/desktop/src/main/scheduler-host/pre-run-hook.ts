@@ -8,6 +8,8 @@
  *     脚本可读可不读。
  *   - exit 0 → 放行本轮;exit 2 → 跳过本轮;其它退出码 / 超时 / spawn 失败 →
  *     fail-closed 阻止本轮并记录失败，避免前置检查异常时绕过闸门。
+ *   - POSIX 下执行前先 `sh -n` 预检命令语法:sh 的语法错误退出码恰好也是 2,
+ *     不预检会把"引号没配平"之类的命令错误当成正常跳过，任务悄悄停摆。
  *   - 超时**仅在显式配置 timeoutMs 时生效**,未配置 = 不限时(产品决策:
  *     不设默认超时;代价是 hook 卡死会阻塞该轮 fire,由配置方自担)。
  *
@@ -17,7 +19,7 @@
  *   - stdout/stderr 各截断 8KB,防脚本刷屏撑爆 run 记录与日志。
  */
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import type { PreRunHookRunResult } from '@cindy/maker-scheduler';
 import { capAppend as capAppendBase, killProcessTree } from './proc-util';
 import os from 'node:os';
@@ -95,6 +97,45 @@ function firstLine(text: string): string {
   return line.length > 200 ? `${line.slice(0, 200)}…` : line;
 }
 
+/** POSIX 下 spawn(shell:true) 实际使用的解释器;语法预检必须用同一个。 */
+const POSIX_SHELL = '/bin/sh';
+const SYNTAX_CHECK_TIMEOUT_MS = 5_000;
+
+/**
+ * POSIX shell 语法预检(`sh -n -c`,只解析不执行)。返回 shell 的报错文本;语法
+ * 正确、Windows(cmd.exe 没有对应能力)或预检本身没能完成(spawn 失败 / 超时)
+ * 时返回 undefined,交给真实执行按原协议处理。
+ */
+export function findShellSyntaxError(command: string): Promise<string | undefined> {
+  if (process.platform === 'win32') return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    execFile(
+      POSIX_SHELL,
+      ['-n', '-c', command],
+      { timeout: SYNTAX_CHECK_TIMEOUT_MS },
+      (err, _stdout, stderr) => {
+        // 只有 shell 正常退出且非 0 才是语法错误;err.code 为字符串(ENOENT 等)或
+        // 超时被杀时不下结论。
+        if (!err || typeof err.code !== 'number') {
+          resolve(undefined);
+          return;
+        }
+        resolve(String(stderr).trim() || `${POSIX_SHELL} -n exited with code ${err.code}`);
+      },
+    );
+  });
+}
+
+/** 保存任务前校验前置检查命令;语法错误抛 invalid,让写错的命令当场被拒。 */
+export async function assertPreRunHookCommandSyntax(command: string): Promise<void> {
+  const syntaxError = await findShellSyntaxError(resolveHookCommand(command).command);
+  if (syntaxError) {
+    throw new Error(
+      `invalid pre-run hook configuration: shell syntax error in command: ${firstLine(syntaxError)}`,
+    );
+  }
+}
+
 /** 显式配置的正数才启用超时;未传 / 非法 / ≤0 → undefined(不限时)。 */
 export function resolvePreRunHookTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -110,21 +151,40 @@ export function resolvePreRunHookTimeoutMs(timeoutMs: number | undefined): numbe
 export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunHookResult> {
   const timeoutMs = resolvePreRunHookTimeoutMs(input.timeoutMs);
   const startedAt = Date.now();
+  const abortedResult = (): PreRunHookResult => ({
+    status: 'aborted',
+    decision: 'block',
+    exitCode: null,
+    durationMs: Date.now() - startedAt,
+    stdout: '',
+    stderr: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    timedOut: false,
+    aborted: true,
+  });
   // 进门先查:任务已被 pause/delete(信号已 abort)→ 不 spawn,直接返回
-  if (input.signal?.aborted) {
+  if (input.signal?.aborted) return abortedResult();
+
+  const resolved = resolveHookCommand(input.command);
+  const syntaxError = await findShellSyntaxError(resolved.command);
+  if (input.signal?.aborted) return abortedResult();
+  if (syntaxError) {
     return {
-      status: 'aborted',
+      status: 'failed',
       decision: 'block',
       exitCode: null,
-      durationMs: 0,
+      durationMs: Date.now() - startedAt,
       stdout: '',
-      stderr: '',
+      stderr: capAppendBase('', syntaxError, OUTPUT_CAP),
       stdoutTruncated: false,
-      stderrTruncated: false,
+      stderrTruncated: syntaxError.length > OUTPUT_CAP,
       timedOut: false,
-      aborted: true,
+      aborted: false,
+      error: `shell syntax error in command: ${firstLine(syntaxError)}`,
     };
   }
+
   return new Promise<PreRunHookResult>((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -203,7 +263,6 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
     };
     input.signal?.addEventListener('abort', onAbort, { once: true });
 
-    const resolved = resolveHookCommand(input.command);
     try {
       child = spawn(resolved.command, {
         shell: true,
