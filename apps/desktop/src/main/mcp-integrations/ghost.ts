@@ -816,9 +816,7 @@ async function writeLargeResultToRemote(
         // This is a failed withdrawal, not an unknown write. Preserve that distinction:
         // propagating TIMEOUT directly would let the outer catch verify and accept a
         // publish already known to be non-durable. Do not expose raw upstream diagnostics.
-        throw Object.assign(new Error('remote spill not durable; cleanup unconfirmed, private output may remain', { cause }), {
-          code: 'REMOTE_SPILL_CLEANUP_UNCONFIRMED',
-        });
+        throw remoteSpillCleanupUnconfirmed('remote spill not durable', cause);
       }
       throw new Error('remote spill not durable: staging removal did not reach disk');
     }
@@ -830,6 +828,13 @@ async function writeLargeResultToRemote(
     // A definite failure (EEXIST, size limit, path rejection) wrote nothing.
     throw err;
   }
+}
+
+/** A remote withdrawal that could not be confirmed; raw upstream diagnostics stay in `cause`. */
+function remoteSpillCleanupUnconfirmed(stage: string, cause: unknown): Error {
+  return Object.assign(new Error(`${stage}; cleanup unconfirmed, private output may remain`, { cause }), {
+    code: 'REMOTE_SPILL_CLEANUP_UNCONFIRMED',
+  });
 }
 
 /** Race a probe against the remaining reconcile budget; the loser's outcome is ignored. */
@@ -994,18 +999,29 @@ async function discardLargeResultFile(
   anchor: LocalSpillAnchor | null,
   hold: fs.promises.FileHandle | null = null,
 ): Promise<void> {
-  try {
-    if (!anchor) return;
-    if (target.remoteHostId) {
-      // Identity-checked deletion on the daemon: never follows a swapped symlink, never
-      // removes anything but the inode this call created/verified. With the daemon-held
-      // descriptor (hold) no pathname is needed at all: the directory may have been moved.
-      await getRemoteFileBrowser().request(target.remoteHostId, 'eraseIfSame', {
+  if (!anchor) return;
+  if (target.remoteHostId) {
+    // Identity-checked deletion on the daemon: never follows a swapped symlink, never
+    // removes anything but the inode this call created/verified. With the daemon-held
+    // descriptor (hold) no pathname is needed at all: the directory may have been moved.
+    // The withdrawal must be confirmed: a lost response or `erased:false` leaves the complete
+    // private output on the host while refs are rolled back, so the caller's original error
+    // is replaced by the same cleanup-unconfirmed failure as the non-durable branch.
+    let cleanup: { erased?: boolean } | undefined;
+    try {
+      cleanup = await getRemoteFileBrowser().request(target.remoteHostId, 'eraseIfSame', {
         workdir: target.workingDir, relPath, dev: anchor.dev, ino: anchor.ino,
         ...(anchor.holdId !== undefined ? { holdId: anchor.holdId } : {}),
       });
-      return;
+    } catch (cause) {
+      throw remoteSpillCleanupUnconfirmed('remote spill rollback', cause);
     }
+    if (!cleanup?.erased) {
+      throw remoteSpillCleanupUnconfirmed('remote spill rollback', new Error('inode withdrawal was not confirmed'));
+    }
+    return;
+  }
+  try {
     if (hold) {
       // Inode-bound: the retained handle follows the file wherever its directory went.
       const st = await hold.stat({ bigint: true });

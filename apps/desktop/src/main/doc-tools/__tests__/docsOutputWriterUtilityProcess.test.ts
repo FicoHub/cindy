@@ -353,6 +353,22 @@ process.stdout.write(JSON.stringify({ code, outsideExists, movedValue }));
     }
   });
 
+  // Codex P1 (round 31): on POSIX EACCES opening the parent for fsync (write+search-only, 0300)
+  // means the entry change is not durable; only Windows treats it as "cannot fsync a directory".
+  it('does not report a durable publish when the parent directory cannot be opened for fsync (EACCES)', async () => {
+    const realOpen = fs.promises.open.bind(fs.promises);
+    const realRoot = await fs.promises.realpath(root);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      if ([root, realRoot].includes(path.resolve(String(args[0]))) && args[1] === 'r') {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      }
+      return realOpen(...args);
+    });
+    const write = runDocsOutputWriteForTest(await request('denied.bin', 'payload', false), root, () => {});
+    if (process.platform === 'win32') await expect(write).resolves.toBeDefined();
+    else await expect(write).rejects.toMatchObject({ code: 'EACCES' });
+  });
+
   // Codex P1 (round 18): a cooperative abort cleans up through the retained handle and the
   // writer's own names while a filesystem call is still hanging.
   it('abortInFlightWrite zeroes and drops the staging inode while the write is still hanging', async () => {

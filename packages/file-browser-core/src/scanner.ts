@@ -612,7 +612,26 @@ async function syncDirectory(dirPath: string): Promise<void> {
     await dir.close().catch(() => undefined);
   }
 }
-const DIR_SYNC_UNSUPPORTED = new Set(['EPERM', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF', 'EACCES']);
+// EACCES is only a "cannot fsync a directory handle" signal on Windows. On POSIX a parent with
+// write+search but no read permission (e.g. 0300) still allows create/link/unlink, so EACCES
+// on open means the entry change was NOT made durable and must propagate as a failure.
+const DIR_SYNC_UNSUPPORTED = new Set([
+  'EPERM', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF',
+  ...(process.platform === 'win32' ? ['EACCES'] : []),
+]);
+
+/**
+ * Inodes whose publish is not yet settled after the staging marker disappears (`dev:ino`).
+ * Removing the staging name is the completion marker verifyNewFile keys on, but the removal
+ * only becomes final once the staging directory fsync settles. Until then (`finalizing`), or
+ * forever in this process when it never reached disk (`not-durable`: a crash could bring the
+ * hidden link back), a recovery verify must treat the inode as in flight: the original
+ * response that reports the outcome may still be in transit, or already discarded.
+ */
+const unsettledPublishes = new Map<string, 'finalizing' | 'not-durable'>();
+function publishKey(st: { dev: bigint; ino: bigint }): string {
+  return `${st.dev}:${st.ino}`;
+}
 
 export async function writeNewFile(
   workdir: string,
@@ -655,6 +674,7 @@ export async function writeNewFile(
   const handle = await fs.open(stagingAbs, 'wx', 0o600);
   let published = false;
   let holdId: string | undefined;
+  let publishedKey: string | undefined;
   const escape = () => new Error(`path escapes workdir via symlink: ${sub}`);
   const isOurs = async (candidate: string): Promise<boolean> => {
     const [own, current] = await Promise.all([
@@ -703,6 +723,10 @@ export async function writeNewFile(
     // The name is unlinked only if it still carries our inode: a workdir process may have
     // renamed the staging link away (an untracked private copy) and put an unrelated file
     // at that name. Then the publish is withdrawn (the handle zeroes the moved copy too).
+    // From here the marker can disappear: register the inode as unsettled first, so a
+    // concurrent verify never sees "no marker, one link" before durability is settled.
+    publishedKey = publishKey(await handle.stat({ bigint: true }));
+    unsettledPublishes.set(publishedKey, 'finalizing');
     const stagingEntry = await fs.lstat(stagingAbs, { bigint: true }).catch(() => null);
     if (stagingEntry) {
       const own = await handle.stat({ bigint: true });
@@ -728,6 +752,8 @@ export async function writeNewFile(
     // names are the conservative residue; a leftover staging name also keeps verifyNewFile
     // from ever accepting this withdrawn publish.
     await handle.truncate(0).catch(() => undefined);
+    // Zeroed content can never match a recovery hash; nothing left to settle.
+    if (publishedKey) unsettledPublishes.delete(publishedKey);
     if (holds && holdId) await holds.release(holdId);
     else await handle.close().catch(() => undefined);
     throw err;
@@ -744,6 +770,12 @@ export async function writeNewFile(
     await syncDirectory(stagingDir);
   } catch {
     durable = await syncDirectory(stagingDir).then(() => true, () => false);
+  }
+  if (publishedKey) {
+    // A not-durable entry is kept for the process lifetime (fsync failures are rare). A later
+    // inode-number reuse can only make an unrelated verify fail closed, never accept this one.
+    if (durable) unsettledPublishes.delete(publishedKey);
+    else unsettledPublishes.set(publishedKey, 'not-durable');
   }
   const st = await handle.stat({ bigint: true });
   const identity = { size: Number(st.size), mtimeMs: Number(st.mtimeMs), ...identityOf(st), durable };
@@ -881,6 +913,9 @@ export async function verifyNewFile(
     // away — in both cases the writer may still withdraw (zero) this inode, so recovery
     // must not accept it. This holds even when the staging marker name is gone.
     if (opened.nlink !== 1n) throw new Error(`write still in flight: ${sub}`);
+    // The marker is gone but the original writer has not settled durability yet (or never
+    // could): its response may still withdraw or report this publish as not durable.
+    if (unsettledPublishes.has(publishKey(opened))) throw new Error(`write still in flight: ${sub}`);
     const buf = await handle.readFile();
     if (buf.length !== expectedSize) throw new Error(`size mismatch: ${sub}`);
     const actual = createHash('sha256').update(buf).digest('hex');
@@ -900,7 +935,9 @@ export async function verifyNewFile(
       throw new Error(`identity mismatch after read: ${sub}`);
     }
     const finalStat = await handle.stat({ bigint: true });
-    if (finalStat.nlink !== 1n) throw new Error(`write still in flight: ${sub}`);
+    if (finalStat.nlink !== 1n || unsettledPublishes.has(publishKey(finalStat))) {
+      throw new Error(`write still in flight: ${sub}`);
+    }
     const identity = { size: Number(opened.size), mtimeMs: Number(opened.mtimeMs), ...identityOf(opened) };
     if (!holds) return identity;
     const holdId = holds.register(handle, opened);

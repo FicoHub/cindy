@@ -3774,7 +3774,7 @@ describe('oversized ghost result Host storage', () => {
     let calls = 0;
     // resolve(2) → pre-write(3) → after directory step(4) → post-write(5): the 5th read ends the instance.
     liveGrantStateMock.mockImplementation(() => (++calls <= 4 ? { permissionMode: 'auto', remoteHostId: 'host-1', isCurrent: () => true, reviewAction: reviewAllow } : null));
-    remoteFsRequestMock.mockImplementation(async (_host, method) => (method === 'writeNewFile' ? { size: 5, mtimeMs: 1, dev: '7', ino: '9' } : {}));
+    remoteFsRequestMock.mockImplementation(async (_host, method) => (method === 'writeNewFile' ? { size: 5, mtimeMs: 1, dev: '7', ino: '9' } : method === 'eraseIfSame' ? { erased: true } : {}));
     await expect(deps.saveLargeGhostResult!('result')).rejects.toThrow('live session');
     const methods = remoteFsRequestMock.mock.calls.map(call => call[1]);
     expect(methods).not.toContain('deleteEntry');
@@ -3811,6 +3811,7 @@ describe('oversized ghost result Host storage', () => {
     remoteFsRequestMock.mockImplementation(async (_host, method, _params, options) => {
       if (method === 'writeNewFile') return { size: 5, mtimeMs: 1, dev: '7', ino: '9', holdId: 'hold-1', durable: true };
       if (method === 'releaseNewFile') { live = false; await options?.beforeSend?.(); return { released: true }; }
+      if (method === 'eraseIfSame') return { erased: true };
       return {};
     });
     const hash = 'a'.repeat(64);
@@ -3838,12 +3839,45 @@ describe('oversized ghost result Host storage', () => {
     const deps = makeDeps('codex');
     sessionSnapshotMock.mockResolvedValue({ workingDir: '/srv/work', remoteHostId: 'host-1', permissionMode: 'auto', planModeEnabled: false });
     liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', remoteHostId: 'host-1', isCurrent: () => true, reviewAction: reviewAllow });
-    remoteFsRequestMock.mockImplementation(async (_host, method) => (method === 'writeNewFile' ? { size: 5, mtimeMs: 1, dev: '7', ino: '9', holdId: 'hold-1', durable: true } : {}));
+    remoteFsRequestMock.mockImplementation(async (_host, method) => (method === 'writeNewFile' ? { size: 5, mtimeMs: 1, dev: '7', ino: '9', holdId: 'hold-1', durable: true } : method === 'eraseIfSame' ? { erased: true } : {}));
     ledgerAddRefMock.mockImplementation(async () => { throw new Error('FOREIGN KEY constraint failed'); });
     try {
       await expect(deps.saveLargeGhostResult!(JSON.stringify({ image: `cindy-media://blobs/${'f'.repeat(64)}.png` }))).rejects.toThrow('media references unavailable');
       expect(remoteFsRequestMock.mock.calls.map(call => call[1])).toEqual(['createFolder', 'writeNewFile', 'eraseIfSame']);
       expect(remoteFsRequestMock).toHaveBeenCalledWith('host-1', 'eraseIfSame', expect.objectContaining({ dev: '7', ino: '9', holdId: 'hold-1' }));
+    } finally {
+      ledgerAddRefMock.mockImplementation(async (params: TestLedgerRef) => {
+        const id = params.id ?? `ref-${++ledgerRefSeq}`;
+        ledgerRefs.push({ ...params, id });
+        return id;
+      });
+    }
+  });
+
+  // Codex P1 (round 31): the shared rollback path (ledger / revalidation failure after a durable
+  // remote write) must confirm the withdrawal too. An unconfirmed erase replaces the original
+  // error with the same cleanup-unconfirmed failure as the non-durable branch.
+  it.each(['TIMEOUT', 'CHANNEL_CLOSED', 'not-erased'])('reports an unconfirmed rollback withdrawal after refs fail (%s)', async (code) => {
+    const deps = makeDeps('codex');
+    sessionSnapshotMock.mockResolvedValue({ workingDir: '/srv/work', remoteHostId: 'host-1', permissionMode: 'auto', planModeEnabled: false });
+    liveGrantStateMock.mockReturnValue({ permissionMode: 'auto', remoteHostId: 'host-1', isCurrent: () => true, reviewAction: reviewAllow });
+    remoteFsRequestMock.mockImplementation(async (_host, method) => {
+      if (method === 'writeNewFile') return { size: 5, mtimeMs: 1, dev: '7', ino: '9', holdId: 'hold-1', durable: true };
+      if (method === 'eraseIfSame') {
+        if (code === 'not-erased') return { erased: false };
+        throw Object.assign(new Error('private upstream diagnostic'), { code });
+      }
+      return {};
+    });
+    ledgerAddRefMock.mockImplementation(async () => { throw new Error('FOREIGN KEY constraint failed'); });
+    try {
+      const failure = deps.saveLargeGhostResult!(JSON.stringify({ image: `cindy-media://blobs/${'e'.repeat(64)}.png` }));
+      await expect(failure).rejects.toMatchObject({
+        code: 'REMOTE_SPILL_CLEANUP_UNCONFIRMED',
+        message: expect.stringContaining('cleanup unconfirmed'),
+      });
+      await expect(failure).rejects.not.toThrow('private upstream diagnostic');
+      expect(remoteFsRequestMock.mock.calls.map(call => call[1])).toEqual(['createFolder', 'writeNewFile', 'eraseIfSame']);
     } finally {
       ledgerAddRefMock.mockImplementation(async (params: TestLedgerRef) => {
         const id = params.id ?? `ref-${++ledgerRefSeq}`;

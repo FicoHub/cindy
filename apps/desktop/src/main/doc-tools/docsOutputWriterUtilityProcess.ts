@@ -163,7 +163,12 @@ async function openExclusive(target: string): Promise<fs.promises.FileHandle> {
   }
 }
 
-const DIR_SYNC_UNSUPPORTED = new Set(['EPERM', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF', 'EACCES']);
+// EACCES only means "cannot fsync a directory handle" on Windows; on POSIX a write+search-only
+// parent (e.g. 0300) allows the link/unlink yet denies the open, so it must fail as non-durable.
+const DIR_SYNC_UNSUPPORTED = new Set([
+  'EPERM', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF',
+  ...(process.platform === 'win32' ? ['EACCES'] : []),
+]);
 
 /**
  * Make directory-entry changes (link / unlink) durable by fsyncing the directory itself.

@@ -788,6 +788,91 @@ describe('verifyNewFile / eraseIfSame', () => {
     }
   });
 
+  // Codex P1 (round 31): the staging marker disappears before the final root fsync settles.
+  // A recovery verify racing that window (original response timed out) must still see the
+  // inode as in flight; it may be accepted only once durability is settled.
+  it('verifyNewFile rejects a publish whose staging removal is still being made durable', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xdt-verify-finalizing-'));
+    const realRoot = await fsp.realpath(root);
+    const realOpen = fsp.open.bind(fsp);
+    const content = '{"a":1}';
+    let raced: unknown = 'not raced';
+    const spy = vi.spyOn(fsp, 'open').mockImplementation(async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await realOpen(...args);
+      const st = await handle.stat();
+      if (st.isDirectory() && String(args[0]) === realRoot) {
+        const realSync = handle.sync.bind(handle);
+        handle.sync = async () => {
+          const staged = (await fsp.readdir(realRoot)).some(n => n.includes('.staging'));
+          if (!staged && raced === 'not raced') {
+            raced = await verifyNewFile(root, 'out/spill.json', sha(content), 7).then(() => 'accepted', (err: Error) => err.message);
+          }
+          return realSync();
+        };
+      }
+      return handle;
+    });
+    try {
+      await mkdir(path.join(root, 'out'));
+      const written = await writeNewFile(root, 'out/spill.json', content);
+      expect(raced).toMatch(/write still in flight/);
+      expect(written.durable).toBe(true);
+      spy.mockRestore();
+      await expect(verifyNewFile(root, 'out/spill.json', sha(content), 7)).resolves.toMatchObject({ size: 7 });
+    } finally {
+      spy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('verifyNewFile never accepts a publish whose staging removal did not reach disk', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xdt-verify-not-durable-'));
+    const realRoot = await fsp.realpath(root);
+    const realOpen = fsp.open.bind(fsp);
+    const content = '{"a":2}';
+    const spy = vi.spyOn(fsp, 'open').mockImplementation(async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await realOpen(...args);
+      const st = await handle.stat();
+      if (st.isDirectory() && String(args[0]) === realRoot) {
+        handle.sync = async () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }); };
+      }
+      return handle;
+    });
+    try {
+      await mkdir(path.join(root, 'out'));
+      const written = await writeNewFile(root, 'out/lost.json', content);
+      expect(written.durable).toBe(false);
+      spy.mockRestore();
+      // The original durable:false response may have been discarded by a timed-out client.
+      await expect(verifyNewFile(root, 'out/lost.json', sha(content), 7)).rejects.toThrow(/write still in flight/);
+    } finally {
+      spy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Codex P1 (round 31): on POSIX a write+search-only directory (e.g. 0300) allows the
+  // link/unlink but denies opening it for fsync; EACCES there is not "unsupported".
+  it('writeNewFile reports durable:false when the root directory cannot be opened for fsync (EACCES)', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xdt-root-eacces-'));
+    const realRoot = await fsp.realpath(root);
+    const realOpen = fsp.open.bind(fsp);
+    const spy = vi.spyOn(fsp, 'open').mockImplementation(async (...args: Parameters<typeof fsp.open>) => {
+      if (String(args[0]) === realRoot && args[1] === 'r') {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${realRoot}'`), { code: 'EACCES' });
+      }
+      return realOpen(...args);
+    });
+    try {
+      await mkdir(path.join(root, 'out'));
+      const written = await writeNewFile(root, 'out/denied.json', '{"a":3}');
+      expect(written.durable).toBe(process.platform === 'win32');
+    } finally {
+      spy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   // Codex P1 (round 12): the staging hard link is a full private copy; its removal is
   // required for success, and a failure zeroes the content and withdraws the publish.
   it('writeNewFile fails closed when the staging hard link cannot be removed', async () => {
