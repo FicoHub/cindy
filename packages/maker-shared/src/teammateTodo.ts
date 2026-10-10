@@ -105,15 +105,17 @@ const text = (s: unknown, max: number, required = false): string => {
     throw new TodoError('INVALID_INPUT');
   return s.trim();
 };
-const iso = (s: unknown) => {
+export function validateTodoTimestamp(s: unknown): string {
   if (
     typeof s !== 'string' ||
+    s.length > 64 ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(s) ||
     !Number.isFinite(Date.parse(s))
   )
     throw new TodoError('INVALID_DATE');
   return s;
-};
+}
+const iso = validateTodoTimestamp;
 export function validateTodoDeadline(d: TodoDeadline | null): void {
   if (d === null) return;
   if (
@@ -155,6 +157,45 @@ export function todoLocalDate(now: Date, zone: string): string {
 }
 export function effectiveTodoDeadline(t: TeammateTodo): TodoDeadline | null {
   return t.deadlineOverride ? t.deadlineOverride.value : t.sourceDeadline;
+}
+/** Date-only items sort at the end of their source-local day, without inventing a stored time. */
+export function createTodoDueComparator() {
+  const values = new Map<string, number>();
+  const value = (t: TeammateTodo) => {
+    const d = effectiveTodoDeadline(t);
+    if (!d) return Infinity;
+    if (d.kind === 'instant') return Date.parse(d.at!);
+    const key = d.date + '\0' + d.timeZone;
+    const cached = values.get(key);
+    if (cached !== undefined) return cached;
+    // Locate the next local calendar day, including DST transitions and midnight gaps.
+    const target = Number(d.date.replaceAll('-', ''));
+    const nominal = Date.parse(d.date + 'T00:00:00Z') + 86_400_000;
+    const format = new Intl.DateTimeFormat('en', {
+      timeZone: d.timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    let lo = nominal - 36 * 3_600_000,
+      hi = nominal + 36 * 3_600_000;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2),
+        parts = format.formatToParts(new Date(mid));
+      const date = Number(
+        ['year', 'month', 'day'].map((k) => parts.find((p) => p.type === k)!.value).join(''),
+      );
+      if (date > target) hi = mid;
+      else lo = mid + 1;
+    }
+    values.set(key, lo - 1);
+    return lo - 1;
+  };
+  return (a: TeammateTodo, b: TeammateTodo) => {
+    const left = value(a),
+      right = value(b);
+    return left === right ? 0 : left - right;
+  };
 }
 export function todoOverdue(t: TeammateTodo, now = new Date()): boolean {
   const d = effectiveTodoDeadline(t);
@@ -359,6 +400,8 @@ export function applyTodoPatch(
     if (
       t.sourceDeadline &&
       patch.sourceDeadline &&
+      // Versions are ordered only within one source. Two missing IDs are the legacy stream.
+      t.sourceDeadline.sourceId === patch.sourceDeadline.sourceId &&
       (patch.sourceDeadline.sourceVersion ?? 0) < (t.sourceDeadline.sourceVersion ?? 0)
     )
       throw new TodoError('STALE_SOURCE');
@@ -461,6 +504,7 @@ export function queryTodoItems(items: TeammateTodo[], q: TodoListQuery = {}, now
     throw new TodoError('INVALID_INPUT');
   const search = (q.query ?? '').trim().toLocaleLowerCase();
   if (search.length > 300) throw new TodoError('INVALID_INPUT');
+  const compareDue = createTodoDueComparator();
   const filtered = items
     .filter(
       (t) =>
@@ -478,11 +522,7 @@ export function queryTodoItems(items: TeammateTodo[], q: TodoListQuery = {}, now
     )
     .sort(
       (a, b) =>
-        (q.order !== 'created'
-          ? (effectiveTodoDeadline(a)?.date ?? '9999').localeCompare(
-              effectiveTodoDeadline(b)?.date ?? '9999',
-            )
-          : 0) ||
+        (q.order !== 'created' ? compareDue(a, b) : 0) ||
         a.createdAt.localeCompare(b.createdAt) ||
         a.id.localeCompare(b.id),
     );

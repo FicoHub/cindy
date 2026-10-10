@@ -277,9 +277,29 @@ it('rejects valid JSON with corrupt or overlong text without rewriting the file'
     { outcome: [] },
     { title: 'x'.repeat(301) },
     { progress: 'x'.repeat(4001) },
-    { deadlineCandidate: { value: { kind: 'date', date: '2026-10-13', timeZone: 'Asia/Shanghai' }, reason: {} } },
-    { deadlineCandidate: { value: { kind: 'date', date: '2026-10-13', timeZone: 'Asia/Shanghai' }, reason: 'x'.repeat(2001) } },
-    { deadlineCandidate: { value: { kind: 'date', date: '2026-10-13', timeZone: 'Asia/Shanghai' }, reason: ' ' } },
+    { createdAt: 0 },
+    { updatedAt: [] },
+    { createdAt: {} },
+    { updatedAt: '2026-10-10' },
+    { createdAt: '2026-10-10T00:00:00.' + '0'.repeat(65) + 'Z' },
+    {
+      deadlineCandidate: {
+        value: { kind: 'date', date: '2026-10-13', timeZone: 'Asia/Shanghai' },
+        reason: {},
+      },
+    },
+    {
+      deadlineCandidate: {
+        value: { kind: 'date', date: '2026-10-13', timeZone: 'Asia/Shanghai' },
+        reason: 'x'.repeat(2001),
+      },
+    },
+    {
+      deadlineCandidate: {
+        value: { kind: 'date', date: '2026-10-13', timeZone: 'Asia/Shanghai' },
+        reason: ' ',
+      },
+    },
   ]) {
     const corrupt = structuredClone(clean);
     Object.assign(corrupt.items[0], fields);

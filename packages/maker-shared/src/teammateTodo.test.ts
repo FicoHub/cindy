@@ -5,6 +5,7 @@ import {
   effectiveTodoDeadline,
   preflightTodoEvents,
   queryTodoItems,
+  createTodoDueComparator,
   todoOverdue,
   todoVisible,
   validateTodoDeadline,
@@ -234,6 +235,148 @@ describe('teammate affairs contract', () => {
     expect(queryTodoItems(s.items, { query: '事项 99' }).total).toBe(1);
     expect(queryTodoItems(s.items, { offset: 100 }).offset).toBe(75);
   });
+});
+
+it('orders source versions only within their source, including the legacy stream', () => {
+  const s = emptyTodoState();
+  let t = applyTodoPatch(
+    s,
+    {
+      ...patch,
+      sourceDeadline: {
+        kind: 'date',
+        date: '2026-10-10',
+        timeZone: 'UTC',
+        sourceId: 'mail:A',
+        sourceVersion: 100,
+      },
+    },
+    'one',
+    now,
+  );
+  t = applyTodoPatch(
+    s,
+    {
+      id: t.id,
+      expectedRevision: t.revision,
+      deadlineOverride: {
+        value: { kind: 'date', date: '2026-10-20', timeZone: 'UTC' },
+      },
+      sourceDeadline: {
+        kind: 'date',
+        date: '2026-10-11',
+        timeZone: 'UTC',
+        sourceId: 'issue:B',
+        sourceVersion: 1,
+      },
+    },
+    '',
+    now,
+  );
+  expect(t.sourceDeadline?.sourceId).toBe('issue:B');
+  expect(effectiveTodoDeadline(t)?.date).toBe('2026-10-20');
+  expect(() =>
+    applyTodoPatch(
+      s,
+      {
+        id: t.id,
+        expectedRevision: t.revision,
+        sourceDeadline: { ...t.sourceDeadline!, sourceVersion: 0 },
+      },
+      '',
+      now,
+    ),
+  ).toThrow('STALE_SOURCE');
+  t = applyTodoPatch(
+    s,
+    {
+      id: t.id,
+      expectedRevision: t.revision,
+      sourceDeadline: {
+        kind: 'date',
+        date: '2026-10-12',
+        timeZone: 'UTC',
+        sourceVersion: 2,
+      },
+    },
+    '',
+    now,
+  );
+  expect(() =>
+    applyTodoPatch(
+      s,
+      {
+        id: t.id,
+        expectedRevision: t.revision,
+        sourceDeadline: { ...t.sourceDeadline!, sourceVersion: 1 },
+      },
+      '',
+      now,
+    ),
+  ).toThrow('STALE_SOURCE');
+});
+
+it('orders exact instants and source-local date ends, retaining creation/ID tie breakers', () => {
+  const s = emptyTodoState();
+  const add = (id: string, deadline: NonNullable<TodoPatch['sourceDeadline']>, created = now) =>
+    applyTodoPatch(s, { ...patch, key: id, sourceDeadline: deadline }, id, created);
+  add(
+    'late',
+    {
+      kind: 'instant',
+      date: '2026-10-10',
+      timeZone: 'UTC',
+      at: '2026-10-10T17:00:00Z',
+    },
+    new Date('2026-10-01'),
+  );
+  add('early', {
+    kind: 'instant',
+    date: '2026-10-10',
+    timeZone: 'UTC',
+    at: '2026-10-10T09:00:00Z',
+  });
+  add('date-shanghai', {
+    kind: 'date',
+    date: '2026-10-10',
+    timeZone: 'Asia/Shanghai',
+  });
+  add('date-utc', { kind: 'date', date: '2026-10-10', timeZone: 'UTC' });
+  add('next-local-date', {
+    kind: 'instant',
+    date: '2026-10-11',
+    timeZone: 'Asia/Shanghai',
+    at: '2026-10-11T01:00:00+08:00',
+  });
+  expect(queryTodoItems(s.items).items.map((t) => t.id)).toEqual([
+    'early',
+    'date-shanghai',
+    'late',
+    'next-local-date',
+    'date-utc',
+  ]);
+  expect(queryTodoItems(s.items, { order: 'created' }).items[0].id).toBe('late');
+  const compare = createTodoDueComparator();
+  const dst = add('dst-date', {
+    kind: 'date',
+    date: '2026-11-01',
+    timeZone: 'America/New_York',
+  });
+  const before = add('dst-before', {
+    kind: 'instant',
+    date: '2026-11-01',
+    timeZone: 'America/New_York',
+    at: '2026-11-02T04:30:00Z',
+  });
+  const after = add('dst-after', {
+    kind: 'instant',
+    date: '2026-11-02',
+    timeZone: 'America/New_York',
+    at: '2026-11-02T05:30:00Z',
+  });
+  expect(compare(before, dst)).toBeLessThan(0);
+  expect(compare(dst, after)).toBeLessThan(0);
+  expect(dst.sourceDeadline?.at).toBeUndefined();
 });
 
 it('a source label refresh retains its existing evidence and scope when optional metadata is omitted', () => {

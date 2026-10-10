@@ -8,6 +8,7 @@ import {
   normalizeTodoKey,
   todoVisible,
   validateTodoDeadline,
+  validateTodoTimestamp,
   type TodoPatch,
   type TodoState,
   type TeammateTodo,
@@ -15,6 +16,15 @@ import {
 import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
 import type { WorkbenchTaskJudgment } from '../../shared/botWorkbench.js';
 import { parseWorkbenchTaskId } from '../../shared/botWorkbench.js';
+
+function validTimestamp(value: unknown): boolean {
+  try {
+    validateTodoTimestamp(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface TodoIngestInput {
   source: string;
@@ -160,11 +170,7 @@ export function createBotTodoStore(
               typeof a.label !== 'string',
           ) ||
           t.history.some(
-            (h) =>
-              !h ||
-              typeof h.summary !== 'string' ||
-              !h.summary ||
-              !Number.isFinite(Date.parse(h.at)),
+            (h) => !h || typeof h.summary !== 'string' || !h.summary || !validTimestamp(h.at),
           ) ||
           (t.next !== null &&
             (!t.next ||
@@ -174,7 +180,7 @@ export function createBotTodoStore(
           (t.decision !== null &&
             (!t.decision ||
               !['deleted', 'muted', 'later'].includes(t.decision.kind) ||
-              (t.decision.kind === 'later' && !Number.isFinite(Date.parse(t.decision.until!))))) ||
+              (t.decision.kind === 'later' && !validTimestamp(t.decision.until)))) ||
           (t.action !== null &&
             (!t.action ||
               typeof t.action.requestId !== 'string' ||
@@ -201,8 +207,8 @@ export function createBotTodoStore(
           typeof t.value !== 'string' ||
           t.value.length > 4000 ||
           !['assigned', 'discovered'].includes(t.origin) ||
-          !Number.isFinite(Date.parse(t.createdAt)) ||
-          !Number.isFinite(Date.parse(t.updatedAt))
+          !validTimestamp(t.createdAt) ||
+          !validTimestamp(t.updatedAt)
         )
           throw new TodoError('CORRUPT_STORE');
         try {
@@ -214,7 +220,8 @@ export function createBotTodoStore(
               typeof t.deadlineCandidate.reason !== 'string' ||
               !t.deadlineCandidate.reason.trim() ||
               t.deadlineCandidate.reason.length > 2000
-            ) throw new TodoError('CORRUPT_STORE');
+            )
+              throw new TodoError('CORRUPT_STORE');
           }
         } catch {
           throw new TodoError('CORRUPT_STORE');
@@ -351,7 +358,8 @@ export function createBotTodoStore(
     ) =>
       mutate((s) => {
         const t = s.items.find((t) => t.id === id);
-        if (!t?.action || t.action.requestId !== requestId) return null;
+        if (!t?.action || t.action.requestId !== requestId || t.action.state !== 'received')
+          return null;
         t.action = {
           ...t.action,
           state: result.ok ? 'accepted' : result.uncertain ? 'unknown' : 'failed',

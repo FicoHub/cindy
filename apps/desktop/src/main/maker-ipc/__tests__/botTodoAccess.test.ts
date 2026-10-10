@@ -4,14 +4,16 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const env = vi.hoisted(() => ({
   owner: 'owner-one',
+  generation: 1,
   root: '',
   active: true,
   pending: false,
   projects: ['/cindy'],
   notify: vi.fn(),
+  cancel: vi.fn(async () => true),
 }));
 vi.mock('../../appSessionState.js', () => ({
-  activeOwnerScopeKey: () => env.owner,
+  activeOwnerScopeKey: () => `${env.owner}:${env.generation}`,
   ownerScopedUserDataPath: () => env.root,
   isAppSessionBoundaryPending: () => env.pending,
 }));
@@ -47,16 +49,29 @@ vi.mock('../botWorkbenchTools.js', () => ({
       ? { ok: true, botId: 'bot-one' }
       : { ok: false, errorCode: 'NOT_A_BOT_SESSION' },
 }));
-import { configureBotTodoDispatch, todoAccess, todoForCaller } from '../botTodoAccess';
+vi.mock('../../localDb/agentInputQueueSnapshots.js', () => ({
+  saveCancelledInputDelivery: env.cancel,
+}));
+import {
+  configureBotTodoDispatch,
+  todoAccess,
+  todoForCaller,
+  settleBotTodoForSession,
+} from '../botTodoAccess';
+import { createBotTodoStore } from '../botTodoStore';
+import { botProfileDir } from '../botProfileFolder';
 import { createBotTodoDispatch } from '../botTodoDispatch';
 let root = '';
 beforeEach(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), 'todo-owner-'));
   env.root = root;
   env.owner = 'owner-one';
+  env.generation = 1;
   env.active = true;
   env.pending = false;
   env.notify.mockClear();
+  env.cancel.mockReset().mockResolvedValue(true);
+  configureBotTodoDispatch(async () => ({ ok: true }));
 });
 afterEach(async () => rm(root, { recursive: true, force: true }));
 const patch = {
@@ -143,7 +158,8 @@ describe('Todo public access', () => {
     const send = vi.fn(async () => ({ ok: true, queued: true }));
     const bridge = createBotTodoDispatch(send);
     configureBotTodoDispatch(bridge.dispatch);
-    const access = await todoAccess('bot-one'), todo = await access.patch(patch);
+    const access = await todoAccess('bot-one'),
+      todo = await access.patch(patch);
     const queued = await access.act(todo.id, todo.revision, 'queued-one');
     expect(queued?.action?.state).toBe('received');
     await bridge.settle('different-session', 'queued-one', false);
@@ -160,14 +176,100 @@ describe('Todo public access', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
   it('rejects an old-owner queue receipt without writing to either account', async () => {
-    const bridge = createBotTodoDispatch(async () => ({ ok: true, queued: true }));
+    const bridge = createBotTodoDispatch(
+      async () => ({ ok: true, queued: true }),
+      settleBotTodoForSession,
+    );
     configureBotTodoDispatch(bridge.dispatch);
-    const access = await todoAccess('bot-one'), todo = await access.patch(patch);
+    const access = await todoAccess('bot-one'),
+      todo = await access.patch(patch);
     await access.act(todo.id, todo.revision, 'old-owner');
     env.owner = 'owner-two';
-    await expect(bridge.settle('canonical-one', 'old-owner', false)).rejects.toMatchObject({ code: 'OWNER_SCOPE_CHANGED' });
+    env.root = path.join(root, 'other-owner');
+    await expect(bridge.settle('canonical-one', 'old-owner', false)).rejects.toMatchObject({
+      code: 'OWNER_SCOPE_CHANGED',
+    });
     env.owner = 'owner-one';
+    env.root = root;
+    env.generation++;
+    const restoredAccess = await todoAccess('bot-one');
+    expect((await restoredAccess.list()).items[0].action?.state).toBe('received');
+    await bridge.settle('canonical-one', 'old-owner', false);
+    expect((await restoredAccess.list()).items[0].action?.state).toBe('failed');
+  });
+  it('rebuilds queued associations from disk after losing the dispatch bridge', async () => {
+    const old = createBotTodoDispatch(async () => ({ ok: true, queued: true }));
+    configureBotTodoDispatch(old.dispatch);
+    const access = await todoAccess('bot-one'),
+      todo = await access.patch(patch);
+    await access.act(todo.id, todo.revision, 'restart-one');
+    const restored = createBotTodoDispatch(
+      async () => ({ ok: true, queued: true }),
+      settleBotTodoForSession,
+    );
+    configureBotTodoDispatch(restored.dispatch);
+    await restored.settle('another-session', 'restart-one', false);
     expect((await access.list()).items[0].action?.state).toBe('received');
+    await restored.settle('canonical-one', 'restart-one', false);
+    expect((await access.list()).items[0].action?.state).toBe('failed');
+    expect(env.cancel).toHaveBeenCalledWith('canonical-one', 'restart-one');
+    await access.act(todo.id, todo.revision, 'restart-two');
+    // Lose a second bridge while queued; actual dispatch can still resolve the same Todo.
+    const again = createBotTodoDispatch(async () => ({ ok: true }), settleBotTodoForSession);
+    await again.settle('canonical-one', 'restart-two', true);
+    await again.settle('canonical-one', 'restart-two', false);
+    expect((await access.list()).items[0].action?.state).toBe('accepted');
+    expect((await access.list()).items[0].status).toBe('open');
+  });
+  it('reconciles orphaned prepare receipts without replaying ambiguous persisted input', async () => {
+    const access = await todoAccess('bot-one'),
+      todo = await access.patch(patch);
+    const disk = createBotTodoStore(
+      path.join(botProfileDir(env.root, 'bot-one'), 'todos.v1.json'),
+      async () => ({}),
+    );
+    // Process loss after prepare but before enqueue leaves only the durable Todo receipt.
+    await disk.prepareAction(todo.id, todo.revision, 'orphan');
+    const inspect = vi.fn(async (_session: string, ids: string[]) =>
+      ids.map((requestId) => ({ requestId, state: 'cancelled' as const })),
+    );
+    const send = vi.fn(async () => ({ ok: true, queued: true }));
+    configureBotTodoDispatch(send, inspect);
+    expect((await access.list()).items[0].action?.state).toBe('failed');
+    await access.act(todo.id, todo.revision, 'after-orphan');
+    expect(send).toHaveBeenCalledOnce();
+    configureBotTodoDispatch(send, async (_session, ids) =>
+      ids.map((requestId) => ({ requestId, state: 'pending' })),
+    );
+    expect((await access.list()).items[0].action?.state).toBe('received');
+    configureBotTodoDispatch(send, async (_session, ids) =>
+      ids.map((requestId) => ({ requestId, state: 'unknown' })),
+    );
+    expect((await access.list()).items[0].action?.state).toBe('unknown');
+    await access.act(todo.id, todo.revision, 'no-blind-replay');
+    expect(send).toHaveBeenCalledOnce();
+  });
+  it('does not reconcile an in-process prepare while enqueue is still in flight', async () => {
+    let finish!: (r: { ok: boolean; queued: boolean }) => void;
+    const send = vi.fn(
+      () =>
+        new Promise<{ ok: boolean; queued: boolean }>((r) => {
+          finish = r;
+        }),
+    );
+    const inspect = vi.fn(async (_session: string, ids: string[]) =>
+      ids.map((requestId) => ({ requestId, state: 'cancelled' as const })),
+    );
+    configureBotTodoDispatch(send, inspect);
+    const access = await todoAccess('bot-one'),
+      todo = await access.patch(patch);
+    const first = access.act(todo.id, todo.revision, 'preparing');
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    await access.act(todo.id, todo.revision, 'preparing');
+    expect((await access.list()).items[0].action?.state).toBe('received');
+    expect(inspect).not.toHaveBeenCalled();
+    finish({ ok: true, queued: true });
+    await first;
   });
 });
 

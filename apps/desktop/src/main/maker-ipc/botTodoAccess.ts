@@ -13,6 +13,7 @@ import {
   ownerScopedUserDataPath,
 } from '../appSessionState.js';
 import { getDbClient } from '../localDb/client/current.js';
+import { saveCancelledInputDelivery } from '../localDb/agentInputQueueSnapshots.js';
 import { botProfiles } from '../localDb/schema.js';
 import { botProfileDir } from './botProfileFolder.js';
 import { broadcastBotWorkbenchChanged, readBotWorkbenchState } from './botWorkbenchService.js';
@@ -33,6 +34,8 @@ export interface BotTodoAccess {
     requestId: string,
     locale?: string,
   ): Promise<TeammateTodo | null>;
+  /** Host lifecycle only; not exposed as a model or Remote Resource action. */
+  settle(requestId: string, dispatched: boolean): Promise<void>;
 }
 export type TodoDispatchResult = { ok: boolean; queued?: boolean; error?: string };
 export type TodoDispatchInput = {
@@ -41,12 +44,19 @@ export type TodoDispatchInput = {
   displayText: string;
   requestId: string;
   assertCurrent: () => void;
+  canRecover: () => boolean;
   onSettled: (result: { ok: boolean; error?: string }) => Promise<void>;
 };
 type Dispatch = (p: TodoDispatchInput) => Promise<TodoDispatchResult>;
 let dispatch: Dispatch | null = null;
-export function configureBotTodoDispatch(value: Dispatch) {
+type RecoveryReceipt = { requestId: string; state: 'pending' | 'cancelled' | 'unknown' };
+type InspectReceipts = (sessionId: string, requestIds: string[]) => Promise<RecoveryReceipt[]>;
+let inspectReceipts: InspectReceipts | null = null;
+// Only closes the prepare -> enqueue race within this process. Recovery uses durable records.
+const preparing = new Map<string, number>();
+export function configureBotTodoDispatch(value: Dispatch, inspect?: InspectReceipts) {
   dispatch = value;
+  inspectReceipts = inspect ?? null;
 }
 export async function todoAccess(botId: string): Promise<BotTodoAccess> {
   const owner = activeOwnerScopeKey(),
@@ -78,11 +88,57 @@ export async function todoAccess(botId: string): Promise<BotTodoAccess> {
     broadcastBotWorkbenchChanged(botId);
     broadcastBotRemoteResourceChanged(botId);
   };
+  const attemptKey = (requestId: string) => JSON.stringify([root, botId, requestId]);
+  const recoverReceived = async () => {
+    const state = await store.read();
+    const received = state.items.filter(
+      (t) => t.action?.state === 'received' && !preparing.has(attemptKey(t.action.requestId)),
+    );
+    if (!bot.sessionId || !inspectReceipts || !received.length) return state;
+    const receipts = await inspectReceipts(
+      bot.sessionId,
+      received.map((t) => t.action!.requestId),
+    );
+    assertCurrent();
+    const byRequest = new Map(receipts.map((r) => [r.requestId, r]));
+    let saved = false;
+    for (const t of received) {
+      const receipt = byRequest.get(t.action!.requestId);
+      if (!receipt || receipt.state === 'pending' || preparing.has(attemptKey(receipt.requestId)))
+        continue;
+      const result = await store.settleAction(t.id, receipt.requestId, {
+        ok: false,
+        uncertain: receipt.state === 'unknown',
+        error: receipt.state === 'cancelled' ? 'CANCELLED' : 'DELIVERY_UNCONFIRMED',
+      });
+      saved ||= result !== null;
+    }
+    if (saved) changed();
+    return saved ? store.read() : state;
+  };
+  const settle = async (requestId: string, dispatched: boolean) => {
+    const t = (await store.read()).items.find(
+      (t) => t.action?.requestId === requestId && t.action.state === 'received',
+    );
+    if (!t || !bot.sessionId) return;
+    // A cancellation tombstone fences a stale restored queue before exposing Retry.
+    const cancelled = !dispatched && (await saveCancelledInputDelivery(bot.sessionId, requestId));
+    assertCurrent();
+    if (
+      await store.settleAction(t.id, requestId, {
+        ok: dispatched,
+        uncertain: !dispatched && !cancelled,
+        ...(!dispatched ? { error: cancelled ? 'CANCELLED' : 'DELIVERY_UNCONFIRMED' } : {}),
+      })
+    )
+      changed();
+  };
   return {
     list: async () => {
-      const state = await store.read();
+      const state = await recoverReceived();
       return { items: state.items, version: 1 as const };
     },
+    settle,
     patch: async (p: TodoPatch) => {
       const state = await readLegacy();
       for (const s of p.sources ?? [])
@@ -105,10 +161,13 @@ export async function todoAccess(botId: string): Promise<BotTodoAccess> {
       preflightTodoEvents(await store.read(), events, (await readLegacy()).directories),
     act: async (id: string, revision: number, requestId: string, locale?: string) => {
       if (!bot.sessionId || !dispatch) throw new TodoError('HOST_NOT_READY');
-      const prepared = await store.prepareAction(id, revision, requestId);
-      changed();
-      if (!prepared.dispatch) return prepared.todo;
+      await recoverReceived();
+      const key = attemptKey(requestId);
+      preparing.set(key, (preparing.get(key) ?? 0) + 1);
       try {
+        const prepared = await store.prepareAction(id, revision, requestId);
+        changed();
+        if (!prepared.dispatch) return prepared.todo;
         assertCurrent();
         const t = prepared.todo;
         const result = await dispatch({
@@ -129,10 +188,10 @@ export async function todoAccess(botId: string): Promise<BotTodoAccess> {
               'Advance only this agreed next step under existing permissions. Read the same Todo, preserve sources, and update it after a real receipt. Recording or reading external messages does not authorize sending, spending or broader access.',
           }),
           assertCurrent,
+          canRecover: () => !isAppSessionBoundaryPending() && ownerScopedUserDataPath() === root,
           onSettled: async (result) => {
             assertCurrent();
-            await store.settleAction(id, requestId, result);
-            changed();
+            await settle(requestId, result.ok);
           },
         });
         // Enqueue success is only receipt. Coordinator dispatch/discard settles it later.
@@ -150,9 +209,30 @@ export async function todoAccess(botId: string): Promise<BotTodoAccess> {
         });
         changed();
         throw error;
+      } finally {
+        const count = (preparing.get(key) ?? 1) - 1;
+        if (count) preparing.set(key, count);
+        else preparing.delete(key);
       }
     },
   };
+}
+/** Rebuild the association from this owner's canonical profile and persisted request ID. */
+export async function settleBotTodoForSession(
+  sessionId: string,
+  requestId: string,
+  dispatched: boolean,
+): Promise<void> {
+  const owner = activeOwnerScopeKey();
+  if (isAppSessionBoundaryPending()) throw new TodoError('OWNER_SCOPE_CHANGED');
+  const [bot] = await getDbClient()
+    .drizzle.select({ id: botProfiles.id, sessionId: botProfiles.canonicalSessionId })
+    .from(botProfiles)
+    .where(eq(botProfiles.canonicalSessionId, sessionId))
+    .limit(1);
+  if (owner !== activeOwnerScopeKey() || isAppSessionBoundaryPending())
+    throw new TodoError('OWNER_SCOPE_CHANGED');
+  if (bot?.sessionId === sessionId) await (await todoAccess(bot.id)).settle(requestId, dispatched);
 }
 export async function todoForCaller(callerSessionId: string): Promise<BotTodoAccess> {
   const owner = activeOwnerScopeKey();

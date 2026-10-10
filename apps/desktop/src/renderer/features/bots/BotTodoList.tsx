@@ -15,6 +15,7 @@ import {
 } from '@/contexts/dataOwnerGeneration';
 import {
   effectiveTodoDeadline,
+  createTodoDueComparator,
   todoDateLabel,
   todoOverdue,
   todoLocalDate,
@@ -92,16 +93,14 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
     api = useRef(transport);
   api.current = transport;
   const current = () => mounted.current && isDataOwnerGenerationCurrent(scope.current);
-  const sorted = (rows: TeammateTodo[], kind: string) =>
-    [...rows].sort((a, b) =>
+  const sorted = (rows: TeammateTodo[], kind: string) => {
+    const compareDue = createTodoDueComparator();
+    return [...rows].sort((a, b) =>
       kind === 'dueOrder'
-        ? (effectiveTodoDeadline(a)?.date ?? '9999').localeCompare(
-            effectiveTodoDeadline(b)?.date ?? '9999',
-          ) ||
-          a.createdAt.localeCompare(b.createdAt) ||
-          a.id.localeCompare(b.id)
+        ? compareDue(a, b) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
         : a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
     );
+  };
   const refresh = useCallback(async () => {
     const request = ++epoch.current;
     try {
@@ -508,7 +507,9 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
           value={order}
           onChange={(e) => {
             setOrder(e.target.value);
-            initialOrder.current = new Map(sorted(items, e.target.value).map((x, rank) => [x.id, rank]));
+            initialOrder.current = new Map(
+              sorted(items, e.target.value).map((x, rank) => [x.id, rank]),
+            );
             setPage(0);
             setDonePage(0);
           }}

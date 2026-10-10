@@ -84,11 +84,20 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
   const [form, setForm] = useState<Record<string, string>>({});
   const [showActions, setShowActions] = useState(false);
   const pending = useRef(false);
+  const operationEpoch = useRef(0);
   const formRevision = useRef<number | undefined>(undefined);
   const epoch = useRef(0),
     binding = useRef(''),
     mounted = useRef(true);
   binding.current = `${deviceId}:${botId}:${visible}:${online}`;
+  useEffect(() => {
+    // A lost link invalidates this panel's UI request, not the host's operation.
+    // Do not replay it on reconnect; reload the host record instead.
+    operationEpoch.current++;
+    pending.current = false;
+    setBusy(false);
+    setLoading(false);
+  }, [deviceId, botId, visible, online]);
   const readingOrder = useRef<{ key: string; ids: string[] }>({ key: '', ids: [] });
   const ref = { collectionId: 'teammates', kind: 'bot', id: 'todos:' + botId };
   const reload = useCallback(async () => {
@@ -185,6 +194,9 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
     pending.current = true;
     setBusy(true);
     const scope = binding.current;
+    const operation = ++operationEpoch.current;
+    const current = () =>
+      mounted.current && scope === binding.current && operation === operationEpoch.current;
     try {
       await openLink(deviceId);
       await invokeRemoteResourceAction(
@@ -193,18 +205,19 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
         { collectionId: 'teammates', resourceRef: ref, actionId, input },
         i18n.language,
       );
-      if (mounted.current && scope === binding.current) {
+      if (current()) {
         setEditing(false);
         setDetail(null);
         setShowActions(false);
         await reload();
       }
     } catch (e) {
-      if (mounted.current && scope === binding.current)
-        setError(String(e).includes('CONFLICT') ? 'conflict' : 'error');
+      if (current()) setError(String(e).includes('CONFLICT') ? 'conflict' : 'error');
     } finally {
-      pending.current = false;
-      if (mounted.current && scope === binding.current) setBusy(false);
+      if (operation === operationEpoch.current) {
+        pending.current = false;
+        if (mounted.current) setBusy(false);
+      }
     }
   };
   const update = (item: TeammateTodo, patch: TodoPatch) =>
@@ -574,11 +587,11 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
             </View>
             <View style={styles.toolbar}>
               {button(
-                tr(filter.view === 'hidden' ? 'hidden' : 'open'),
+                tr(filter.view === 'open' ? 'hidden' : 'open'),
                 () => {
                   setFilter({
                     ...filter,
-                    view: filter.view === 'hidden' ? 'open' : 'hidden',
+                    view: filter.view === 'open' ? 'hidden' : 'open',
                   });
                   setOffset(0);
                 },
