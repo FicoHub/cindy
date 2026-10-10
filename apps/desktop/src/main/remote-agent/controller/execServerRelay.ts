@@ -94,7 +94,7 @@ function fromFileUrl(value: unknown, base: string): string | null {
 // 方法先从严)。`fs/walk`、`fs/canonicalize`、`fs/open` 曾落进写入：计划模式下工作区里的项目 Skill
 // 加载被拒，工作区外的单文件读取也被当成区外写入拒掉(#5764)。
 
-/** 读单个文件或单层目录(`fs/open` 只开只读句柄，内容随后经 `fs/readBlock` 按句柄读取)。 */
+/** 读单个文件或单层目录；fs/open 的显式写入模式在下方按写入处理。 */
 const READ_METHODS = new Set(['fs/readFile', 'fs/open', 'fs/readDirectory', 'fs/readDir', 'fs/listDirectory']);
 /** 递归遍历：按目录级读取过闸门，根在工作区外与本机任务的搜索一样要本机确认。 */
 const TREE_READ_METHODS = new Set(['fs/walk']);
@@ -114,7 +114,11 @@ export function execServerActions(method: string, params: unknown, cwd: string):
     .map((key) => fromFileUrl(record[key], cwd))
     .filter((value): value is string => !!value);
   if (TREE_READ_METHODS.has(method)) return paths.map((target) => ({ kind: 'read', path: target, scope: 'tree' }));
-  const kind = READ_METHODS.has(method) ? 'read' : 'write';
+  // fs/open also handles writes: Codex replace/write mode creates or truncates a file, while
+  // the later fs/writeBlock request carries only a handle and no path. Check the write at open.
+  // An omitted mode is the legacy read-only shape; every explicit unknown mode is fail-closed.
+  const readOnlyOpen = method !== 'fs/open' || record.mode === undefined || record.mode === 'read';
+  const kind = READ_METHODS.has(method) && readOnlyOpen ? 'read' : 'write';
   return paths.map((target) => ({ kind, path: target }) as ExecutorAction);
 }
 

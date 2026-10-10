@@ -91,6 +91,15 @@ describe('exec-server relay with confirmation on this computer', () => {
     expect(pending).toEqual([]);
   });
 
+  it('checks fs/open replace as a write before allowing the handle stream', async () => {
+    const { send, pending, replies } = setup();
+    send({ id: 1, method: 'fs/open', params: { handleId: 'h1', mode: 'replace', path: path.join(root, '.env') } });
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    expect(pending[0].action).toEqual({ kind: 'write', path: path.join(root, '.env') });
+    pending[0].answer(false);
+    await vi.waitFor(() => expect(replies).toEqual([{ id: 1, error: { code: -32001, message: 'needs confirmation' } }]));
+  });
+
   it('keeps later messages behind one that waits for the user, then forwards them in order', async () => {
     const { send, sentIds, pending } = setup();
     send({ id: 1, method: 'fs/readFile', params: { path: path.join(root, '.env') } });

@@ -181,6 +181,8 @@ describe('exec-server relay gate', () => {
       .toEqual([{ kind: 'read', path: skills, scope: 'tree' }]);
     expect(execServerActions('fs/open', { handleId: 'h1', path: pathToFileURL(path.join(root, 'a.png')).href }, '/w'))
       .toEqual([{ kind: 'read', path: path.join(root, 'a.png') }]);
+    expect(execServerActions('fs/open', { handleId: 'h2', mode: 'replace', path: pathToFileURL(path.join(root, 'a.png')).href }, '/w'))
+      .toEqual([{ kind: 'write', path: path.join(root, 'a.png') }]);
     expect(execServerActions('fs/canonicalize', { path: pathToFileURL(skills).href }, '/w')).toEqual([]);
     // 不认识的 fs 方法仍从严按写入。
     expect(execServerActions('fs/futureMethod', { path: pathToFileURL(skills).href }, '/w'))
@@ -200,6 +202,7 @@ describe('exec-server relay gate', () => {
     const plan = new ExecutorGate(new ExecutorWorkspace({ workingDir: project }), 'plan');
     expect(decide(plan, 'fs/walk', { path: skills })).toEqual([true]);
     expect(decide(plan, 'fs/open', { handleId: 'h1', path: agentsMd })).toEqual([true]);
+    expect(decide(plan, 'fs/open', { handleId: 'h2', mode: 'replace', path: agentsMd })).toEqual([false]);
 
     // 任务在子目录：上级目录的单文件读取照读取规则放行，递归遍历仍要本机确认。
     const sub = new ExecutorGate(new ExecutorWorkspace({ workingDir: client }), 'normal');
