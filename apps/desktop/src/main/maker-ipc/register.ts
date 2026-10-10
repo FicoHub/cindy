@@ -1,3 +1,4 @@
+import { configureBotTodoDispatch } from './botTodoAccess.js';
 import { assertBotTaskCoordination, classifySessionMessagePurpose, coordinationInput } from './botTaskCoordination.js';
 import type { BotTaskCoordination, SessionMessagePurpose } from '../../shared/botTaskCoordination.js';
 import { openSession, setSessionOpeningModelAdmission } from '../localDb/sessionOpening.js';
@@ -9887,6 +9888,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return {};
     }
   }
+
+  configureBotTodoDispatch(async ({sessionId,message,displayText,requestId,assertCurrent}) => {
+    assertCurrent();
+    const result = await sendToSessionInternal({targetSessionId:sessionId,message,persistedContent:displayText,clientId:requestId,onAccepted:assertCurrent,
+      autoReviewUserText:{kind:'delegated-continuation'}});
+    assertCurrent();return {ok:result.ok, ...(!result.ok ? {error:result.message} : {})};
+  });
 
   async function sendToSessionInternal(params: {
     botTaskCoordination?: BotTaskCoordination;
