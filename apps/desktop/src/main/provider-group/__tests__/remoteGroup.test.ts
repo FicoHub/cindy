@@ -488,8 +488,8 @@ describe('old tasks already running on the group computer', () => {
     expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
   });
 
-  it('keeps an existing old-task binding pending when its group read times out before reopening', async () => {
-    const h = harness({ row: { sdkSessionId: 'native-1' }, live: false });
+  it('keeps an existing bound task pending when its group read times out before reopening', async () => {
+    const h = harness({ live: false });
     h.bindings.set('s1', { providerId: 'anthropic', memberKey: OWNER_LOCAL.key, groupDeviceId: OWNER, at: 1 });
     h.remote.readGroup.mockResolvedValueOnce(undefined);
 

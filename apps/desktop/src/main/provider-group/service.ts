@@ -1184,7 +1184,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
           .catch(() => undefined);
         const hasRun = Boolean(row.sdkSessionId || (await deps.hasAssistantHistory(sessionId)));
         if (config === undefined) {
-          if (!hasRun || deps.hasLiveSession?.(sessionId) !== false) return null;
+          if (deps.hasLiveSession?.(sessionId) !== false) return null;
           const member = pendingMember(
             existingBinding.memberKey,
             row.providerId ?? existingBinding.providerId,
