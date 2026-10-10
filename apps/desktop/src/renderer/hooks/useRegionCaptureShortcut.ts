@@ -210,9 +210,12 @@ export interface RegionCaptureTarget {
  */
 const captureRouteOwners = new Map<string, Set<{ target: RegionCaptureTarget; owner: ReturnType<typeof getDataOwnerGeneration> }>>();
 
-/** Called only by a mounted, writable route-owner view after its ownership gate. */
-export function registerRegionCaptureRouteOwner(pathname: string, sessionId: string): () => void {
-  const entry = { target: { sessionId, draftKey: sessionId }, owner: getDataOwnerGeneration() };
+/**
+ * Called only by a mounted, writable route-owner view after its ownership gate.
+ * draftKey must be the visible composer's live scope (a queue-edit draft while editing a queued message).
+ */
+export function registerRegionCaptureRouteOwner(pathname: string, sessionId: string, draftKey: string = sessionId): () => void {
+  const entry = { target: { sessionId, draftKey }, owner: getDataOwnerGeneration() };
   const entries = captureRouteOwners.get(pathname) ?? new Set();
   entries.add(entry);
   captureRouteOwners.set(pathname, entries);

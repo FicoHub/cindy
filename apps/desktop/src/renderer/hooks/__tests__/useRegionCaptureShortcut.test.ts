@@ -229,6 +229,19 @@ it('resolves only a mounted verified Bot route owner and revokes it on unmount/a
 });
 
 
+it('binds the route shortcut to the live queue-edit draft instead of the session draft', () => {
+  const path = '/cc-agent/session-q';
+  setDataOwnerGeneration('account-a', 1);
+  const release = registerRegionCaptureRouteOwner(path, 'session-q', 'queue-edit:session-q:c1');
+  const releaseComposer = registerComposerCaptureDraftFlusher('queue-edit:session-q:c1', () => {}, () => true);
+  try {
+    expect(resolveRegionCaptureTargetFromPath(path)).toEqual({
+      sessionId: 'session-q',
+      draftKey: 'queue-edit:session-q:c1',
+    });
+  } finally { releaseComposer(); release(); ownerTesting.reset(); }
+});
+
 it('preserves sibling live edits through real draft notifications and their later save', () => {
   const key = 'capture-notification-siblings';
   const owner = Symbol('owner');
