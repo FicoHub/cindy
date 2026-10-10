@@ -29,21 +29,28 @@ export async function boundGhostResult(
     preview += point;
   }
   let savedTo: string | undefined;
+  let cleanupUnconfirmed = false;
   try {
     savedTo = await deps.saveLargeGhostResult?.(text);
-  } catch {
+  } catch (err) {
     // Never echo storage errors (which can contain private paths), or retry the
     // plugin: a successful write operation may already have had side effects.
+    // The one structured state kept is a remote withdrawal that could not be confirmed:
+    // the complete private output may remain on that host without a ref lifecycle.
+    cleanupUnconfirmed = (err as { code?: unknown } | null)?.code === "REMOTE_SPILL_CLEANUP_UNCONFIRMED";
   }
   const pointer = {
     ...(savedTo ? { saved_to: savedTo } : {}),
     bytes,
     truncated: true,
     complete_result_saved: !!savedTo,
+    ...(cleanupUnconfirmed ? { cleanup_unconfirmed: true } : {}),
     preview,
     hint: savedTo
       ? "The complete JSON result is saved at saved_to. Read selected portions with file tools; do not load the whole file into context. Do not repeat the original tool action."
-      : "The tool already ran, but its oversized result could not be saved. Only this preview is available. Do not repeat a side-effecting action; use a narrower read query to recover data.",
+      : cleanupUnconfirmed
+        ? "The tool already ran, but its oversized result could not be saved, and withdrawing the partially stored copy on the remote host was not confirmed: private output may remain there. Only this preview is available. Do not repeat a side-effecting action; use a narrower read query to recover data."
+        : "The tool already ran, but its oversized result could not be saved. Only this preview is available. Do not repeat a side-effecting action; use a narrower read query to recover data.",
   };
   // Preserve card/media routing, setup advice, and original success/error status.
   // All fields, including ones too large to keep inline, also live in the file.

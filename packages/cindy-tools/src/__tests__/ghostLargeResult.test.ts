@@ -67,6 +67,23 @@ describe("ghost_call oversized result boundary", () => {
     expect(call).toHaveBeenCalledOnce();
   });
 
+  // Codex P1 (round 32): an unconfirmed remote withdrawal stays a structured state; the
+  // raw storage diagnostic is still never echoed.
+  it("keeps an unconfirmed remote cleanup visible while hiding the storage diagnostic", async () => {
+    const call = vi.fn(async () => ({ ok: true as const, result: { data: "x".repeat(70000) } }));
+    const save = vi.fn(async () => {
+      throw Object.assign(new Error("remote spill rollback; cleanup unconfirmed /secret/host-path"), { code: "REMOTE_SPILL_CLEANUP_UNCONFIRMED" });
+    });
+    const response = await handleGhostCall({ callGhostTool: call, saveLargeGhostResult: save }, input);
+    const projected = JSON.parse(response.content[0].text);
+    expect(projected).toMatchObject({ ok: true, complete_result_saved: false, cleanup_unconfirmed: true, truncated: true });
+    expect(projected.result).toMatchObject({ cleanup_unconfirmed: true });
+    expect(projected.hint).toContain("private output may remain");
+    expect(response.content[0].text).not.toContain("/secret");
+    expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(GHOST_RESULT_MAX_BYTES);
+    expect(call).toHaveBeenCalledOnce();
+  });
+
   // Codex P1 (round 13): a rejected callGhostTool must not bypass the bound.
   it("bounds an oversized thrown error from callGhostTool through the same helper", async () => {
     const message = "transport failure: " + "y".repeat(200000);
