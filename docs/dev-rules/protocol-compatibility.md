@@ -453,6 +453,8 @@ Desktop 的任务行、置顶卡片与任务顶部通过既有 `maker:schedule:l
 截断时记录可选 `checkSucceeded: true`；错误、超时、取消和退避跳过不构成恢复。
 该标记只恢复此前的检查故障，不恢复 Agent 执行失败；旧脚本不输出、旧客户端不识别均不影响
 原有退出码语义。实现见 `scheduler-host/pre-run-hook.ts` 与 `scheduler-host/storage.ts`。
+macOS/Linux 上命令先经 `sh -n` 语法预检：shell 语法错误的退出码同为 2，不预检会被误记为
+跳过而让任务悄悄停摆。保存时直接拒绝（INVALID_PARAMS），已保存的旧命令在运行时按失败记录并提醒。
 
 ## 用量历史跨设备合并
 
