@@ -10,7 +10,7 @@ import type { DeviceHostedLinkActivity } from '@cindy/maker-core';
 
 /** 不超过这个长度的消息完整解析出 id / method；更长的(整段文件内容)只看开头。 */
 const ENVELOPE_PARSE_LIMIT = 64 * 1024;
-/** 长消息只在开头找 id / method：请求与成功回复都把它们放在 params / result 之前。 */
+/** 长消息只在开头找 id / method：JSON-RPC 的顶层字段通常在 params / result 之前。 */
 const ENVELOPE_HEAD_CHARS = 512;
 const HEAD_ID = /^\s*\{\s*(?:"jsonrpc"\s*:\s*"[^"]*"\s*,\s*)?"id"\s*:\s*(-?\d+|"(?:[^"\\]|\\.)*")/;
 const HEAD_METHOD = /"method"\s*:\s*"((?:[^"\\]|\\.)*)"/;
@@ -43,9 +43,12 @@ export function rpcEnvelope(data: string): RpcEnvelope | null {
   }
   const head = data.slice(0, ENVELOPE_HEAD_CHARS);
   const id = HEAD_ID.exec(head)?.[1];
-  if (id === undefined) return null;
   const method = HEAD_METHOD.exec(head)?.[1];
-  return { id, ...(method !== undefined ? { method } : {}) };
+  if (id === undefined && method === undefined) return null;
+  return {
+    ...(id !== undefined ? { id } : {}),
+    ...(method !== undefined ? { method } : {}),
+  };
 }
 
 /** 一个任务隧道上的往来计数。 */

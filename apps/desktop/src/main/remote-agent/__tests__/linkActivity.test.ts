@@ -18,6 +18,9 @@ describe('tunnel link activity', () => {
     expect(rpcEnvelope(`{"id":7,"result":{"dataBase64":"${'A'.repeat(100_000)}"}}`)).toEqual({ id: '7' });
     expect(rpcEnvelope(`{"id":8,"method":"fs/writeFile","params":{"dataBase64":"${'A'.repeat(100_000)}"}}`))
       .toEqual({ id: '8', method: 'fs/writeFile' });
+    expect(rpcEnvelope(JSON.stringify({ method: 'process/output', params: { data: 'A'.repeat(100_000) } }))).toEqual({
+      method: 'process/output',
+    });
     expect(rpcEnvelope('not json')).toBeNull();
   });
 
@@ -40,6 +43,10 @@ describe('tunnel link activity', () => {
     now += 400;
     activity.environmentMessage('c1', '{"id":1,"result":{}}');
     activity.environmentMessage('c1', '{"method":"process/output","params":{}}');
+    activity.environmentMessage(
+      'c1',
+      JSON.stringify({ method: 'process/output', params: { data: 'A'.repeat(100_000) } }),
+    );
     // 另一条连接上同 id 的回复不算这条连接的。
     activity.environmentMessage('c2', '{"id":2,"result":{}}');
     now += 1_000;
