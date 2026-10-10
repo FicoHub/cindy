@@ -29,7 +29,9 @@ import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalo
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
 import {
+  isProviderGroupReleased,
   listRemoteProviderGroupBindings,
+  markProviderGroupReleased,
   readProviderGroupBinding,
   writeProviderGroupBinding,
 } from '../provider-group/bindings.js';
@@ -40,8 +42,11 @@ import {
   getProviderGroupRemoteClient,
   getProviderGroupRemoteGroups,
   getProviderGroupRouter,
+  setProviderGroupLocalLoad,
   setProviderGroupTurnProbe,
 } from '../provider-group/runtime.js';
+import { countProviderRunningTurns, type ProviderLocalLoadRoute } from '../provider-group/localLoad.js';
+import { remoteAgentHostRunningProviders } from '../remote-agent/host/service.js';
 import {
   createProviderGroupService,
   PROVIDER_GROUP_SUPERSEDED_ERROR,
@@ -7482,6 +7487,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     };
   }
 
+  async function readProviderLocalLoadRoutes(sessionIds: readonly string[]): Promise<ProviderLocalLoadRoute[]> {
+    const rows = await getDbClient()
+      .drizzle.select({
+        id: sessions.id,
+        agentKind: sessions.agentKind,
+        model: sessions.model,
+        providerId: sessions.providerId,
+        agentDeviceId: sessions.agentDeviceId,
+        remoteHostId: sessions.remoteHostId,
+      })
+      .from(sessions)
+      .where(inArray(sessions.id, [...sessionIds]));
+    return rows.map((row) => ({
+      id: row.id,
+      agentKind: dbToMakerAgentKind(row.agentKind),
+      model: row.model ?? null,
+      providerId: row.providerId ?? null,
+      agentDeviceId: row.agentDeviceId ?? null,
+      remoteHostId: row.remoteHostId ?? null,
+    }));
+  }
+
   async function resolveProviderGroupImplicitProvider(agentKind: AgentKind, model: string): Promise<string | null> {
     const providers = await getDesktopProviderService().listProviders({
       allowSideEffects: false,
@@ -9485,6 +9512,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     localDeviceId: getSelfDeviceId,
     readBinding: readProviderGroupBinding,
     writeBinding: (sessionId, binding) => writeProviderGroupBinding(sessionId, binding),
+    isReleased: isProviderGroupReleased,
+    markReleased: (sessionId, group) => markProviderGroupReleased(sessionId, group),
     readSessionRow: readProviderGroupSessionRow,
     resolveImplicitProvider: resolveProviderGroupImplicitProvider,
     persistRoute: persistProviderGroupRoute,
@@ -9548,6 +9577,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
   setProviderGroupTurnProbe((sessionId) => maker.getSession(sessionId)?.isTurnRunning() ?? false);
+  // 这台电脑上每个供应商正在运行一轮的任务数：组里「本机」这台显示它，同账号电脑读目录时也带上(§5)。
+  setProviderGroupLocalLoad(() => countProviderRunningTurns({
+    listTurnRunningSessions: () => maker.listActiveSessions().filter((s) => s.isTurnRunning()).map((s) => s.id),
+    readSessionRoutes: readProviderLocalLoadRoutes,
+    resolveImplicitProvider: resolveProviderGroupImplicitProvider,
+    hostRunningProviders: remoteAgentHostRunningProviders,
+  }));
   // 经另一台电脑上的组运行的任务：开始 / 结束一轮时报告给组所在电脑，让它的分配看到真实负载。
   providerGroupLeaseReporter?.dispose();
   providerGroupLeaseReporter = createProviderGroupLeaseReporter({

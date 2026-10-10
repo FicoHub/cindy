@@ -762,7 +762,9 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
 - **远程 Agent open 载荷新增可选 `groupAssigned: true`**(`remote-agent/wire.ts`)：任务由供应商组分配到这台(本机的组或另一台的组)，
   这台直接运行、不再进入它自己的组(防转圈)。旧被控端解码时丢弃(它本来没有组)。
 - **本地数据**：C 上经另一台电脑的组分配的任务绑定存 `provider-group-remote-bindings.json`(按账号，与本机组的
-  `provider-group-bindings.json` 分开，降级后旧版本读不到它，不会误认成本机的同名组)。不改数据库与服务端。
+  `provider-group-bindings.json` 分开，降级后旧版本读不到它，不会误认成本机的同名组)。因组内电脑被移出或组被删除而
+  解除过绑定的任务按组记在 `provider-group-released.json`(按账号，2026-10-10)，老任务纳入组时据此跳过(provider-groups.md
+  §6、§9.4)；旧版本不读也不改写它，降级再升级后记录仍在。不改数据库与服务端。
 - 实现：`apps/desktop/src/main/provider-group/`(`remoteHandler.ts`、`remoteClient.ts`、`externalLoad.ts`、`leaseReporter.ts`、
   `service.ts` 的组来源)；回归见同目录 `__tests__/remoteGroup.test.ts`、`remoteHandler.test.ts`、`leaseReporter.test.ts`，
   `device-link/__tests__/providerShareDispatch.test.ts`(受邀者拒绝与不泄露组摘要)。
@@ -843,6 +845,46 @@ G 重新打开时换一台。G 与 O 之间新增四项可选内容，O 与 M �
 - 不改 relay、服务器与数据库。实现：`device-link/dispatch.ts`(`projectProviderListForShare`)、`provider-group/remoteHandler.ts`
   (`sharedProviderGroupSize`)、`provider-group/directory.ts`(`memberLabel`)、`device-link/providerShareRuntime.ts`；回归见
   `device-link/__tests__/providerShareDispatch.test.ts`、`provider-group/__tests__/remoteHandler.test.ts`、`directory.test.ts`、
+  `packages/device-link/src/__tests__/providerShare.test.ts`。
+
+## 供应商分享：受邀者自己的运行数(2026-10-10)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5「分享来的电脑」与
+[`provider-sharing.md`](../product-rules/provider-sharing.md) §7.4。受邀者把分享加进自己的供应商组时，组页面要显示这台在跑几个，
+包括本账号不经组直接用的任务。
+
+- **分享投影里的 `maker:provider:list` 新增可选 `guestRunning`**(非负整数，0–4096)：分享者电脑按调用方(同一分享、同一成员，
+  不分设备)统计此刻正在运行一轮的远程 Agent 任务，在 `projectProviderListForShare` 里填上(目录里原有的值一律先去掉)。
+  任务转给了组内电脑的按那台报来的状态算。只计调用方自己的任务，不含分享者本人(同账号控制端)与其他受邀者。
+  `scrubSharedProvider` 在分享者电脑、受邀者电脑与手机各过一遍，只留合理的整数(`readProviderShareGuestRunning`，
+  `packages/device-link/src/providerShareCatalog.ts`)。同账号目录不带这个字段。
+- 兼容：旧受邀者与手机不认识就忽略；旧分享者不带，新受邀者按经本组的计数显示(与之前一致)。被控端的远程 Agent 服务
+  没接上 `turnRunningControllers` 时同样不带。
+- 不改 relay、服务器与数据库，不新增 channel。实现：`remote-agent/host/runHost.ts`(`turnRunningControllers`)、
+  `device-link/dispatch.ts`(`providerShareGuestRunning`)、`provider-group/directory.ts`(`reportedRunning`)、
+  `provider-group/router.ts`(`memberRunning`)；回归见 `device-link/__tests__/providerShareDispatch.test.ts`、
+  `remote-agent/__tests__/guestHost.test.ts`、`provider-group/__tests__/directory.test.ts`、`router.test.ts`、
+  `packages/device-link/src/__tests__/providerShare.test.ts`。
+
+## 供应商组：同账号电脑上的运行数(2026-10-10)
+
+产品规则见 [`provider-groups.md`](../product-rules/provider-groups.md) §5「本机与同账号电脑」。组所在电脑要显示组里每台
+这个供应商实际在跑几个任务，含那台自己用的、不经组的与替分享的人跑的。
+
+- **同账号电脑读的 `maker:provider:list` 新增可选 `runningTurns`**(非负整数，0–4096，`PROVIDER_RUNNING_TURNS_FIELD`，
+  `packages/device-link/src/providerGroup.ts`)：被控端在 `decorateProviderListWithGroups` 里给每个允许被远程调用的供应商
+  填上这台电脑上用它正在运行一轮的任务数(没在跑的为 0；结果里原有的值一律先去掉；读不到时整个目录都不带)。
+  计数(`provider-group/localLoad.ts`)= Agent 在本机运行的本机任务(按任务记录的来源，没记来源的按本机实际会用的来源；
+  Agent 在另一台电脑、分享来的电脑或 SSH 主机上的不算) + 远程 Agent 服务在本机运行的任务(`turnRunningProviders`，
+  转给组内另一台的不算)。只给同账号电脑：`scrubSharedProvider` 去掉这个字段，受邀者与手机转交的分享目录都不带。
+- 组所在电脑读本机的数直接现算，读同账号电脑的从目录取(`readProviderRunningTurns`，只认合理整数)；分享来的电脑仍只认
+  `guestRunning`，不认 `runningTurns`。
+- 兼容：旧电脑与手机不认识就忽略；旧被控端不带，新组所在电脑照旧只算经本组的。`decorateProviderList` 改为可异步，
+  只在本机内部接线，不影响 wire 形状。
+- 不改 relay、服务器与数据库，不新增 channel。实现：`remote-agent/host/runHost.ts`(`turnRunningProviders`)、
+  `provider-group/localLoad.ts`、`provider-group/remoteHandler.ts`、`provider-group/directory.ts`(`localRunning`)、
+  `maker-ipc/register.ts`(接线)；回归见 `provider-group/__tests__/localLoad.test.ts`、`remoteHandler.test.ts`、
+  `directory.test.ts`、`remote-agent/__tests__/guestHost.test.ts`、`device-link/__tests__/providerShareDispatch.test.ts`、
   `packages/device-link/src/__tests__/providerShare.test.ts`。
 
 ## 事实来源

@@ -178,7 +178,13 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     abortControllers: (match) => current.abortControllers(match),
     purgeControllers: (match) => current.purgeControllers(match),
     activeControllers: () => current.activeControllers(),
+    turnRunningControllers: () => current.turnRunningControllers(),
   });
+}
+
+/** 本机替其他电脑运行、正在运行一轮的远程 Agent 任务用的本机供应商(每个任务一项)；服务没起来时为空。 */
+export function remoteAgentHostRunningProviders(): string[] {
+  return host?.turnRunningProviders() ?? [];
 }
 
 /** 退出时结束全部远程 Agent 任务。 */

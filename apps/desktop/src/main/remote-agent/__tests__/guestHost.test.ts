@@ -53,6 +53,8 @@ function makeHost(
     providerAccess?: boolean;
     /** false = 不接受受邀者出站登记(旧接线)；缺省给一个记录调用的实现。 */
     bindGuestProviderRoute?: false | Parameters<typeof createRemoteAgentHost>[0]['bindGuestProviderRoute'];
+    /** 会话是否正在运行一轮(缺省不提供，同旧 Agent)。 */
+    isTurnRunning?: (input: HostedStartInput) => boolean;
   } = {},
 ) {
   const bindGuestProviderRoute = options.bindGuestProviderRoute === false
@@ -95,6 +97,7 @@ function makeHost(
         },
         getUsageSnapshot: () => ({ tokenUsage: 0, contextTokens: 0, contextWindow: 0, costUsd: 0 }),
         setInteractionResolver() {},
+        ...(options.isTurnRunning ? { isTurnRunning: () => options.isTurnRunning!(input) } : {}),
       };
       return handle;
     },
@@ -532,6 +535,40 @@ describe('guest provider access and usage', () => {
       samples: [{ model: 'claude-opus', turns: 1, inputTokens: 12, outputTokens: 3, cacheReadTokens: 0, cacheCreateTokens: 0, sdkCostUsd: 0.02 }],
     });
     expect(host.activeControllers().sort()).toEqual([GUEST, OWNER].sort());
+    host.dispose();
+  });
+
+  it('lists only the runs that are in a turn right now', async () => {
+    const busy = new Set<string>([hostSessionIdFor(GUEST, 'task-1')]);
+    const started: Started[] = [];
+    const host = makeHost(started, { isTurnRunning: (input) => busy.has(input.hostSessionId) });
+    await host.handle(GUEST, { op: 'open', runId: RUN_1, agentKind: 'claude-code', payload: { json: openPayload('task-1') } });
+    await host.handle(OWNER, { op: 'open', runId: RUN_2, agentKind: 'claude-code', payload: { json: openPayload('task-2') } });
+    await vi.waitFor(() => expect(started).toHaveLength(2), { timeout: 10_000 });
+    // 两个任务都开着，只有正在运行一轮的那个算；这一轮结束后马上不算。
+    await vi.waitFor(() => expect(host.turnRunningControllers()).toEqual([GUEST]), { timeout: 10_000 });
+    expect(host.activeControllers().sort()).toEqual([GUEST, OWNER].sort());
+    busy.clear();
+    expect(host.turnRunningControllers()).toEqual([]);
+    host.dispose();
+  });
+
+  it('lists the local provider of each run in a turn, whoever started it', async () => {
+    const busy = new Set<string>([hostSessionIdFor(GUEST, 'task-1'), hostSessionIdFor(OWNER, 'task-2')]);
+    const started: Started[] = [];
+    const host = makeHost(started, { isTurnRunning: (input) => busy.has(input.hostSessionId) });
+    await host.handle(GUEST, { op: 'open', runId: RUN_1, agentKind: 'claude-code', payload: { json: openPayload('task-1') } });
+    await host.handle(OWNER, {
+      op: 'open',
+      runId: RUN_2,
+      agentKind: 'claude-code',
+      payload: { json: openPayload('task-2', { options: { model: 'claude-opus', providerId: 'anthropic' } }) },
+    });
+    await vi.waitFor(() => expect(started).toHaveLength(2), { timeout: 10_000 });
+    // 组所在电脑据此显示这台在跑几个：受邀者与本账号其他电脑的任务都算，按本机实际用的供应商。
+    await vi.waitFor(() => expect(host.turnRunningProviders().sort()).toEqual(['anthropic', 'shared-provider']), { timeout: 10_000 });
+    busy.delete(hostSessionIdFor(GUEST, 'task-1'));
+    expect(host.turnRunningProviders()).toEqual(['anthropic']);
     host.dispose();
   });
 });
