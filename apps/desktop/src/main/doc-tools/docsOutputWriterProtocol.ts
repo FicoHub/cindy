@@ -67,4 +67,6 @@ export type DocsOutputWriteResult =
       ok: false;
       errorCode: 'FILE_EXISTS' | 'PATH_NOT_ALLOWED' | 'ATOMIC_PUBLISH_UNSUPPORTED' | 'INTERNAL';
       message: string;
+      /** The writer's own fail-closed cleanup could not confirm the inode was zeroed / unnamed. */
+      cleanupUnconfirmed?: true;
     };

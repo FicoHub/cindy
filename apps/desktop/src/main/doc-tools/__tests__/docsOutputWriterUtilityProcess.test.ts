@@ -18,6 +18,7 @@ import {
   runDocsOutputWriteForTest,
   sameRelativePath,
   chooseStagingLocation,
+  isCleanupUnconfirmedForTest,
 } from '../docsOutputWriterUtilityProcess.js';
 
 let root: string;
@@ -387,6 +388,26 @@ process.stdout.write(JSON.stringify({ code, outsideExists, movedValue }));
     const write = runDocsOutputWriteForTest(await request('denied.bin', 'payload', false), root, () => {});
     if (process.platform === 'win32') await expect(write).resolves.toBeDefined();
     else await expect(write).rejects.toMatchObject({ code: 'EACCES' });
+  });
+
+  // Codex P1 (round 34): when the writer's own fail-closed cleanup cannot zero the inode
+  // (EIO/EROFS), the failure is marked so the parent reclaims or reports it.
+  it.each([
+    { name: 'marks a failure whose fail-closed cleanup could not zero the inode', truncateFails: true },
+    { name: 'does not mark a failure whose cleanup succeeded', truncateFails: false },
+  ])('$name', async ({ truncateFails }) => {
+    const realOpen = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const handle = await realOpen(...args);
+      if (truncateFails && path.basename(String(args[0])).startsWith('.cindy-docs-staging-')) {
+        handle.truncate = async () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }); };
+      }
+      return handle;
+    });
+    vi.spyOn(fs.promises, 'link').mockRejectedValueOnce(Object.assign(new Error('EIO: link'), { code: 'EIO' }));
+    const failure = await runDocsOutputWriteForTest(await request('eio.bin', 'private', false), root).then(() => null, (e: unknown) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect(isCleanupUnconfirmedForTest(failure)).toBe(truncateFails);
   });
 
   // Codex P1 (round 18): a cooperative abort cleans up through the retained handle and the

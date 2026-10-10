@@ -3615,6 +3615,22 @@ describe('oversized ghost result Host storage', () => {
     }
   });
 
+  // Codex P1 (round 34): the isolated writer's own unconfirmed cleanup maps to the same
+  // structured local state as a rollback failure.
+  it('maps an unconfirmed writer cleanup to LOCAL_SPILL_CLEANUP_UNCONFIRMED', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ghost-spill-writer-unconfirmed-'));
+    try {
+      const deps = makeDeps('codex');
+      sessionSnapshotMock.mockResolvedValue({ workingDir: root, remoteHostId: null, permissionMode: 'auto', planModeEnabled: false });
+      writeDocsOutputMock.mockRejectedValueOnce(Object.assign(new Error('docs output cleanup unconfirmed /private/path'), { code: 'DOCS_OUTPUT_CLEANUP_UNCONFIRMED' }));
+      await expect(deps.saveLargeGhostResult!('x'.repeat(10))).rejects.toMatchObject({
+        code: 'LOCAL_SPILL_CLEANUP_UNCONFIRMED',
+        message: expect.stringContaining('cleanup unconfirmed'),
+      });
+      expect(ledgerAddRefMock).not.toHaveBeenCalled();
+    } finally { await fs.promises.rm(root, { recursive: true, force: true }); }
+  });
+
   // Codex P1 (round 33): a local withdrawal through the held inode that fails (EIO, EROFS…)
   // leaves the complete private output in place; it is reported, not swallowed.
   it('reports an unconfirmed local withdrawal when erasing through the hold fails', async () => {

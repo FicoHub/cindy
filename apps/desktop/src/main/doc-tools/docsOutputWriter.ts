@@ -76,7 +76,8 @@ function parseStagedNotice(value: unknown): DocsOutputStagedNotice | null {
  * unrelated entry placed there in between (no unlink-by-inode exists). A zero-byte name is
  * the conservative residue; the child's own cwd-bound cleanup is what removes names.
  */
-async function reclaimStagedInode(candidates: string[], identity: { dev: bigint; ino: bigint }): Promise<void> {
+async function reclaimStagedInode(candidates: string[], identity: { dev: bigint; ino: bigint }): Promise<boolean> {
+  let erased = false;
   for (const candidate of candidates) {
     try {
       const handle = await fs.open(candidate, fs.constants.O_RDWR | ((fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0));
@@ -84,6 +85,7 @@ async function reclaimStagedInode(candidates: string[], identity: { dev: bigint;
         const st = await handle.stat({ bigint: true });
         if (!st.isFile() || st.dev !== identity.dev || st.ino !== identity.ino) continue;
         await handle.truncate(0);
+        erased = true;
       } finally {
         await handle.close().catch(() => undefined);
       }
@@ -91,6 +93,7 @@ async function reclaimStagedInode(candidates: string[], identity: { dev: bigint;
       // Missing, replaced or not ours: nothing of ours to reclaim under this name.
     }
   }
+  return erased;
 }
 
 function parseResult(value: unknown): DocsOutputWriteResult | null {
@@ -113,9 +116,22 @@ function parseResult(value: unknown): DocsOutputWriteResult | null {
       result.errorCode === 'INTERNAL') &&
     typeof result.message === 'string'
   ) {
-    return result as DocsOutputWriteResult;
+    return {
+      ok: false,
+      errorCode: result.errorCode,
+      message: result.message,
+      ...(result.cleanupUnconfirmed === true ? { cleanupUnconfirmed: true as const } : {}),
+    };
   }
   return null;
+}
+
+/** The writer's private bytes may remain: neither its own cleanup nor the parent's reclaim was confirmed. */
+export class DocsOutputCleanupUnconfirmedError extends Error {
+  readonly code = 'DOCS_OUTPUT_CLEANUP_UNCONFIRMED';
+  constructor(cause: unknown) {
+    super('docs output cleanup unconfirmed, private output may remain', { cause });
+  }
 }
 
 function throwResultError(
@@ -268,9 +284,9 @@ export const writeDocsOutput: WriteDocsOutputFn = async (input) => {
     // without an anchor or lifecycle.
     let aborting = false;
     let childConfirmedCleanup: ((cleaned: boolean) => void) | null = null;
-    const reclaimByPath = (): Promise<void> => {
+    const reclaimByPath = (): Promise<boolean> => {
       const notice = staged;
-      if (!notice) return Promise.resolve();
+      if (!notice) return Promise.resolve(false);
       // The staging name is anchored at the session root (which workdir content cannot
       // relocate), so it stays reachable even after the output directory was moved out;
       // zeroing the inode there also empties the published target, which shares it. For a
@@ -374,11 +390,22 @@ export const writeDocsOutput: WriteDocsOutputFn = async (input) => {
         finish();
       }
       else {
+        let resultError: unknown;
         try {
           throwResultError(result, input.path);
         } catch (error) {
-          finish(error);
+          resultError = error;
         }
+        if (!result.cleanupUnconfirmed) {
+          finish(resultError);
+          return;
+        }
+        // The child's fail-closed cleanup failed: retry through the announced identity and
+        // surface a structured state only when that cannot confirm the erasure either.
+        void reclaimByPath().then(
+          (erased) => finish(erased ? resultError : new DocsOutputCleanupUnconfirmedError(resultError)),
+          () => finish(new DocsOutputCleanupUnconfirmedError(resultError)),
+        );
       }
     });
     child.on('error', (error) => abort(error instanceof Error ? error : new Error(String(error))));

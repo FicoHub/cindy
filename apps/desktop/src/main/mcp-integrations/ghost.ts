@@ -2215,6 +2215,13 @@ export function getCindyGhostsMcpDeps(
           data: Buffer.from(text, 'utf8'),
           overwrite: false,
           beforeCommit: () => target.revalidate(),
+        }).catch((err: unknown) => {
+          // The isolated writer failed and neither its own cleanup nor the parent's reclaim
+          // could confirm the private bytes were erased: same structured state as a rollback.
+          if ((err as { code?: unknown } | null)?.code === 'DOCS_OUTPUT_CLEANUP_UNCONFIRMED') {
+            throw spillCleanupUnconfirmed('LOCAL_SPILL_CLEANUP_UNCONFIRMED', 'local spill write', err);
+          }
+          throw err;
         });
         // The cleanup anchor is the identity the writer read through its own handle —
         // never a separate path query, which a workdir process could have re-pointed at an

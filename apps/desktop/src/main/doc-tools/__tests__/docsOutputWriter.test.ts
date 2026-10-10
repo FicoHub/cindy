@@ -118,6 +118,48 @@ describe('writeDocsOutput beforeCommit boundary', () => {
     }
   });
 
+  // Codex P1 (round 34): a failure result whose own fail-closed cleanup was not confirmed is
+  // retried through the announced identity; only an unconfirmed retry is surfaced as such.
+  it.each([
+    { name: 'reclaims through the announced identity and keeps the original error', reachable: true },
+    { name: 'reports cleanup unconfirmed when the reclaim cannot reach the inode either', reachable: false },
+  ])('$name', async ({ reachable }) => {
+    const staging = path.join(root, '.cindy-docs-staging-u-out.txt');
+    const target = path.join(root, 'out.txt');
+    await fs.promises.writeFile(staging, 'private bytes', { mode: 0o600 });
+    await fs.promises.link(staging, target);
+    const st = await fs.promises.lstat(staging, { bigint: true });
+    if (!reachable) {
+      await fs.promises.rm(staging);
+      await fs.promises.rm(target);
+    }
+    child.result = null;
+    child.postMessage = function (this: FakeChild, message: unknown) {
+      this.posted.push(message);
+      if ((message as { type?: string }).type !== 'write') return;
+      queueMicrotask(() => {
+        this.emit('message', { type: 'staged', identity: { dev: st.dev, ino: st.ino }, stagingName: '.cindy-docs-staging-u-out.txt', stagingIn: 'root' });
+        this.emit('message', { ok: false, errorCode: 'INTERNAL', message: 'link EIO', cleanupUnconfirmed: true });
+      });
+    };
+    const failure = await writeDocsOutput({ root, path: target, data: new Uint8Array([1]), overwrite: false }).then(() => null, (e: Error & { code?: string }) => e);
+    expect(failure).toBeInstanceOf(Error);
+    if (reachable) {
+      expect(failure!.code).toBeUndefined();
+      expect(failure!.message).toBe('link EIO');
+      expect((await fs.promises.stat(staging)).size).toBe(0);
+    } else {
+      expect(failure!.code).toBe('DOCS_OUTPUT_CLEANUP_UNCONFIRMED');
+    }
+  });
+
+  it('does not reclaim or flag an ordinary failure result whose cleanup was confirmed', async () => {
+    child.result = { ok: false, errorCode: 'INTERNAL', message: 'plain failure' };
+    const failure = await writeDocsOutput({ root, path: path.join(root, 'out.txt'), data: new Uint8Array([1]), overwrite: false }).then(() => null, (e: Error & { code?: string }) => e);
+    expect(failure!.message).toBe('plain failure');
+    expect(failure!.code).toBeUndefined();
+  });
+
   // Codex P1 (round 18): on watchdog timeout the parent first asks the child to clean up
   // through its cwd-bound capabilities (which survive a directory move-out); the parent's
   // path-based reclaim is only the fallback for a silent child.

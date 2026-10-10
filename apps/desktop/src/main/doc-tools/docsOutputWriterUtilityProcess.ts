@@ -24,6 +24,11 @@ class OutputWriteError extends Error {
 }
 
 const parentPort = (process as unknown as { parentPort?: ParentPortLike }).parentPort;
+/** Write failures whose fail-closed cleanup could not be confirmed. */
+const cleanupUnconfirmedErrors = new WeakSet<object>();
+export function isCleanupUnconfirmedForTest(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && cleanupUnconfirmedErrors.has(error));
+}
 const hasCode = (error: unknown, code: string): boolean =>
   Boolean(error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === code);
 const HARD_LINK_UNSUPPORTED_CODES = new Set([
@@ -516,8 +521,12 @@ async function writeWithinVerifiedParent(
     // Fail closed: no private content may remain, least of all outside the session
     // root. Zero it through the inode-bound handle (follows the file wherever its
     // directory went) and withdraw the published name only if it is still ours.
-    if (inFlightCleanup) await inFlightCleanup();
-    else await handle?.truncate(0).catch(() => undefined);
+    const cleaned = inFlightCleanup
+      ? await inFlightCleanup()
+      : await (handle?.truncate(0).then(() => true, () => false) ?? Promise.resolve(true));
+    // A cleanup that could not be confirmed (EIO/EROFS on truncate/unlink) is reported to
+    // the parent, which then reclaims through the announced identity or reports it upward.
+    if (!cleaned && error && typeof error === 'object') cleanupUnconfirmedErrors.add(error);
     throw error;
   } finally {
     inFlight = null;
@@ -614,6 +623,7 @@ if (parentPort) {
           ok: false,
           errorCode: error instanceof OutputWriteError ? error.code : 'INTERNAL',
           message: (error instanceof Error ? error.message : String(error)).slice(0, 8_000),
+          ...(error && typeof error === 'object' && cleanupUnconfirmedErrors.has(error) ? { cleanupUnconfirmed: true as const } : {}),
         }),
       )
       .then((result) => parentPort.postMessage(result));
