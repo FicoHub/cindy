@@ -140,6 +140,10 @@ describe('exec-server relay gate', () => {
     expect(approvalActionsFor({
       kind: 'permission', requestId: 'r', toolName: 'Edit', input: { file_path: 'src/a.ts' },
     }, workspace)).toEqual([{ kind: 'write', path: path.join(root, 'src/a.ts') }]);
+    // 受邀者任务里本机提供的 WebFetch：登记批准过的地址。
+    expect(approvalActionsFor({
+      kind: 'permission', requestId: 'r', toolName: 'mcp__cindy_exec__WebFetch', input: { url: ' http://10.0.0.5/wiki ', prompt: 'x' },
+    }, workspace)).toEqual([{ kind: 'fetch', url: 'http://10.0.0.5/wiki' }]);
     expect(approvalActionsFor({ kind: 'ask_user_question', requestId: 'r', questions: [] }, workspace)).toEqual([]);
   });
 });
@@ -233,6 +237,8 @@ describe('event mapping and project files', () => {
   it('shows the built-in tool names for Claude Code tools that run on this computer', () => {
     expect(mapClaudeHostedEvent({ type: 'tool_use', data: { toolName: 'mcp__cindy_exec__Bash', input: {} } }).data)
       .toEqual({ toolName: 'Bash', input: {} });
+    expect(mapClaudeHostedEvent({ type: 'tool_use', data: { toolName: 'mcp__cindy_exec__WebFetch', input: { url: 'https://a.b' } } }).data)
+      .toEqual({ toolName: 'WebFetch', input: { url: 'https://a.b' } });
     expect(mapClaudeHostedEvent({ type: 'tool_use', data: { toolName: 'mcp__cindy_memory__x' } }).data)
       .toEqual({ toolName: 'mcp__cindy_memory__x' });
   });

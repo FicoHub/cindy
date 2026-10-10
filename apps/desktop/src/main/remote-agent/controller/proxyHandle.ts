@@ -163,6 +163,10 @@ export function approvalActionsFor(
       // 路径不合法时不登记。
     }
   }
+  // 受邀者任务里本机提供的 WebFetch：登记批准过的地址。
+  if (name === 'webfetch' && typeof input.url === 'string' && input.url.trim()) {
+    actions.push({ kind: 'fetch', url: input.url.trim() });
+  }
   return actions;
 }
 

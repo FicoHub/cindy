@@ -21,6 +21,7 @@ import type { AgentEvent, AgentSessionHandle, StartSessionOptions } from '@cindy
 import { RemoteExecutor, type ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
 import { ExecutorGate, executorGateModeFor } from '../executor/gate';
+import type { GuardedFetch } from '../executor/webFetch';
 import { ExecutorWorkspace } from '../executor/workspace';
 import type {
   RemoteAgentOpenPayload,
@@ -70,6 +71,11 @@ export interface StartRemoteAgentDeps {
   isGitRepo(workingDir: string): Promise<boolean>;
   /** Read 读 PDF 时取文字(Claude Code)。 */
   extractPdfText?: PdfTextExtractor;
+  /**
+   * 在本机抓取网页的出站通道：给 Claude Code 提供 WebFetch(供应商分享的受邀者任务，自带的
+   * WebFetch 在对方电脑上已关闭)。缺省时不提供。
+   */
+  webFetch?: GuardedFetch;
   /** 改写来自对方的事件(如工具名)。 */
   mapEvent?: (kind: RemoteAgentKind) => ((event: AgentEvent) => AgentEvent) | undefined;
   /** 本机 Codex 程序(给对方的 Codex 提供 exec-server 执行环境)；缺省时不提供。 */
@@ -181,6 +187,8 @@ export async function startRemoteAgentSession(
     rgPath: deps.rgPath,
     capture: deps.capture?.({ kind, opts }),
     ...(deps.extractPdfText ? { extractPdfText: deps.extractPdfText } : {}),
+    // 只有 Claude Code 经 cindy_exec 使用这组工具。
+    ...(kind === 'claude-code' && deps.webFetch ? { webFetch: deps.webFetch } : {}),
   });
   let permissionMode = opts.permissionMode;
   let planMode = opts.planMode === true;

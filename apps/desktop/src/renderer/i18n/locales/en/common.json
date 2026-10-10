@@ -292,6 +292,7 @@
       "requestedAt": "Requested {{time}} with your share link",
       "pairingHint": "Before approving, you can ask them over the channel you sent the link through: “What pairing code do you see?” Approve if it matches.",
       "callout": "Once approved, {{name}} can use {{provider}} models in their own sessions. The Agent runs on this computer and usage counts toward your {{provider}}. You can pause or remove access anytime in “Share {{provider}}”.",
+      "calloutClaudeEmail": "While {{name}} uses it, the Agent can see the email address you sign in to Claude with.",
       "calloutUnknown": "If you don’t recognize this person, decline; the link stops working once declined.",
       "approve": "Approve Sharing",
       "reject": "Decline Request",

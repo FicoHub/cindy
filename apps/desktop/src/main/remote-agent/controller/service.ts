@@ -26,6 +26,7 @@ import { resolveMemoryScopeKey } from '@cindy/maker-core';
 
 import type { ExecutorCaptureHooks } from '../executor/executor';
 import type { PdfTextExtractor } from '../executor/files';
+import type { GuardedFetch } from '../executor/webFetch';
 import { remoteAgentEventMapper } from './eventMap';
 import {
   collectAncestorInstructionFiles,
@@ -67,6 +68,10 @@ export interface DeviceAgentServiceDeps {
     /** 用户亲自接手后的这次发送开始新的一轮(取走即用掉)。 */
     takeNewRound?(sessionId: string): boolean;
   };
+  /** 任务的「Agent 所在电脑」是不是分享来的供应商(受邀者任务)。 */
+  isSharedProviderDevice?(deviceId: string): boolean;
+  /** 受邀者任务在本机抓取网页的出站通道(WebFetch)。 */
+  webFetch?: GuardedFetch;
   logger: Logger;
 }
 
@@ -153,6 +158,8 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
     const sessionId = opts.sessionId;
     const groupSwitch = sessionId && deps.groupSwitch ? deps.groupSwitch : null;
     const switchToken = groupSwitch && sessionId ? groupSwitch.takeForOpen(sessionId) : undefined;
+    // 受邀者任务：Agent 自带的 WebFetch 在分享者电脑上已关闭，改由本机抓取。同账号任务不提供。
+    const webFetch = deps.webFetch && deps.isSharedProviderDevice?.(input.deviceId) ? deps.webFetch : undefined;
     return startRemoteAgentSession(input.agentKind, opts, {
       invoke: poller.invoke,
       poller,
@@ -168,6 +175,7 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
             },
           }
         : {}),
+      ...(webFetch ? { webFetch } : {}),
       prepareMcp: async ({ kind, opts: startOpts, vendorOptions }): Promise<PreparedRemoteMcp> => {
         const extra = await deps.prepareMcpBridge(deps.mcpProviders(), deps.logger, {
           agentKind: kind,
