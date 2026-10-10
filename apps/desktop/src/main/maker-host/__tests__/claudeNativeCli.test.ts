@@ -4,7 +4,7 @@
  */
 import { EventEmitter } from 'node:events';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   binary: '/opt/cindy/claude' as string | null,
@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   resolveError: null as Error | null,
   bridge: vi.fn(async () => 'http://127.0.0.1:5555'),
   spawn: vi.fn(),
+  spawnSync: vi.fn(() => ({ status: 0 })),
 }));
 
 vi.mock('electron', () => ({ app: { isPackaged: true, getPath: () => '/tmp/cindy-test-user-data' } }));
@@ -32,9 +33,10 @@ vi.mock('@cindy/anthropic-compat-proxy', async (original) => ({
   hasProxyEnvConfig: () => h.envProxy,
 }));
 vi.mock('../claude-cli-proxy-bridge.js', () => ({ ensureClaudeCliProxyBridge: h.bridge }));
-vi.mock('node:child_process', () => ({ spawn: h.spawn }));
+vi.mock('node:child_process', () => ({ spawn: h.spawn, spawnSync: h.spawnSync }));
 
 import {
+  buildWindowsVisibleConsoleSpawn,
   claudeCliNetworkEnv,
   parseClaudeCliLoginStatus,
   parseClaudeCliPlanUsageLine,
@@ -254,6 +256,67 @@ describe('runClaudeCliLogin', () => {
     abort.abort();
     await expect(pending).resolves.toEqual({ ok: false, reason: 'login_cancelled' });
     expect(login.kill).toHaveBeenCalled();
+  });
+
+  // #5769:Windows 上浏览器没打开授权页时,隐藏子进程的备用链接与授权码输入用户看不到。
+  describe('Windows 可见控制台登录', () => {
+    const realPlatform = process.platform;
+    const setPlatform = (value: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value, configurable: true });
+    beforeEach(() => {
+      setPlatform('win32');
+      h.binary = 'C:\\Program Files\\Cindy\\resources\\claude.exe';
+    });
+    afterEach(() => setPlatform(realPlatform));
+
+    it('经 System32 的 cmd `start /wait` 拉起官方 CLI 的独立控制台;状态读取仍走隐藏子进程', async () => {
+      h.spawn
+        .mockImplementationOnce(() => fakeChild({ stdout: LOGGED_OUT }))
+        .mockImplementationOnce(() => fakeChild({ code: 0 }))
+        .mockImplementationOnce(() => fakeChild({ stdout: SUBSCRIPTION }));
+      await expect(runClaudeCliLogin(new AbortController().signal)).resolves.toMatchObject({ ok: true });
+      const [statusFile, , statusOptions] = h.spawn.mock.calls[0]!;
+      expect(statusFile).toBe(h.binary);
+      expect(statusOptions).toMatchObject({ windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      const [file, args, options] = h.spawn.mock.calls[1]!;
+      const expected = buildWindowsVisibleConsoleSpawn(h.binary!, ['auth', 'login', '--claudeai']);
+      expect(file).toBe(expected.file);
+      expect(file).toMatch(/System32[\\/]cmd\.exe$/i);
+      expect(args).toEqual(expected.args);
+      expect(args).toEqual(['/d', '/s', '/c', `"start "Claude Code" /wait "${h.binary}" auth login --claudeai"`]);
+      expect(options).toMatchObject({ stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true });
+    });
+
+    it('取消时在根进程存活期间按进程树结束,不留下登录窗口', async () => {
+      const login = Object.assign(fakeChild('hang'), { pid: 4242, exitCode: null, signalCode: null });
+      h.spawn
+        .mockImplementationOnce(() => fakeChild({ stdout: LOGGED_OUT }))
+        .mockImplementationOnce(() => login);
+      h.spawnSync.mockImplementationOnce(() => {
+        setImmediate(() => login.emit('close', 1));
+        return { status: 0 };
+      });
+      const abort = new AbortController();
+      const pending = runClaudeCliLogin(abort.signal);
+      await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+      abort.abort();
+      await expect(pending).resolves.toEqual({ ok: false, reason: 'login_cancelled' });
+      expect(h.spawnSync).toHaveBeenCalledWith(expect.stringMatching(/System32[\\/]taskkill\.exe$/i), ['/PID', '4242', '/T', '/F'], expect.objectContaining({ windowsHide: true }));
+      expect(login.kill).not.toHaveBeenCalled();
+    });
+
+    it('taskkill 失败时回退结束根进程', async () => {
+      const login = Object.assign(fakeChild('hang'), { pid: 4243, exitCode: null, signalCode: null });
+      h.spawn
+        .mockImplementationOnce(() => fakeChild({ stdout: LOGGED_OUT }))
+        .mockImplementationOnce(() => login);
+      h.spawnSync.mockImplementationOnce(() => ({ status: 128 }));
+      const abort = new AbortController();
+      const pending = runClaudeCliLogin(abort.signal);
+      await vi.waitFor(() => expect(h.spawn).toHaveBeenCalledTimes(2));
+      abort.abort();
+      await expect(pending).resolves.toEqual({ ok: false, reason: 'login_cancelled' });
+      expect(login.kill).toHaveBeenCalled();
+    });
   });
 
   it('内置 CLI 不可用 → local_unavailable', async () => {
