@@ -40,6 +40,7 @@ function harness(options: {
   config?: ProviderGroupConfig | null | undefined;
   picks?: Array<ProviderGroupMember | 'unavailable' | 'none' | Error>;
   view?: Partial<Record<string, ProviderGroupView['members'][number]['state']>>;
+  live?: boolean;
 } = {}) {
   const config: ProviderGroupConfig | null | undefined = 'config' in options
     ? options.config
@@ -136,6 +137,7 @@ function harness(options: {
       row.providerId = route.providerId;
     }),
     isTurnRunning: vi.fn(() => false),
+    hasLiveSession: vi.fn(() => options.live ?? true),
     continueSession: vi.fn(async () => 'resumed' as const),
     fallback: vi.fn(),
     readResetAt: vi.fn((): number | null => 5_000),
@@ -464,6 +466,65 @@ describe('old tasks already running on the group computer', () => {
     }));
     expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
     expect(h.deps.fallback).not.toHaveBeenCalled();
+  });
+
+  it('retries group adoption after a startup failure when the initial group read timed out', async () => {
+    const h = harness({ row: { sdkSessionId: 'native-1' }, live: false });
+    h.remote.readGroup.mockResolvedValueOnce(undefined);
+
+    const context = await h.service.assignBeforeStart(START);
+    expect(context).toMatchObject({
+      pendingGroupAdoption: true,
+      member: { key: 'local' },
+      route: { agentDeviceId: OWNER, providerId: OWNER_LOCAL.providerId },
+    });
+    expect(h.bindings.size).toBe(0);
+
+    const next = await h.service.nextAfterStartFailure(
+      context!,
+      new Error('[REMOTE_AGENT_DEVICE_UNREACHABLE] group computer is gone'),
+    );
+    expect(next?.member.key).toBe(STUDIO.key);
+    expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
+  });
+
+  it('keeps an existing old-task binding pending when its group read times out before reopening', async () => {
+    const h = harness({ row: { sdkSessionId: 'native-1' }, live: false });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: OWNER_LOCAL.key, groupDeviceId: OWNER, at: 1 });
+    h.remote.readGroup.mockResolvedValueOnce(undefined);
+
+    const context = await h.service.assignBeforeStart(START);
+    expect(context).toMatchObject({
+      pendingGroupAdoption: true,
+      member: { key: OWNER_LOCAL.key },
+      route: { agentDeviceId: OWNER, providerId: OWNER_LOCAL.providerId },
+    });
+
+    const next = await h.service.nextAfterStartFailure(
+      context!,
+      new Error('[REMOTE_AGENT_DEVICE_UNREACHABLE] group computer is gone'),
+    );
+    expect(next?.member.key).toBe(STUDIO.key);
+    expect(h.bindings.get('s1')).toMatchObject({ memberKey: STUDIO.key, groupDeviceId: OWNER });
+  });
+
+  it('returns a start context for an old task whose live session is gone, so startup failure can move it', async () => {
+    const h = harness({ row: { sdkSessionId: 'native-1' }, live: false, picks: [STUDIO] });
+    const context = await h.service.assignBeforeStart(START);
+
+    expect(context).toMatchObject({
+      member: { key: OWNER_LOCAL.key },
+      route: { agentDeviceId: OWNER, providerId: OWNER_LOCAL.providerId },
+      groupDeviceId: OWNER,
+    });
+    expect(h.bindings.get('s1')).toMatchObject({ memberKey: OWNER_LOCAL.key, groupDeviceId: OWNER });
+
+    const next = await h.service.nextAfterStartFailure(
+      context!,
+      new Error('[REMOTE_AGENT_UNAVAILABLE] group computer is gone'),
+    );
+    expect(next?.member.key).toBe(STUDIO.key);
+    expect(next?.route).toEqual({ agentDeviceId: STUDIO.agentDeviceId, providerId: STUDIO.providerId });
   });
 
   it('hands the error back when the task is not on the group, was released, or is not eligible', async () => {

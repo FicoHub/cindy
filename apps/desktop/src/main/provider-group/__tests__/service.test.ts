@@ -188,6 +188,44 @@ describe('assignBeforeStart', () => {
     expect(h.bindings.get('s1')?.memberKey).toBe('local');
   });
 
+  it('keeps an old task on its current computer but returns a start context after its live session is gone', async () => {
+    const h = harness({ row: { sdkSessionId: 'native-1' } });
+    h.deps.hasAssistantHistory.mockResolvedValue(true);
+    h.deps.hasLiveSession.mockReturnValue(false);
+
+    const context = await h.service.assignBeforeStart({
+      sessionId: 's1',
+      agentKind: 'claude-code',
+      model: MODEL,
+    });
+
+    expect(context).toMatchObject({
+      member: { key: LOCAL.key },
+      route: { agentDeviceId: null, providerId: LOCAL.providerId },
+    });
+    expect(h.bindings.get('s1')?.memberKey).toBe(LOCAL.key);
+
+    const next = await h.service.nextAfterStartFailure(
+      context!,
+      new Error('[REMOTE_AGENT_UNAVAILABLE] remote computer is gone'),
+    );
+    expect(next?.member.key).toBe(MINI.key);
+    expect(h.deps.persistRoute).toHaveBeenCalledWith('s1', {
+      agentDeviceId: MINI.agentDeviceId,
+      providerId: MINI.providerId,
+    });
+  });
+
+  it('does not return a start context for a released old task even after its live session is gone', async () => {
+    const h = harness({ row: { sdkSessionId: 'native-1' } });
+    h.deps.hasAssistantHistory.mockResolvedValue(true);
+    h.deps.hasLiveSession.mockReturnValue(false);
+    h.released.set('s1', { providerId: 'anthropic', groupDeviceId: null });
+
+    expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
+    expect(h.bindings.has('s1')).toBe(false);
+  });
+
   it('does not take back a task released when this computer left the group or the group was deleted', async () => {
     const h = harness();
     h.deps.hasAssistantHistory.mockResolvedValue(true);
@@ -659,6 +697,7 @@ describe('waiting for a computer that cannot be reached before switching (§6.1)
     await local.service.onTurnError('s1', { message: '[REMOTE_AGENT_UNAVAILABLE] gone' }, 1);
     expect(local.probe).not.toHaveBeenCalled();
     expect(local.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(local.router.coolingUntil('anthropic', 'local')).toBeNull();
 
     const limited = onMini();
     await limited.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1, limited.hooks);

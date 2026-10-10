@@ -9720,7 +9720,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 没有开着的会话(或已出错)时这次发送要重新打开 Agent 所在电脑上的会话：发送前现读那台的状态。
     hasLiveSession: (sessionId) => {
       const live = maker.getSession(sessionId);
-      return live?.getStatus() === 'active';
+      return live?.getStatus() === 'active' && !live.hasStartedClosing();
     },
     // 分享来的供应商被分享者建成了组：组所在电脑发来「需要换一台」时自动交接(provider-groups.md §6.1)。
     guestSwitch: getProviderGroupGuestSwitch(),

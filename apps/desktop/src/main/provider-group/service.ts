@@ -91,6 +91,8 @@ export interface ProviderGroupStartContext {
   overrideRoute: boolean;
   /** 任务原本的(本机)来源，换回本机时还原。 */
   localProviderId: string | null;
+  /** 启动时问组所在电脑超时，尚未写入绑定；启动失败时再读组并纳入。 */
+  pendingGroupAdoption?: boolean;
 }
 
 interface Logger {
@@ -472,6 +474,9 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       };
     },
     cool(providerId, memberKey, cause, resetAt) {
+      // 连不上只在这一轮避开，不把本机的连接故障扩散成后续全局冷却；
+      // 其它原因(额度、登录、过载)仍按组的冷却策略处理。
+      if (cause === 'unavailable') return;
       router.markCooling(providerId, memberKey, coolUntil(cause, resetAt));
     },
     async shouldMoveAway(providerId, config, memberKey) {
@@ -582,6 +587,26 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
 
   function groupOf(source: GroupSource, providerId: string): ProviderGroupRef {
     return { providerId, groupDeviceId: source.ownerDeviceId };
+  }
+
+  /** 启动时组暂时读不到时，用任务记录/绑定拼出当前成员；只用于失败后重新读组，不写入组成员资料。 */
+  function pendingMember(
+    memberKey: string,
+    providerId: string,
+    agentDeviceId: string | null,
+  ): ProviderGroupMember {
+    const kind: ProviderGroupMember['kind'] = memberKey === 'local'
+      ? 'local'
+      : memberKey.startsWith('share:') ? 'share' : 'device';
+    return {
+      key: memberKey,
+      kind,
+      agentDeviceId: kind === 'local' ? null : agentDeviceId,
+      providerId,
+      limit: 1,
+      weight: 1,
+      paused: false,
+    };
   }
 
   /** 任务记录里 Agent 所在位置换成组里的键(组所在电脑视角)，不看它还在不在组里；SSH 远端任务返回 null。 */
@@ -1067,16 +1092,58 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
   ): Promise<ProviderGroupStartContext | null> {
     const ownerDeviceId = row.agentDeviceId;
     if (!deps.remote || !ownerDeviceId || isProviderShareAgentDeviceId(ownerDeviceId) || !row.providerId) return null;
-    // 只给从没运行过的任务选电脑；已经在那台运行过的留在那台(原生会话在那里)，正用着组那一项时纳入组。
-    // 问不到组所在电脑时照常启动，出错时再补。
-    if (row.sdkSessionId || (await deps.hasAssistantHistory(sessionId))) {
-      await withTimeout(adoptRunningTask(sessionId, row), PROVIDER_GROUP_ADOPT_TIMEOUT_MS);
-      return null;
-    }
     const source = remoteSource(ownerDeviceId);
     const groupProviderId = row.providerId;
-    const config = await source.readGroup(groupProviderId).catch(() => undefined);
-    if (!config) return null;
+    // 只给从没运行过的任务按策略选电脑；已经运行过的任务先纳入组并留在原电脑。
+    // 但如果原生会话已经不存在(例如远程电脑刚断线、旧句柄已被清理)，这次打开仍然是
+    // 启动阶段：保留原绑定并返回启动上下文，让 bootstrap 失败时能自动试组内下一台。
+    // 问不到组所在电脑时照常启动，出错时再补。
+    const hasRun = Boolean(row.sdkSessionId || (await deps.hasAssistantHistory(sessionId)));
+    // 已经明确解除过这个组的老任务不再询问组所在电脑，也不自动纳回。
+    if (hasRun && deps.isReleased(sessionId, groupOf(source, groupProviderId))) return null;
+    const config = hasRun
+      ? await withTimeout(source.readGroup(groupProviderId), PROVIDER_GROUP_ADOPT_TIMEOUT_MS)
+      : await source.readGroup(groupProviderId).catch(() => undefined);
+    if (config === undefined) {
+      if (!hasRun || deps.hasLiveSession?.(sessionId) !== false) return null;
+      // §6：启动时问不到组所在电脑照常启动；若这次启动失败，带着原路由在失败路径再读组，
+      // 让老任务仍能纳入组并尝试下一台。此时不能写绑定，成功启动就继续作为普通远程任务。
+      const placeholder = pendingMember(providerGroupMemberKey(null, row.providerId), row.providerId, null);
+      return {
+        sessionId,
+        groupProviderId,
+        groupDeviceId: ownerDeviceId,
+        agentKind,
+        model,
+        member: placeholder,
+        route: source.routeOf(placeholder, null),
+        overrideRoute: true,
+        localProviderId: null,
+        pendingGroupAdoption: true,
+      };
+    }
+    if (config === null) return null;
+    if (hasRun) {
+      const currentKey = await actualMemberKey(source, groupProviderId, config, row);
+      const current = currentKey ? config.members.find((member) => member.key === currentKey) : undefined;
+      if (!current) return null;
+      if (!(await adopt(sessionId, source, groupProviderId, current.key))) return null;
+      // Live session 仍在时，运行中错误交给 failover；只有需要重新打开时才让启动
+      // 失败路径直接换下一台，避免把正常运行中的老任务提前迁走。
+      if (deps.hasLiveSession?.(sessionId) !== false) return null;
+      const route = source.routeOf(current, null);
+      return {
+        sessionId,
+        groupProviderId,
+        groupDeviceId: ownerDeviceId,
+        agentKind,
+        model,
+        member: current,
+        route,
+        overrideRoute: true,
+        localProviderId: null,
+      };
+    }
     // 问不到组所在电脑(刚断线等)：照常直接连它，由那次连接给出原本的报错。
     const pick = await source.pick({ sessionId, providerId: groupProviderId, config, agentKind, model, exclude: new Set() })
       .catch((error): SourcePick => {
@@ -1109,17 +1176,43 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     async assignBeforeStart({ sessionId, agentKind, model, startRow }) {
       const row = (await deps.readSessionRow(sessionId)) ?? startRow ?? null;
       if (!row || row.remoteHostId) return null;
-      if (deps.readBinding(sessionId)) {
-        const bound = await loadBound(sessionId).catch(() => null);
-        if (!bound) return null;
-        const { binding, source, config } = bound;
+      const existingBinding = deps.readBinding(sessionId);
+      if (existingBinding) {
+        const source = sourceFor(existingBinding.groupDeviceId);
+        if (!source) return null;
+        const config = await withTimeout(source.readGroup(existingBinding.providerId), PROVIDER_GROUP_ADOPT_TIMEOUT_MS)
+          .catch(() => undefined);
+        const hasRun = Boolean(row.sdkSessionId || (await deps.hasAssistantHistory(sessionId)));
+        if (config === undefined) {
+          if (!hasRun || deps.hasLiveSession?.(sessionId) !== false) return null;
+          const member = pendingMember(
+            existingBinding.memberKey,
+            row.providerId ?? existingBinding.providerId,
+            row.agentDeviceId,
+          );
+          return {
+            sessionId,
+            groupProviderId: existingBinding.providerId,
+            groupDeviceId: source.ownerDeviceId,
+            agentKind,
+            model,
+            member,
+            route: source.routeOf(member, source.ownerDeviceId ? null : row.providerId),
+            overrideRoute: source.ownerDeviceId !== null,
+            localProviderId: source.ownerDeviceId ? null : row.providerId,
+            pendingGroupAdoption: true,
+          };
+        }
+        const binding = existingBinding;
         const current = await verifyBinding(sessionId, source, binding, config, row).catch((error) => {
           deps.log.warn('provider group: binding reconciliation failed', { sessionId, error: errorText(error) });
           return null;
         });
         // 从没运行过的任务(上次全部没能启动、重启应用后再打开等)：带上启动上下文，这次启动失败时仍能
-        // 换组里下一台。已经运行过的任务在原来那台上有原生会话，换电脑要走交接，不在这里换。
-        if (!current || row.sdkSessionId || (await deps.hasAssistantHistory(sessionId))) return null;
+        // 换组里下一台。已经运行过的任务在原来那台上有原生会话，换电脑要走交接；原生会话已经
+        // 不在时则仍属于启动阶段，失败后直接换下一台。
+        if (!current) return null;
+        if (hasRun && deps.hasLiveSession?.(sessionId) !== false) return null;
         const localProviderId = current.kind === 'local' && !source.ownerDeviceId ? row.providerId : binding.providerId;
         return {
           sessionId,
@@ -1138,13 +1231,25 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       const groupProviderId = row.providerId ?? (await deps.resolveImplicitProvider(agentKind, model));
       const config = groupProviderId ? deps.readGroup(groupProviderId) : null;
       if (!groupProviderId || !config) return null;
-      // 已经运行过的任务(建组前就在用、回退或清空等清掉了原生会话)不按策略挪走：留在本机并纳入组，之后出问题时
-      // 照常自动换电脑。
-      if (row.sdkSessionId || (await deps.hasAssistantHistory(sessionId))) {
-        if (config.members.some((m) => m.kind === 'local')) {
-          await adopt(sessionId, localSource, groupProviderId, providerGroupMemberKey(null, groupProviderId));
-        }
-        return null;
+      // 已经运行过的任务(建组前就在用、回退或清空等清掉了原生会话)不按策略挪走：留在本机并纳入组。
+      // live session 仍在时之后的运行中错误走 failover；会话已经被清掉时，这次启动失败要能直接换下一台。
+      const hasRun = Boolean(row.sdkSessionId || (await deps.hasAssistantHistory(sessionId)));
+      if (hasRun) {
+        const local = config.members.find((member) => member.kind === 'local');
+        if (!local) return null;
+        if (!(await adopt(sessionId, localSource, groupProviderId, local.key))) return null;
+        if (deps.hasLiveSession?.(sessionId) !== false) return null;
+        return {
+          sessionId,
+          groupProviderId,
+          groupDeviceId: null,
+          agentKind,
+          model,
+          member: local,
+          route: localSource.routeOf(local, row.providerId),
+          overrideRoute: false,
+          localProviderId: row.providerId,
+        };
       }
       const pick = await localSource.pick({ sessionId, providerId: groupProviderId, config, agentKind, model, exclude: new Set() });
       if (pick.kind === 'none') return null;
@@ -1177,7 +1282,9 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
       const config = await source.readGroup(context.groupProviderId).catch(() => undefined);
       // 启动阶段同样：组所在电脑确认组已删除时立即解除绑定，读不到不动。
       if (config === null) {
-        await releaseDeletedGroup(context.sessionId, groupOf(source, context.groupProviderId));
+        if (!context.pendingGroupAdoption) {
+          await releaseDeletedGroup(context.sessionId, groupOf(source, context.groupProviderId));
+        }
         return null;
       }
       if (!config?.autoSwitch) return null;
