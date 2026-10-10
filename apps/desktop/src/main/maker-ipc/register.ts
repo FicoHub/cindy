@@ -136,6 +136,7 @@ import {
   storedCustomProviderId,
   isLocalOnlyProviderForAgent,
   isOrganizationManagedProvider,
+  type ProviderView,
 } from '@cindy/model-providers';
 import { createId } from '@paralleldrive/cuid2';
 import {
@@ -874,8 +875,10 @@ import {
   type WorkerTerminalTurnCapture,
 } from './orcaTeamService.js';
 import {
+  agentDeviceCatalogFailure,
   createOrcaWorkerCreationService,
   normalizeOrcaWorkerLabel,
+  pickWorkerAgentDeviceId,
 } from './orcaWorkerCreationService.js';
 import {
   resolveSendToSessionExecutionConfig,
@@ -909,7 +912,8 @@ import {
   createOrcaRemoteWorkerSessionOpener,
   registerOrcaRemoteWorkerHandlers,
 } from './orcaRemoteWorkerHost.js';
-import { createOrcaRemoteWorkers, type OrcaRemoteWorkers } from './orcaRemoteWorkers.js';
+import { createOrcaRemoteWorkers, isExecutionDeviceCandidate, type OrcaRemoteWorkers } from './orcaRemoteWorkers.js';
+import { getReceivedShares, providerShareAgentDeviceId } from '../device-link/providerShareGuest.js';
 import { ORCA_EXECUTION_DEVICES_CHANNEL } from '@cindy/device-link';
 import {
   parseOrcaRemoteLead,
@@ -2246,6 +2250,9 @@ interface OrcaCollabService {
     label: string;
     workingDir?: string;
     initialTask?: string;
+    executionDeviceId?: string;
+    /** Worker 的 Agent 所在位置；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
+    agentDeviceId?: string | null;
   }) => Promise<
     | {
         ok: true;
@@ -2420,9 +2427,18 @@ interface OrcaCollabService {
   }) => Promise<
     { ok: true; workerId?: string } | { ok: false; errorCode: string; message: string }
   >;
-  listAvailableModels: (params: { agent?: AgentKind; callerSessionId?: string }) => Promise<
+  listAvailableModels: (params: {
+    agent?: AgentKind;
+    callerSessionId?: string;
+    /** 列哪里的模型：缺省 = Lead 所在位置；null = 任务所在电脑；string = 那台电脑或分享。 */
+    agentDeviceId?: string | null;
+  }) => Promise<
     | {
         ok: true;
+        /** 本次列出的位置(null = 任务所在电脑)。 */
+        agentDeviceId?: string | null;
+        /** 可以放 Worker Agent 的其他位置(同账号电脑与收到的分享)。 */
+        locations?: Array<{ agentDeviceId: string; name: string }>;
         codex?: Array<{
           id: string;
           label: string;
@@ -2464,6 +2480,8 @@ interface EnableOrcaOptions {
   executionDeviceId?: string;
   /** 运行设备上的工作目录；缺省由那台分配。只在指定运行设备时生效。 */
   workingDir?: string;
+  /** 首个 Worker 的 Agent 所在位置(远程供应商)；语义见 OrcaWorkerCreateParams.agentDeviceId。 */
+  agentDeviceId?: string | null;
 }
 
 let orcaCollabServiceHolder: OrcaCollabService | null = null;
@@ -6022,6 +6040,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 新控制端只有看到此位，才会让被控端延后 UI initial_task 并在 Lead 首条
       // 输入 accepted 且历史可查询后走 WORKER_DISPATCH_UI_ASSIGNMENT；旧端继续即时派发。
       supportsDeferredOrcaUiAssignment: true,
+      // 新控制端只有看到此位，才在 Worker 的模型面板里列出远程供应商并给创建 / 开启协同带
+      // agentDeviceId(Worker 的 Agent 所在电脑)；旧 desktop 会静默丢掉这个字段，把 Worker 建在
+      // 与 Lead 相同的位置，所以缺省 false 时控制端不提供。
+      supportsOrcaWorkerAgentDevice: true,
       // 调度更新支持 intervalMs:null 的显式清空表达(IPC 入口归一化成引擎的
       // 「带 key 的 undefined」)。旧 desktop 缺省为 false——旧引擎会把 null 当
       // 已设间隔算出 now+null 立即触发,mobile 必须据此回退旧 wire 形态(省略
@@ -9756,6 +9778,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             ...(opts.workingDir ? { workingDir: opts.workingDir } : {}),
           }
         : {}),
+      ...(opts.agentDeviceId !== undefined ? { agentDeviceId: opts.agentDeviceId } : {}),
     });
     if (!result.ok) throwOrcaServiceFailure(result);
     log.info('enableOrca done', {
@@ -12509,6 +12532,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         deferDelegateTask?: unknown;
         executionDeviceId?: unknown;
         workingDir?: unknown;
+        agentDeviceId?: unknown;
       };
       const workerAgent: AgentKind =
         body.workerAgent === 'codex' ? 'codex' : body.workerAgent === 'pi' ? 'pi' : 'claude-code';
@@ -12546,6 +12570,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 : {}),
             }
           : {}),
+        // 首个 Worker 的 Agent 所在位置(远程供应商)；旧控制端不带 = 跟 Lead。
+        ...pickWorkerAgentDeviceId(body.agentDeviceId),
       });
     },
   );
@@ -12815,6 +12841,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               : {}),
           }
         : {}),
+      // Worker 的 Agent 所在位置(远程供应商)；旧控制端不带 = 跟 Lead。
+      ...pickWorkerAgentDeviceId(b.agentDeviceId),
     });
     if (!result.ok) throwOrcaServiceFailure(result);
     return {
@@ -13171,6 +13199,31 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return { devices: await orcaRemoteWorkers.listExecutionDevices() };
   });
 
+  /**
+   * Lead 的 list_available_models 给出的 Worker Agent 位置(远程供应商)：同账号在线、开了远程控制的
+   * 电脑，以及收到的、未暂停的分享。只列位置不读目录；那台没开放供应商时按位置再列模型会是空的。
+   * 分享不写分享者的电脑名(provider-sharing.md §6)，写「供应商 · 分享者」。
+   */
+  async function listWorkerAgentLocations(): Promise<Array<{ agentDeviceId: string; name: string }>> {
+    const { devices } = await handleListDevices(deviceDirectoryDeps()).catch(() => ({ devices: [] }));
+    const shares = getReceivedShares().filter((share) => share.status === 'active');
+    return [
+      ...devices
+        .filter(isExecutionDeviceCandidate)
+        .map((device) => ({ agentDeviceId: device.deviceId, name: device.name || device.deviceId })),
+      ...shares.flatMap((share) => {
+        try {
+          return [{
+            agentDeviceId: providerShareAgentDeviceId(share.shareId),
+            name: `${share.providerLabel} · ${share.owner.displayName}`,
+          }];
+        } catch {
+          return [];
+        }
+      }),
+    ];
+  }
+
   const getProviderRoutingContext = () =>
     readOrcaWorkerProviderRoutingContext({
       providerService: getDesktopProviderService(),
@@ -13251,6 +13304,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // paths on another device. Reject before directory lookup or remote creation.
       if (params.executionDeviceId !== undefined) {
         throw new PluginTaskError('PERMISSION_DENIED', 'Plugin-owned tasks cannot create Workers on another device');
+      }
+      // 插件登记的路由不含 Agent 所在电脑：Worker 只能跟 Lead(或留在本机)，不能指定别的电脑。
+      // 指向本机自己按留在本机算(与创建服务同口径)。
+      if (
+        typeof params.agentDeviceId === 'string'
+        && params.agentDeviceId !== getSelfDeviceId()
+        && params.agentDeviceId !== await readSessionAgentDeviceId(params.leadSessionId)
+      ) {
+        throw new PluginTaskError('PERMISSION_DENIED', 'Plugin-owned tasks cannot run a Worker Agent on another computer');
       }
       const cfg = readPluginTaskConfig(receipt.pluginId);
       const resolveAuthorizedDirectory = (requested: string) => resolvePluginWorkerDirectory({
@@ -13333,11 +13395,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     getAvailableModels: (agent) => maker.getCapabilities(agent).availableModels,
     getProviderRoutingContext: async (agent, remoteHostId, agentDeviceId) => agentDeviceId && !remoteHostId
-      // lead 的 Agent 在另一台电脑运行：worker 的模型与来源按那台的目录。
+      // Worker 的 Agent 在另一台电脑(或分享)运行：模型与来源按那台的目录。
       ? deviceWorkerRoutingContext(await readDeviceProviderViews(remoteBackgroundInvoke, agentDeviceId), agent ?? 'claude-code')
       : agent === 'codex' && remoteHostId
         ? sshCodexWorkerRoutingContext(await readSshCodexModelList({ id: remoteHostId }, listSshCodexProviders))
         : getProviderRoutingContext(),
+    isSelfDeviceId: (deviceId) => deviceId === getSelfDeviceId(),
     readClaudeApiKey,
     reserveWorkerCreation,
     renewWorkerCreationReservation,
@@ -14803,15 +14866,31 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         };
       }
     },
-    listAvailableModels: async ({ agent, callerSessionId }) => {
+    listAvailableModels: async ({ agent, callerSessionId, agentDeviceId: requestedAgentDeviceId }) => {
       try {
         const agents: AgentKind[] = agent ? [agent] : ['codex', 'claude-code', 'pi'];
-        // Agent 在另一台电脑运行的任务：Worker 也在那台运行，列那台的模型与来源。
-        const agentDeviceId = callerSessionId ? await readSessionAgentDeviceId(callerSessionId) : null;
+        // 不指定位置时列 Lead 所在位置(Lead 的 Agent 在另一台电脑运行就列那台)，与 create_worker
+        // 不指定位置时 Worker 跟 Lead 同一口径；指定了就列那里(null = 任务所在电脑)。
+        const leadAgentDeviceId = callerSessionId ? await readSessionAgentDeviceId(callerSessionId) : null;
+        const agentDeviceId = requestedAgentDeviceId === undefined
+          ? leadAgentDeviceId
+          : requestedAgentDeviceId && requestedAgentDeviceId !== getSelfDeviceId()
+            ? requestedAgentDeviceId
+            : null;
+        // SSH Lead 的 Worker 在 SSH 主机上运行 Agent，不能放到别的电脑：不列可选位置。
+        const sshLead = callerSessionId ? Boolean(await readSessionRemoteHostIdCached(callerSessionId)) : false;
+        const locations = sshLead ? undefined : await listWorkerAgentLocations();
         if (agentDeviceId) {
-          const views = await readDeviceProviderViews(remoteBackgroundInvoke, agentDeviceId);
+          let views: ProviderView[];
+          try {
+            views = await readDeviceProviderViews(remoteBackgroundInvoke, agentDeviceId);
+          } catch (err) {
+            return agentDeviceCatalogFailure(err);
+          }
           return {
             ok: true,
+            agentDeviceId,
+            ...(locations ? { locations } : {}),
             ...Object.fromEntries(agents.map((a) => [
               a === 'codex' ? 'codex' : a === 'pi' ? 'pi' : 'claude_code',
               deviceAvailableModels(views, a),
@@ -14842,7 +14921,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             defaultProviderId: providerRouting.resolveDefaultProviderIdForModel(a, m.id),
           }));
         }
-        return { ok: true, ...result };
+        return { ok: true, agentDeviceId: null, ...(locations ? { locations } : {}), ...result };
       } catch (err) {
         return {
           ok: false,
