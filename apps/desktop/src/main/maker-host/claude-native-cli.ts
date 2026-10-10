@@ -14,7 +14,7 @@
  * 「断开」只撤销 Cindy 的使用许可(nativeProviderAuthBinding),不登出 CLI。
  */
 
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 
 import { cleanProcessEnv } from '@cindy/maker-core';
@@ -167,29 +167,6 @@ export function buildWindowsVisibleConsoleSpawn(
   };
 }
 
-const TASKKILL_TIMEOUT_MS = 2_000;
-
-/**
- * 结束可见控制台登录:`start /wait` 下 CLI 是 cmd 的子进程,只杀 cmd 会留下登录窗口,
- * 所以按进程树结束。taskkill 只能按 PID 查找目标,必须保证这个 PID 仍属于我们的 cmd:
- * Windows 在进程对象还有任何打开的句柄时不会复用其 PID,而 libuv 持有子进程句柄直到 JS
- * 处理完 exit 才关闭。这里先确认 JS 侧尚未看到退出,再**同步**执行 taskkill——同步期间事件
- * 循环不跑,句柄不会被关闭,PID 不可能被复用(异步 taskkill 会重新打开复用窗口)。代价是
- * 取消/超时这一路径上主进程最多阻塞 TASKKILL_TIMEOUT_MS;失败、超时都回退结束根进程。
- */
-function stopVisibleConsoleLogin(child: ChildProcess): void {
-  if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-    const taskkill = path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
-    const tree = spawnSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
-      windowsHide: true,
-      stdio: 'ignore',
-      timeout: TASKKILL_TIMEOUT_MS,
-    });
-    if (!tree.error && tree.status === 0) return;
-  }
-  child.kill();
-}
-
 function runCli(
   args: string[],
   options: { env: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal; visibleConsole?: boolean },
@@ -222,8 +199,10 @@ function runCli(
     const stop = (why: 'timeout' | 'cancelled') => {
       if (reason) return;
       reason = why;
-      if (visibleConsole) stopVisibleConsoleLogin(child);
-      else child.kill();
+      // 可见控制台登录只结束根 cmd(经进程句柄,身份确定),不按 PID 结束进程树:taskkill /T
+      // 只能按可复用的 PID 定位,且会连带结束 CLI 拉起的浏览器等子进程。官方 CLI 的登录窗口
+      // 留给用户关闭;之后即使在窗口里完成授权,登录态仍以 `auth status --json` 为准。
+      child.kill();
     };
     const timer = setTimeout(() => stop('timeout'), options.timeoutMs);
     const onAbort = () => stop('cancelled');
