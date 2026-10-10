@@ -48,6 +48,7 @@ vi.mock('../botWorkbenchTools.js', () => ({
       : { ok: false, errorCode: 'NOT_A_BOT_SESSION' },
 }));
 import { configureBotTodoDispatch, todoAccess, todoForCaller } from '../botTodoAccess';
+import { createBotTodoDispatch } from '../botTodoDispatch';
 let root = '';
 beforeEach(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), 'todo-owner-'));
@@ -137,6 +138,36 @@ describe('Todo public access', () => {
     expect((await access.list()).items[0].action?.state).toBe('unknown');
     await access.act(todo.id, todo.revision, 'request-retry');
     expect(send).toHaveBeenCalledOnce();
+  });
+  it('keeps queued receipt distinct from dispatch, retries discarded input and ignores duplicate or stale receipts', async () => {
+    const send = vi.fn(async () => ({ ok: true, queued: true }));
+    const bridge = createBotTodoDispatch(send);
+    configureBotTodoDispatch(bridge.dispatch);
+    const access = await todoAccess('bot-one'), todo = await access.patch(patch);
+    const queued = await access.act(todo.id, todo.revision, 'queued-one');
+    expect(queued?.action?.state).toBe('received');
+    await bridge.settle('different-session', 'queued-one', false);
+    expect((await access.list()).items[0].action?.state).toBe('received');
+    await bridge.settle('canonical-one', 'queued-one', false);
+    expect((await access.list()).items[0].action?.state).toBe('failed');
+    await access.act(todo.id, todo.revision, 'queued-two');
+    await bridge.settle('canonical-one', 'queued-one', true);
+    expect((await access.list()).items[0].action?.state).toBe('received');
+    await bridge.settle('canonical-one', 'queued-two', true);
+    await bridge.settle('canonical-one', 'queued-two', false);
+    expect((await access.list()).items[0].action?.state).toBe('accepted');
+    expect((await access.list()).items[0].status).toBe('open');
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+  it('rejects an old-owner queue receipt without writing to either account', async () => {
+    const bridge = createBotTodoDispatch(async () => ({ ok: true, queued: true }));
+    configureBotTodoDispatch(bridge.dispatch);
+    const access = await todoAccess('bot-one'), todo = await access.patch(patch);
+    await access.act(todo.id, todo.revision, 'old-owner');
+    env.owner = 'owner-two';
+    await expect(bridge.settle('canonical-one', 'old-owner', false)).rejects.toMatchObject({ code: 'OWNER_SCOPE_CHANGED' });
+    env.owner = 'owner-one';
+    expect((await access.list()).items[0].action?.state).toBe('received');
   });
 });
 

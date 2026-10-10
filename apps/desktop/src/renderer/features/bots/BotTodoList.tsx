@@ -88,7 +88,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
   const scope = useRef(getDataOwnerGeneration()),
     epoch = useRef(0),
     mounted = useRef(true),
-    initialOrder = useRef<string[]>([]),
+    initialOrder = useRef(new Map<string, number>()),
     api = useRef(transport);
   api.current = transport;
   const current = () => mounted.current && isDataOwnerGenerationCurrent(scope.current);
@@ -108,12 +108,10 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
       const data = await api.current.list();
       if (!current() || request !== epoch.current) return;
       setItems(data.items);
-      initialOrder.current = [
-        ...initialOrder.current,
-        ...sorted(data.items, 'dueOrder')
-          .map((x) => x.id)
-          .filter((id) => !initialOrder.current.includes(id)),
-      ];
+      for (const x of sorted(data.items, 'dueOrder')) {
+        if (!initialOrder.current.has(x.id))
+          initialOrder.current.set(x.id, initialOrder.current.size);
+      }
       setError('');
     } catch {
       if (current()) setError('error');
@@ -146,11 +144,11 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
   const rows = items
     .filter((x) => (view === 'hidden' ? !todoVisible(x) : x.status === 'open' && todoVisible(x)))
     .filter(matches)
-    .sort((a, b) => initialOrder.current.indexOf(a.id) - initialOrder.current.indexOf(b.id));
+    .sort((a, b) => (initialOrder.current.get(a.id) ?? 0) - (initialOrder.current.get(b.id) ?? 0));
   const completed = items
     .filter((x) => x.status === 'done' && todoVisible(x))
     .filter(matches)
-    .sort((a, b) => initialOrder.current.indexOf(a.id) - initialOrder.current.indexOf(b.id));
+    .sort((a, b) => (initialOrder.current.get(a.id) ?? 0) - (initialOrder.current.get(b.id) ?? 0));
   const visibleDonePage = Math.min(donePage, Math.max(0, Math.ceil(completed.length / 25) - 1));
   const visiblePage = Math.min(page, Math.max(0, Math.ceil(rows.length / 25) - 1));
   const run = async (fn: () => Promise<unknown>, close = false) => {
@@ -510,7 +508,7 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
           value={order}
           onChange={(e) => {
             setOrder(e.target.value);
-            initialOrder.current = sorted(items, e.target.value).map((x) => x.id);
+            initialOrder.current = new Map(sorted(items, e.target.value).map((x, rank) => [x.id, rank]));
             setPage(0);
             setDonePage(0);
           }}

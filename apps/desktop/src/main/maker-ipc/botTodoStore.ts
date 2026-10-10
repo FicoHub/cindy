@@ -208,7 +208,14 @@ export function createBotTodoStore(
         try {
           validateTodoDeadline(t.sourceDeadline);
           if (t.deadlineOverride) validateTodoDeadline(t.deadlineOverride.value);
-          if (t.deadlineCandidate) validateTodoDeadline(t.deadlineCandidate.value);
+          if (t.deadlineCandidate) {
+            validateTodoDeadline(t.deadlineCandidate.value);
+            if (
+              typeof t.deadlineCandidate.reason !== 'string' ||
+              !t.deadlineCandidate.reason.trim() ||
+              t.deadlineCandidate.reason.length > 2000
+            ) throw new TodoError('CORRUPT_STORE');
+          }
         } catch {
           throw new TodoError('CORRUPT_STORE');
         }

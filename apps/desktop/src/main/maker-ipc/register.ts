@@ -1,4 +1,5 @@
 import { configureBotTodoDispatch } from './botTodoAccess.js';
+import { createBotTodoDispatch } from './botTodoDispatch.js';
 import { assertBotTaskCoordination, classifySessionMessagePurpose, coordinationInput } from './botTaskCoordination.js';
 import type { BotTaskCoordination, SessionMessagePurpose } from '../../shared/botTaskCoordination.js';
 import { openSession, setSessionOpeningModelAdmission } from '../localDb/sessionOpening.js';
@@ -9889,12 +9890,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }
   }
 
-  configureBotTodoDispatch(async ({sessionId,message,displayText,requestId,assertCurrent}) => {
+  const todoDispatch = createBotTodoDispatch(async ({sessionId,message,displayText,requestId,assertCurrent}) => {
     assertCurrent();
     const result = await sendToSessionInternal({targetSessionId:sessionId,message,persistedContent:displayText,clientId:requestId,onAccepted:assertCurrent,
       autoReviewUserText:{kind:'delegated-continuation'}});
-    assertCurrent();return {ok:result.ok, ...(!result.ok ? {error:result.message} : {})};
+    assertCurrent();return {ok:result.ok, queued:result.ok && result.wakeKind === 'queued', ...(!result.ok ? {error:result.message} : {})};
   });
+  configureBotTodoDispatch(todoDispatch.dispatch);
+  const settleTodoDispatch = (sessionId: string, clientId: string, dispatched: boolean) =>
+    todoDispatch.settle(sessionId, clientId, dispatched).catch(() => {
+      log.warn('Todo input receipt could not be saved');
+    });
 
   async function sendToSessionInternal(params: {
     botTaskCoordination?: BotTaskCoordination;
@@ -16657,7 +16663,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getLastAssistantTranscriptUuid,
     // 插话并入正在运行的 turn,不开启新 turn:排队时登记的「新 turn 接管」回调不再适用,
     // 只释放登记(不运行),否则会给已在跑的 worker 另建一份 running/auto-bridge 身份。
-    onSteerAccepted: (_sessionId, item) => {
+    onSteerAccepted: async (sessionId, item) => {
+      await settleTodoDispatch(sessionId, item.clientId, true);
       orcaInterAgentDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(item.clientId);
     },
     onAcceptedQueuedMessage: async (sessionId, item, restoredFromSnapshot): Promise<void> => {
@@ -16694,6 +16701,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       settleQueuedAttachmentPersistenceFailure(sessionId, item.clientId, opts.retainForRetry);
     },
     onDispatchedUserTurn: async (sessionId, item, preVendorDispatchAt): Promise<void> => {
+      await settleTodoDispatch(sessionId, item.clientId, true);
       botDelegationServiceHolder?.confirmQueuedSessionInputDispatched(sessionId, item.clientId);
       welcomeDispatchReceipts.settle(sessionId, item.clientId, true);
       const attemptToken = autoResumeAttemptToken(item);
@@ -16835,6 +16843,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     // 队列项未派发即被丢弃(stop/remove/clearSession) → 释放暂存的 accepted 副作用, 防回调表泄漏。
     onDiscardedQueuedMessage: (sessionId, item) => {
+      void settleTodoDispatch(sessionId, item.clientId, false);
       notePluginTaskLifecycle(service => service.discard(sessionId, item, 'cancelled'));
       if (item.durableDelivery === true) {
         void saveCancelledInputDelivery(sessionId, item.clientId).catch((error) => {

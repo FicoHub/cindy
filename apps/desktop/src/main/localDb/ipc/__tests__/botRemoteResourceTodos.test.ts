@@ -139,3 +139,22 @@ it('bounds text fallback independently of legitimate long-page data', async () =
   expect(resource.blocks?.[0].fallbackMarkdown.length).toBeLessThanOrEqual(8000);
   expect((resource.blocks?.[0].data as { items: unknown[] }).items).toHaveLength(25);
 });
+
+it('projects host-only paths and metadata out of both reads and update responses while keeping the host record', async () => {
+  const access = await env.access();
+  const todo = await access.patch({ key: '/host/private/project:bug', title: '反馈', outcome: '验收',
+    sources: [{ kind: 'github', id: '/host/private/project:issue', project: '/host/private/project', label: 'Issue', ref: 'https://example.com/issue' }],
+    associations: [{ kind: 'pr', id: '/host/private/project:pr', label: 'PR' }],
+    next: { kind: 'advance', label: '继续', instruction: 'Read /host/private/project' } });
+  const resource = await remoteResourceRegistry.get(context, { client, ref });
+  expect(JSON.stringify(resource)).not.toContain('/host/private');
+  const items = (resource.blocks?.[0].data as { items: Array<{ id: string; sources: Array<{ project?: string; ref?: string }> }> }).items;
+  expect(items[0].id).toBe(todo.id);
+  expect(items[0].sources[0].project).toBeUndefined();
+  expect(items[0].sources[0].ref).toBe('https://example.com/issue');
+  const updated = await remoteResourceRegistry.invoke(context, { client, collectionId: 'teammates', resourceRef: ref,
+    actionId: 'todo-update', input: { id: todo.id, expectedRevision: todo.revision, progress: '手机修改' } });
+  expect(JSON.stringify(updated)).not.toContain('/host/private');
+  expect((await access.list()).items[0].sources[0].project).toBe('/host/private/project');
+  expect((await access.list()).items[0].next.instruction).toBe('Read /host/private/project');
+});

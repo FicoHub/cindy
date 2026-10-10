@@ -492,7 +492,7 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
             {info('progress', detail.progress)}
             {info('outcome', detail.outcome)}
             {info('value', detail.value)}
-            {info('next', detail.next?.instruction)}
+            {info('next', detail.next?.label)}
             {detail.next &&
               detail.next.kind !== 'view' &&
               (!detail.action || detail.action.state === 'failed') &&
@@ -530,7 +530,7 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
             {!!detail.associations.length &&
               info(
                 'associations',
-                detail.associations.map((a) => a.label + ' · ' + a.id).join('\n'),
+                detail.associations.map((a) => a.label).join('\n'),
               )}
             {detail.history.map((h, n) => (
               <View key={n}>

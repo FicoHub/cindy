@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { botTodoRemoteProjection } from './botTodoRemoteProjection.js';
 import { todoAccess } from '../../maker-ipc/botTodoAccess.js';
 import { queryTodoItems, type TodoListQuery, type TodoPatch } from '@cindy/maker-shared/teammate-todo';
 import { and, desc, inArray, isNull } from 'drizzle-orm';
@@ -98,6 +99,7 @@ export function registerBotRemoteResourceProvider(management?: typeof botRemoteM
         const all = await (await todoAccess(botId)).list();
         if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new RemoteResourceRegistryError('NOT_FOUND', 'Account changed');
         const page = queryTodoItems(all.items, request.query ? JSON.parse(request.query) as TodoListQuery : {});
+        page.items = page.items.map(botTodoRemoteProjection);
         return {ref:request.ref,revision:createHash('sha256').update(JSON.stringify(all.items)).digest('hex'),display:{title:source.name},links:[],
           blocks:[{id:'todos',primitive:'teammate-todos',fallbackMarkdown:page.items.map(t=>t.title+' — '+t.progress).join('\n').slice(0,8000),data:page}]};
       }
@@ -157,7 +159,7 @@ export function registerBotRemoteResourceProvider(management?: typeof botRemoteM
         const input = request.input ?? {};
         const result = request.actionId === 'todo-update' ? await access.patch(input as TodoPatch) : await access.act(input.id as string,input.revision as number,input.requestId as string,request.client.locale);
         if (!isDataOwnerBroadcastScopeCurrent(scope)) throw new RemoteResourceRegistryError('NOT_FOUND', 'Account changed');
-        return {effects:[],todo:result};
+        return {effects:[],todo:result ? botTodoRemoteProjection(result) : null};
       }
 
       if (management && request.actionId === 'open-agent-import' && request.resourceRef?.id === 'create') return {
