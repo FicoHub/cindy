@@ -9440,11 +9440,8 @@
         "railSameEngine": "{{agent}} only",
         "crossEngineWarning": "Switching engines rebuilds context and may lose content",
         "favoritesSyncFailed": "Favorites could not sync. Reopen the picker to retry; the remote computer may need an update.",
-        "railRemoteProviderGroup": "{{provider}} · {{device}} · Provider Group",
-        "groupNote_one": "Provider Group · {{count}} computer",
-        "groupNote_other": "Provider Group · {{count}} computers",
-        "groupNoteMembers_one": "Provider Group · {{count}} computer: {{names}}",
-        "groupNoteMembers_other": "Provider Group · {{count}} computers: {{names}}"
+        "railRemoteProviderGroup": "{{provider}} · {{device}} · {{group}}",
+        "providerGroupLabel": "{{provider}} · {{group}}"
       }
     },
     "permissionSelector": {

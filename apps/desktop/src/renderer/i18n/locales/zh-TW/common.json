@@ -9419,9 +9419,8 @@
         "railSameEngine": "僅 {{agent}}",
         "crossEngineWarning": "切換引擎會重建上下文，可能遺失內容",
         "favoritesSyncFailed": "收藏未能同步。請重新開啟重試；被控電腦可能需要更新。",
-        "railRemoteProviderGroup": "{{provider}} · {{device}} · 供應商組",
-        "groupNote_other": "供應商組 · {{count}} 台電腦",
-        "groupNoteMembers_other": "供應商組 · {{count}} 台電腦：{{names}}"
+        "railRemoteProviderGroup": "{{provider}} · {{device}} · {{group}}",
+        "providerGroupLabel": "{{provider}} · {{group}}"
       },
       "modelListAria": "模型清單"
     },

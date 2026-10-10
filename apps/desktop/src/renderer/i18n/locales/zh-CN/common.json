@@ -9420,9 +9420,8 @@
         "railSameEngine": "仅 {{agent}}",
         "crossEngineWarning": "切换引擎会重建上下文，可能丢失内容",
         "favoritesSyncFailed": "收藏未能同步。请重新打开重试；被控电脑可能需要更新。",
-        "railRemoteProviderGroup": "{{provider}} · {{device}} · 供应商组",
-        "groupNote_other": "供应商组 · {{count}} 台电脑",
-        "groupNoteMembers_other": "供应商组 · {{count}} 台电脑：{{names}}"
+        "railRemoteProviderGroup": "{{provider}} · {{device}} · {{group}}",
+        "providerGroupLabel": "{{provider}} · {{group}}"
       }
     },
     "permissionSelector": {
