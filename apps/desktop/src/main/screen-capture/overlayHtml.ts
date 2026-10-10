@@ -87,7 +87,7 @@ const OVERLAY_SCRIPT = `
     sel.style.top = rect.y + 'px';
     sel.style.width = rect.width + 'px';
     sel.style.height = rect.height + 'px';
-    size.textContent = Math.round(rect.width) + ' \\\\u00d7 ' + Math.round(rect.height);
+    size.textContent = Math.round(rect.width) + ' \\u00d7 ' + Math.round(rect.height);
     mask.style.display = 'none';
     hint.style.display = 'none';
   }

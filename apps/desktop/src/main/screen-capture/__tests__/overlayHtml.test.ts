@@ -14,6 +14,16 @@ const PALETTE: ScreenCaptureOverlayPalette = {
 };
 
 describe('buildRegionCaptureOverlayHtml', () => {
+  // review P2: OVERLAY_SCRIPT 嵌在模板字符串里, 多一层转义会让尺寸标签显示字面量 \u00d7。
+  it('renders the selection size label with a real multiplication sign', () => {
+    const html = buildRegionCaptureOverlayHtml('hint', PALETTE);
+    const line = html.split('\n').find((l) => l.includes('size.textContent ='))!.trim();
+    const expr = line.replace(/^size\.textContent = /, '').replace(/;$/, '');
+    const label = new Function('Math', 'rect', `return ${expr}`)(Math, { width: 320, height: 180 });
+    expect(label).toBe('320 \u00d7 180');
+    expect(label).not.toContain('\\');
+  });
+
   it('embeds the hint text and the overlay API contract', () => {
     const html = buildRegionCaptureOverlayHtml('拖动框选要截取的区域，按 Esc 取消', PALETTE);
     expect(html).toContain('拖动框选要截取的区域，按 Esc 取消');

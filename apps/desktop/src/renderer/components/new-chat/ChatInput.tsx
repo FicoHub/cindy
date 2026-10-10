@@ -301,7 +301,7 @@ import { predictPromptUntilDisabled } from '@/lib/predictPromptUntilDisabled';
 import {
   registerComposerCaptureLock,
   registerComposerCaptureDraftFlusher,
-  requestRegionCapture,
+  requestRegionCaptureAfterPaint,
   useRegionCaptureAvailable,
 } from '@/hooks/useRegionCaptureShortcut';
 import {
@@ -4604,7 +4604,7 @@ export function ChatInput({
         searchText: 'region screenshot capture',
         disabled: composerMutationLocked,
         run: () => {
-          requestRegionCapture(captureTarget);
+          requestRegionCaptureAfterPaint(captureTarget);
         },
       });
     }

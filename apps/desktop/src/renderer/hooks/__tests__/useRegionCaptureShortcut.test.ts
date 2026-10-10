@@ -15,6 +15,7 @@ import {
   registerComposerCaptureLock,
   subscribeComposerCaptureLocks,
   requestRegionCapture,
+  requestRegionCaptureAfterPaint,
   resolveRegionCaptureTargetFromPath,
 } from '../useRegionCaptureShortcut';
 
@@ -63,6 +64,23 @@ describe('requestRegionCapture', () => {
   // 单点注册保证。
   it('safely returns false when no trigger is registered', () => {
     expect(requestRegionCapture()).toBe(false);
+  });
+});
+
+describe('requestRegionCaptureAfterPaint', () => {
+  // review P2: 菜单点击不能在关闭面板绘制前冻结屏幕; 目标在点击时已绑定。
+  it('waits two frames before requesting, with the target bound at click time', () => {
+    const frames: Array<() => void> = [];
+    const request = vi.fn(() => true);
+    const target = { sessionId: 's1', draftKey: 's1', composerId: Symbol('composer') };
+    requestRegionCaptureAfterPaint(target, { frame: (cb) => { frames.push(cb); }, request });
+    expect(request).not.toHaveBeenCalled();
+    frames.shift()!();
+    expect(request).not.toHaveBeenCalled();
+    frames.shift()!();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(target);
+    expect(frames).toHaveLength(0);
   });
 });
 

@@ -139,6 +139,22 @@ export function requestRegionCapture(explicitTarget?: RegionCaptureTarget): bool
   return activeTrigger?.(explicitTarget) ?? false;
 }
 
+/**
+ * 菜单点击入口: 先让菜单的关闭提交并完成一次绘制, 再请求冻结屏幕。
+ * 同一 click 栈里直接调用时, Windows/Linux 的 overlayCapture 可能在面板
+ * 关闭前截屏, 把刚点的菜单冻进画面并挡住可框选区域(review P2)。
+ * 目标在点击时已绑定, 延迟期间不重新解析。
+ */
+export function requestRegionCaptureAfterPaint(
+  explicitTarget: RegionCaptureTarget,
+  deps: { frame?: (callback: () => void) => unknown; request?: (target: RegionCaptureTarget) => boolean } = {},
+): void {
+  const frame = deps.frame ?? ((callback: () => void) => window.requestAnimationFrame(callback));
+  const request = deps.request ?? requestRegionCapture;
+  // 第一帧: 关闭状态已提交、即将绘制; 第二帧开始时上一帧已画到屏幕。
+  frame(() => frame(() => { request(explicitTarget); }));
+}
+
 export function isRegionCaptureAvailable(): boolean {
   return activeTrigger !== null;
 }
