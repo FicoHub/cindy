@@ -241,6 +241,7 @@ import {
 import {
   createPiTranslateContext,
   disposePiTranslateContext,
+  isCurrentTurnHostAbortRequested,
   isFailedOrAbortedPiCompaction,
   isHostAbortRequestedAtExit,
   markPiHostAbortRequested,
