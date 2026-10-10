@@ -23,7 +23,6 @@ import { ensureManagedLlamaCppProvider } from '../local-model-runtime/managedLla
 import { setBotRemoteMessageService } from './botRemoteMessageReceiver.js';
 import { handleListDevices, defaultDeps as deviceDirectoryDeps } from '../device-link/ipc.js';
 import { getHostSourceDevice, getSelfDeviceId, remoteBackgroundInvoke, remoteInvoke as invokeBotPeer } from '../device-link/index.js';
-import { describeProviderShareDevice } from '../device-link/providerShareGuest.js';
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
@@ -7327,11 +7326,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     );
   }
 
-  /** 分隔条展示用的电脑名：null = 任务所在电脑(本机)，其他按设备目录最近一次的名字。 */
+  /**
+   * 分隔条展示用的电脑名：null = 任务所在电脑(本机)，其他按设备目录最近一次的名字。
+   * 分享来的供应商不写电脑名(分享者的电脑名不给受邀者，provider-sharing.md §6)，分隔条写「另一台电脑」。
+   */
   function describeAgentDevice(deviceId: string | null): string | null {
     if (!deviceId) return getHostSourceDevice().name ?? null;
-    const shared = describeProviderShareDevice(deviceId);
-    if (shared) return shared;
+    if (isProviderShareAgentDeviceId(deviceId)) return null;
     try {
       return readLastKnownDeviceNames()[deviceId] ?? null;
     } catch {

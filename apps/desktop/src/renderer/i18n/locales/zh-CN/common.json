@@ -299,7 +299,6 @@
     "apply": {
       "loading": "正在读取分享链接…",
       "askTitle": "{{name}} 想把 {{provider}} 分享给你",
-      "providerOnDevice": "{{provider}} · {{device}}",
       "factRuns": "Agent 在 {{name}} 的电脑或 {{name}} 安排的其他电脑上用 {{provider}} 运行",
       "factRunsDetail": "用量计入 {{name}} 的 {{provider}}，{{name}} 能看到你的用量",
       "factFiles": "你的项目文件和命令仍在你自己的电脑上执行",
@@ -385,9 +384,9 @@
       "needsUpdateNote": "对方的 Cindy 更新后才能使用这个分享。"
     },
     "picker": {
-      "deviceName": "{{device}} · 来自 {{owner}} 的分享",
       "unavailable": "已不可用的分享",
-      "hostOutdated": "分享者电脑上的 Cindy 版本太旧，读不到这些模型。请让对方更新 Cindy 后再试。"
+      "hostOutdated": "分享者电脑上的 Cindy 版本太旧，读不到这些模型。请让对方更新 Cindy 后再试。",
+      "numbered": "{{name}} ({{index}})"
     },
     "notification": {
       "requestTitle": "新的分享申请",
@@ -440,6 +439,8 @@
       "local": "本机",
       "sourceDevice": "我的其他电脑",
       "sourceShare": "来自 {{name}} 的分享",
+      "shareComputer": "{{name}} 的电脑",
+      "shareComputerUnknown": "分享来的电脑",
       "runningCount_other": "{{count}} 个任务运行中",
       "limitAria": "{{name}} 的并发上限",
       "limitOption_other": "上限 {{count}}",
@@ -9419,7 +9420,9 @@
         "railSameEngine": "仅 {{agent}}",
         "crossEngineWarning": "切换引擎会重建上下文，可能丢失内容",
         "favoritesSyncFailed": "收藏未能同步。请重新打开重试；被控电脑可能需要更新。",
-        "railRemoteProviderGroup": "{{provider}} · {{device}} · 供应商组"
+        "railRemoteProviderGroup": "{{provider}} · {{device}} · 供应商组",
+        "groupNote_other": "供应商组 · {{count}} 台电脑",
+        "groupNoteMembers_other": "供应商组 · {{count}} 台电脑：{{names}}"
       }
     },
     "permissionSelector": {

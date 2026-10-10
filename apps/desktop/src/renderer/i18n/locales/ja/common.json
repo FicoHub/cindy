@@ -299,7 +299,6 @@
     "apply": {
       "loading": "共有リンクを読み込み中…",
       "askTitle": "{{name}} が {{provider}} をあなたに共有しようとしています",
-      "providerOnDevice": "{{provider}} · {{device}}",
       "factRuns": "Agent は {{name}} のパソコン、または {{name}} が手配した別のパソコンで {{provider}} を使って実行されます",
       "factRunsDetail": "使用量は {{name}} の {{provider}} に計上され、{{name}} はあなたの使用量を確認できます",
       "factFiles": "プロジェクトのファイルとコマンドは引き続きあなたのパソコンで実行されます",
@@ -385,9 +384,9 @@
       "needsUpdateNote": "相手の Cindy が更新されると、この共有を使えるようになります。"
     },
     "picker": {
-      "deviceName": "{{device}} · {{owner}} からの共有",
       "unavailable": "利用できなくなった共有",
-      "hostOutdated": "共有した人のパソコンの Cindy が古いため、これらのモデルを読み込めません。相手に Cindy を更新してもらってから、もう一度お試しください。"
+      "hostOutdated": "共有した人のパソコンの Cindy が古いため、これらのモデルを読み込めません。相手に Cindy を更新してもらってから、もう一度お試しください。",
+      "numbered": "{{name}} ({{index}})"
     },
     "notification": {
       "requestTitle": "新しい共有の申請",
@@ -440,6 +439,8 @@
       "local": "このパソコン",
       "sourceDevice": "自分のほかのパソコン",
       "sourceShare": "{{name}} からの共有",
+      "shareComputer": "{{name}} のパソコン",
+      "shareComputerUnknown": "共有されたパソコン",
       "runningCount_other": "{{count}} 件実行中",
       "limitAria": "{{name}} の同時実行数の上限",
       "limitOption_other": "上限 {{count}}",
@@ -9419,7 +9420,9 @@
         "railSameEngine": "{{agent}} のみ",
         "crossEngineWarning": "エンジンを切り替えるとコンテキストが再構築され、内容が失われる場合があります",
         "favoritesSyncFailed": "お気に入りを同期できません。選択画面を開き直してください。接続先の更新が必要な場合があります。",
-        "railRemoteProviderGroup": "{{provider}} · {{device}} · プロバイダーグループ"
+        "railRemoteProviderGroup": "{{provider}} · {{device}} · プロバイダーグループ",
+        "groupNote_other": "プロバイダーグループ · {{count}} 台のパソコン",
+        "groupNoteMembers_other": "プロバイダーグループ · {{count}} 台のパソコン：{{names}}"
       }
     },
     "permissionSelector": {
