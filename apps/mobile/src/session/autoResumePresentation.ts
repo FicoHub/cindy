@@ -1,6 +1,46 @@
 import type { ContinuationInFlightProjectionCapability } from '@/session/types';
 
+/** 对齐桌面 USAGE_LIMIT_RESET_AUTO_RESUME_REASON(apps/desktop/src/shared/agentInputQueue.ts)。 */
+const USAGE_LIMIT_RESET_REASON = 'usage-limit-reset';
+
+export type MobileAutoResumeAgentSwitchCause = 'usage-limit' | 'auth' | 'unavailable' | 'overload';
+
+/** 对齐桌面 AutoResumeAgentSwitch:供应商组自动换电脑后继续。 */
+export interface MobileAutoResumeAgentSwitch {
+  from: string;
+  to: string;
+  cause: MobileAutoResumeAgentSwitchCause;
+}
+
+const AGENT_SWITCH_CAUSES: readonly MobileAutoResumeAgentSwitchCause[] = ['usage-limit', 'auth', 'unavailable', 'overload'];
+
+function readAgentSwitch(value: unknown): MobileAutoResumeAgentSwitch | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { from, to, cause } = value as Record<string, unknown>;
+  if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) return undefined;
+  if (!AGENT_SWITCH_CAUSES.includes(cause as MobileAutoResumeAgentSwitchCause)) return undefined;
+  return { from: from.slice(0, 128), to: to.slice(0, 128), cause: cause as MobileAutoResumeAgentSwitchCause };
+}
+
+/** 对齐桌面 AutoResumeGroupSwitch:分享者的供应商组替分享的人换了一台电脑(不显示电脑名称)。 */
+export interface MobileAutoResumeGroupSwitch {
+  cause: MobileAutoResumeAgentSwitchCause;
+}
+
+function readGroupSwitch(value: unknown): MobileAutoResumeGroupSwitch | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { cause } = value as Record<string, unknown>;
+  if (!AGENT_SWITCH_CAUSES.includes(cause as MobileAutoResumeAgentSwitchCause)) return undefined;
+  return { cause: cause as MobileAutoResumeAgentSwitchCause };
+}
+
 export interface MobileAutoResumeInfo {
+  /** 账号用量上限重置后自动继续(不是重连:不展示重试次数)。 */
+  usageLimitReset?: boolean;
+  /** 供应商组自动换电脑后继续(与 usageLimitReset 同时出现)。 */
+  agentSwitch?: MobileAutoResumeAgentSwitch;
+  /** 分享的人这边的自动换电脑:活动行写「已自动换一台电脑继续」。 */
+  groupSwitch?: MobileAutoResumeGroupSwitch;
   error?: string;
   attempt?: number;
   maxAttempts?: number;
@@ -21,10 +61,16 @@ export interface MobileAutoResumePresentation {
 export function readMobileAutoResumeInfo(data?: Record<string, unknown>): MobileAutoResumeInfo {
   const number = (value: unknown) =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
-  const attempt = number(data?.attempt);
-  const maxAttempts = number(data?.maxAttempts);
-  const sessionTotal = number(data?.sessionTotal);
+  const usageLimitReset = data?.reason === USAGE_LIMIT_RESET_REASON;
+  const attempt = usageLimitReset ? undefined : number(data?.attempt);
+  const maxAttempts = usageLimitReset ? undefined : number(data?.maxAttempts);
+  const sessionTotal = usageLimitReset ? undefined : number(data?.sessionTotal);
+  const agentSwitch = readAgentSwitch(data?.agentSwitch);
+  const groupSwitch = readGroupSwitch(data?.groupSwitch);
   return {
+    ...(usageLimitReset ? { usageLimitReset: true } : {}),
+    ...(agentSwitch ? { agentSwitch } : {}),
+    ...(groupSwitch ? { groupSwitch } : {}),
     ...(typeof data?.error === 'string' && data.error.trim() ? { error: data.error } : {}),
     ...(attempt !== undefined ? { attempt } : {}),
     ...(maxAttempts !== undefined ? { maxAttempts } : {}),
@@ -58,6 +104,7 @@ export function getMobileAutoResumePresentation(
   const info = readMobileAutoResumeInfo(data);
   const hasProgress = info.attempt !== undefined && info.maxAttempts !== undefined;
   const hasInterruptionContext =
+    info.usageLimitReset === true ||
     data?.live === true ||
     info.error !== undefined ||
     hasProgress ||

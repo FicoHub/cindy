@@ -655,6 +655,8 @@ describe('decideCodexRoute', () => {
     const { decideCodexRoute } = await import('../codex-proxy-host.js');
     expect(decideCodexRoute({ model: 'codex/gpt-5.5', authInjection: 'oauth-bearer', gatewayKey: 'gw' }))
       .toEqual({ headerOverride: { authorization: 'Bearer gw' } });
+    expect(decideCodexRoute({ model: 'openai-codex/gpt-6.1-sol', authInjection: 'oauth-bearer', gatewayKey: 'gw' }))
+      .toEqual({ headerOverride: { authorization: 'Bearer gw' } });
   });
 
   it('oauth-bearer + 普通模型 → override 到 ChatGPT, 不换 header(订阅默认)', async () => {
@@ -781,6 +783,8 @@ describe('chatBridgeCapabilitiesForRoute', () => {
   it.each([
     ['https://api.kimi.com/coding/v1', 'k3'],
     ['https://api.kimi.com/coding/v1/', 'k3-256k'],
+    ['https://api.kimi.com/coding/v1', 'kimi-for-coding'],
+    ['https://api.kimi.com/coding/v1', 'kimi-for-coding-highspeed'],
   ])('enables image_url for Kimi Code coding-plan route: %s / %s (#2732)', async (upstream, model) => {
     const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
@@ -824,18 +828,31 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     ['https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'qwen3.7-plus'],
     ['https://coding.dashscope.aliyuncs.com/v1', 'qwen3.8-max-preview'],
     ['https://coding.dashscope.aliyuncs.com/v1', 'qwen3.6-flash'],
+    ['https://coding.dashscope.aliyuncs.com/v1', 'qwen3.6-plus'],
+    ['https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'qwen3.8-max'],
+    ['https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'qwen3.8-flash'],
   ])('enables image_url for Qwen on official DashScope host: %s / %s', async (upstream, model) => {
     const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
   });
 
   it.each([
+    ['https://api.moonshot.cn/v1', 'kimi-k3'],
+    ['https://api.moonshot.ai/v1', 'kimi-k2.7-code'],
+    ['https://api.moonshot.cn/v1', 'kimi-k2.7-code-highspeed'],
     ['https://api.moonshot.cn/v1', 'kimi-k2.6'],
+  ])('enables image_url for Kimi on official Moonshot host: %s / %s', async (upstream, model) => {
+    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
+  });
+
+  it.each([
+    ['https://api.moonshot.cn/v1', 'kimi-k2.5'],
     // Kimi Code: non-HTTPS, spoofed subdomain, and models without verified image support stay closed.
     ['http://api.kimi.com/coding/v1', 'k3'],
     ['https://api.kimi.com.evil.example/coding/v1', 'k3'],
     ['https://api.kimi.com/coding/v1', 'kimi-k3'],
-    ['https://api.kimi.com/coding/v1', 'kimi-for-coding'],
+    ['https://api.moonshot.cn/v1', 'kimi-for-coding'],
     ['https://api.moonshot.cn/v1', 'k3'],
     ['https://api.deepseek.com/v1', 'kimi-k3'],
     ['https://api.moonshot.cn.evil.example/v1', 'kimi-k3'],

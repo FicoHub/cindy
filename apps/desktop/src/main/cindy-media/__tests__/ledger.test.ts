@@ -431,27 +431,21 @@ describe('reconcileSessionMediaRefsForDeletedSessions(持久重试)', () => {
     await seedBlob(HASH_A);
     await ledger.addRef({ hash: HASH_A, refKind: 'session-attachment', refId: 'deleted-1' }, db);
     await ledger.addRef({ hash: HASH_A, refKind: 'session-attachment', refId: 'archived-1' }, db);
-    const quiesceSession = vi.fn(async () => undefined);
 
     await expect(
       sessionCleanup.reconcileSessionMediaRefsForDeletedSessions({
         db,
         isOwnerCurrent: () => true,
         withSessionLock: async (_sessionId, task) => task(),
-        quiesceSession,
       }),
     ).resolves.toMatchObject({ scanned: 1, removed: 1, failed: 0 });
-    expect(quiesceSession).toHaveBeenCalledWith('deleted-1');
-    quiesceSession.mockClear();
     await expect(
       sessionCleanup.reconcileSessionMediaRefsForDeletedSessions({
         db,
         isOwnerCurrent: () => true,
         withSessionLock: async (_sessionId, task) => task(),
-        quiesceSession,
       }),
     ).resolves.toMatchObject({ scanned: 1, removed: 0, failed: 0 });
-    expect(quiesceSession).toHaveBeenCalledTimes(1);
     expect(db.select().from(schema.mediaRefs).all()).toMatchObject([{ refId: 'archived-1' }]);
   });
 
@@ -468,7 +462,6 @@ describe('reconcileSessionMediaRefsForDeletedSessions(持久重试)', () => {
         db,
         isOwnerCurrent: () => true,
         withSessionLock: async (_sessionId, task) => task(),
-        quiesceSession: async () => undefined,
         removeRefsIfDeleted,
       }),
     ).resolves.toMatchObject({ scanned: 2, removed: 2, failed: 1, ownerChanged: false });
@@ -479,7 +472,6 @@ describe('reconcileSessionMediaRefsForDeletedSessions(持久重试)', () => {
         db,
         isOwnerCurrent: () => ++ownerChecks === 1,
         withSessionLock: async (_sessionId, task) => task(),
-        quiesceSession: async () => undefined,
         removeRefsIfDeleted,
       }),
     ).resolves.toMatchObject({ scanned: 0, removed: 0, ownerChanged: true });
@@ -496,7 +488,6 @@ describe('reconcileSessionMediaRefsForDeletedSessions(持久重试)', () => {
       },
       db,
     );
-    const quiesceSession = vi.fn(async () => undefined);
 
     await expect(
       sessionCleanup.reconcileSessionMediaRefsForDeletedSessions({
@@ -510,11 +501,9 @@ describe('reconcileSessionMediaRefsForDeletedSessions(持久重试)', () => {
             .run();
           return task();
         },
-        quiesceSession,
       }),
     ).resolves.toMatchObject({ scanned: 1, removed: 0, failed: 0 });
 
-    expect(quiesceSession).not.toHaveBeenCalled();
     expect(db.select().from(schema.mediaRefs).all()).toHaveLength(1);
   });
 });
