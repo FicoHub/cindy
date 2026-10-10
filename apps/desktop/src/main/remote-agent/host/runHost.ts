@@ -816,6 +816,11 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
         ? Buffer.from(neutralizeExternalImports(data.toString('utf8'), fileDir, sessionRoot), 'utf8')
         : data
     );
+    // 受邀者的 Markdown(与导入的纯文本)一律按说明文件处理：命令、子代理、规则里的 `@文件` 同样会被 Claude Code 读进上下文，
+    // 指向会话目录之外(本机用户的文件)的引用要断开。
+    const markdownBytes = (data: Buffer, file: string): Buffer => (
+      /\.(?:md|markdown|txt)$/i.test(file) ? instructionBytes(data, path.dirname(file)) : data
+    );
     const mirrorRoot = path.join(sessionRoot, 'fs');
     // 固定短层级承载最多 MAX_ANCESTOR_LEVELS 个上级说明文件，不带控制端目录名。
     const segments = payload.virtualWorkspace
@@ -883,7 +888,7 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
       await fsp.mkdir(path.dirname(target), { recursive: true });
       const data = projectBytes(Buffer.from(file.data, 'base64'));
       const isInstruction = (PROJECT_INSTRUCTION_FILES as readonly string[]).includes(file.path);
-      await fsp.writeFile(target, isInstruction ? instructionBytes(data, path.dirname(target)) : data);
+      await fsp.writeFile(target, isInstruction ? instructionBytes(data, path.dirname(target)) : markdownBytes(data, target));
     }
     for (const file of payload.ancestorFiles) {
       if (file.up > segments.length - 1) continue;
@@ -900,7 +905,18 @@ export function createRemoteAgentHost(deps: RemoteAgentHostDeps) {
     for (const file of personal.files) {
       const target = path.join(shadowDir, ...file.path.split('/'));
       if (!inside(target, shadowDir)) continue;
-      await writeNew(target, projectBytes(Buffer.from(file.data, 'base64')));
+      await writeNew(target, markdownBytes(projectBytes(Buffer.from(file.data, 'base64')), target));
+    }
+    // 说明文件里 `@` 导入的文件：workspace 相对影子目录(可落在上级目录的镜像里)，session 相对会话目录
+    // (个人说明旁边，不进虚拟工作区)。已有同名文件的不覆盖。
+    for (const file of payload.importFiles ?? []) {
+      const base = file.base === 'workspace' ? shadowDir : sessionRoot;
+      const target = path.resolve(base, ...file.path.split('/'));
+      const allowed = file.base === 'workspace'
+        ? inside(target, mirrorRoot)
+        : inside(target, sessionRoot) && target !== mirrorRoot && !inside(target, mirrorRoot);
+      if (!allowed) continue;
+      await writeNew(target, markdownBytes(projectBytes(Buffer.from(file.data, 'base64')), target));
     }
     if (personal.permissions) await mergeLocalPermissions(path.join(shadowDir, '.claude', 'settings.local.json'), Object.fromEntries(Object.entries(personal.permissions).map(([key, rules]) => [key, rules?.map(projectText)])));
     return { shadowDir, mirrorRoot, sessionRoot, extraDirs: virtualAll.slice(0, extraCount), writableDirs: virtualAll.slice(extraCount), projectText };

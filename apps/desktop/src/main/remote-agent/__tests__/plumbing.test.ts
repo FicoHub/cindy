@@ -189,6 +189,41 @@ describe('exec-server relay gate', () => {
 });
 
 describe('wire payloads', () => {
+  it('accepts imported files with relative paths and personal files in the new Skill and rule folders', () => {
+    const payload = decodeOpenPayload({
+      sessionId: 's1',
+      options: { model: 'm' },
+      workspace: { workingDir: '/p', platform: 'darwin', extraDirs: [], writableDirs: [] },
+      projectFiles: [],
+      importFiles: [
+        { base: 'workspace', path: '../../.claude/style.md', data: 'eA==' },
+        { base: 'session', path: 'RTK.md', data: 'eA==' },
+        { base: 'elsewhere', path: 'x.md', data: 'eA==' },
+        { base: 'workspace', path: '/etc/passwd', data: 'eA==' },
+        { base: 'workspace', path: 'a\\b.md', data: 'eA==' },
+        { base: 'workspace', path: 'a/./b.md', data: 'eA==' },
+      ],
+      personal: {
+        files: [
+          { path: '.claude/rules/tone.md', data: '' },
+          { path: '.agents/skills/review/SKILL.md', data: '' },
+          { path: '.codex/skills/deploy/SKILL.md', data: '' },
+          { path: '.pi/extensions/run.ts', data: '' },
+        ],
+      },
+      mcpServers: [],
+    });
+    expect(payload.importFiles).toEqual([
+      { base: 'workspace', path: '../../.claude/style.md', data: 'eA==' },
+      { base: 'session', path: 'RTK.md', data: 'eA==' },
+    ]);
+    expect(payload.personal.files.map((file) => file.path)).toEqual([
+      '.claude/rules/tone.md',
+      '.agents/skills/review/SKILL.md',
+      '.codex/skills/deploy/SKILL.md',
+    ]);
+  });
+
   it('rejects unsafe project file paths and unknown platforms', () => {
     for (const bad of ['../x', '/etc/passwd', 'a/../../b', '.git/config', 'C:/x', 'a\\b', '']) {
       expect(isSafeProjectFilePath(bad)).toBe(false);
