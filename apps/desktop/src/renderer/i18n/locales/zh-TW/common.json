@@ -441,6 +441,13 @@
       "sourceShare": "來自 {{name}} 的分享",
       "shareComputer": "{{name}} 的電腦",
       "shareComputerUnknown": "分享來的電腦",
+      "quota": {
+        "loading": "正在讀取配額…",
+        "unavailable": "暫時讀不到這台電腦的配額",
+        "none": "這個供應商沒有配額資訊",
+        "offline": "這台電腦不在線上，讀不到配額",
+        "share": "別人分享的電腦不顯示配額"
+      },
       "runningCount_other": "{{count}} 個任務執行中",
       "limitAria": "{{name}} 的並行上限",
       "limitOption_other": "上限 {{count}}",

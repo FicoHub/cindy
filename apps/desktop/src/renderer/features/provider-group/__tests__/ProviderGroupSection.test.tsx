@@ -11,6 +11,7 @@ import { ProviderGroupRow } from '../ProviderGroupRow';
 import { ProviderGroupSection } from '../ProviderGroupSection';
 
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) =>
       options && Object.keys(options).length > 0 ? `${key}:${JSON.stringify(options)}` : key,
@@ -38,6 +39,15 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
     <button type="button" onClick={onClick} disabled={disabled}>
       {children}
     </button>
+  ),
+}));
+// 展开后的额度块单独测(GroupMemberQuota.test.tsx)；这里只看展开与读哪台。
+vi.mock('../GroupMemberQuota', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../GroupMemberQuota')>()),
+  GroupMemberQuota: ({ id, target, offline }: { id: string; target: unknown; offline: boolean }) => (
+    <div data-testid="member-quota" id={id}>
+      {JSON.stringify({ target, offline })}
+    </div>
   ),
 }));
 
@@ -121,6 +131,30 @@ describe('ProviderGroupSection', () => {
     expect(saved.members.map((m) => m.key)).toEqual(['local', MINI.key]);
     expect(saved).toMatchObject({ strategy: 'least', autoSwitch: true });
     expect(await screen.findAllByTestId('provider-group-member')).toHaveLength(2);
+  });
+
+  it('expands a computer to show the quota of its own account', async () => {
+    stored = { strategy: 'least', autoSwitch: true, members: [LOCAL, MINI] };
+    render(<ProviderGroupSection providerId="anthropic" providerName="Anthropic" />);
+    const rows = await screen.findAllByTestId('provider-group-member');
+    expect(screen.queryByTestId('member-quota')).toBeNull();
+    const toggle = rows[1].querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const quota = within(rows[1]).getByTestId('member-quota');
+    expect(toggle.getAttribute('aria-controls')).toBe(quota.id);
+    expect(JSON.parse(quota.textContent!)).toEqual({
+      target: { kind: 'device', deviceId: 'mini', providerId: MINI.providerId },
+      offline: false,
+    });
+    fireEvent.click(rows[0].querySelector<HTMLButtonElement>('button[aria-expanded]')!);
+    expect(JSON.parse(within(rows[0]).getByTestId('member-quota').textContent!).target).toEqual({
+      kind: 'local',
+      providerId: 'anthropic',
+    });
+    fireEvent.click(toggle);
+    expect(within(rows[1]).queryByTestId('member-quota')).toBeNull();
   });
 
   it('shows each computer with its state and lets the user pause one', async () => {
