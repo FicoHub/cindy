@@ -445,6 +445,29 @@ describe('Codex device-hosted guest sessions', () => {
     await handle.close();
   });
 
+  it('extends hosted workspace profile lifecycle requests with tunnel progress', async () => {
+    const linkActivity = vi.fn(() => ({
+      lastActivityAt: 1_234,
+      execRequests: 4,
+      execResponses: 3,
+      execMaxInFlight: 2,
+      httpInFlight: 0,
+    }));
+    const fixture = await startHosted({ guest: true, linkActivity });
+    const handle = await fixture.started;
+    await handle.setExtraDirs?.(['/shared-profile']);
+    await handle.send({ type: 'user', content: 'use the hosted profile' });
+
+    const replacementCall = fixture.request.mock.calls
+      .filter(([method]) => method === Method.ThreadStart)[1] as unknown as [string, unknown, unknown] | undefined;
+    const replacement = replacementCall?.[2] as Record<string, unknown> | undefined;
+    expect(replacement).toMatchObject({
+      timeoutMs: 60_000,
+      extendWhileProgress: { idleMs: 30_000, maxMs: 300_000 },
+    });
+    await handle.close();
+  });
+
   it('keeps the fixed limit when the host provides no tunnel activity', async () => {
     const fixture = await startHosted({ guest: false });
     const handle = await fixture.started;
