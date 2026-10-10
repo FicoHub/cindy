@@ -199,6 +199,7 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
       mounted.current && scope === binding.current && operation === operationEpoch.current;
     try {
       await openLink(deviceId);
+      if (!current()) return;
       await invokeRemoteResourceAction(
         invoke,
         { deviceId, deviceName },

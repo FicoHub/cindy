@@ -196,3 +196,17 @@ it('routes Open from completed directly to open, and labels the hidden-list acti
   await flush();
   expect(JSON.parse(h.get.mock.calls.at(-1)![5]).view).toBe('open');
 });
+
+it('does not send a stale operation whose link opens only after disconnect', async () => {
+  let finishLink!: () => void;
+  await render();
+  h.openLink.mockImplementationOnce(() => new Promise<void>(resolve => { finishLink = resolve; }));
+  await act(async () => row().click());
+  expect(h.sheet.preventDismiss).toBe(true);
+  await render(false);
+  await act(async () => finishLink());
+  expect(h.action).not.toHaveBeenCalled();
+  expect(h.sheet.preventDismiss).toBe(false);
+  await render(true);
+  expect(row().disabled).toBe(false);
+});
