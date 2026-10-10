@@ -185,7 +185,23 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
   });
   if (input.signal?.aborted) return abortedResult();
   const remainingTimeoutMs =
-    timeoutMs === undefined ? undefined : Math.max(1, timeoutMs - (Date.now() - startedAt));
+    timeoutMs === undefined ? undefined : timeoutMs - (Date.now() - startedAt);
+  // 预检已耗尽配置的超时预算:不再启动真实命令,直接按超时阻止本轮。
+  if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
+    return {
+      status: 'timed_out',
+      decision: 'block',
+      exitCode: null,
+      durationMs: Date.now() - startedAt,
+      stdout: '',
+      stderr: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      timedOut: true,
+      aborted: false,
+      error: `pre-run hook timed out after ${timeoutMs}ms`,
+    };
+  }
   if (syntaxError) {
     return {
       status: 'failed',

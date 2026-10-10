@@ -7,7 +7,20 @@
  * @vitest-environment node
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// 透传真实 spawn,只计数:用来断言某些路径根本没有启动真实命令。
+const spawnCalls = vi.hoisted(() => ({ count: 0 }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: ((...args: Parameters<typeof actual.spawn>) => {
+      spawnCalls.count += 1;
+      return actual.spawn(...args);
+    }) as typeof actual.spawn,
+  };
+});
 
 import {
   assertPreRunHookCommandSyntax,
@@ -208,6 +221,19 @@ describe.skipIf(process.platform === 'win32')('前置检查命令语法预检', 
     expect(result.status).toBe('failed');
     expect(result.decision).toBe('block');
     expect(result.spawnError || result.error).toBeTruthy();
+  });
+
+  it('预检耗尽超时预算 → 直接 timed_out,不再启动真实命令', async () => {
+    spawnCalls.count = 0;
+    const result = await executePreRunHook({
+      command: 'node -e "process.exit(0)"',
+      timeoutMs: 1,
+      stdinPayload: payload,
+    });
+    expect(result.status).toBe('timed_out');
+    expect(result.decision).toBe('block');
+    expect(result.timedOut).toBe(true);
+    expect(spawnCalls.count).toBe(0);
   });
 
   it('预检响应取消信号:已取消时不再预检,执行返回 aborted', async () => {
