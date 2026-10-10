@@ -2,7 +2,15 @@ import { TodoDateInput } from './TodoDateInput';
 import { CompanionTodoRow } from './CompanionTodoRow';
 import { makeTodoStyles as makeStyles } from './companionTodoStyles';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import {
+  ActivityIndicator,
+  AppState,
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from 'react-native';
 import { Plus, ChevronDown, ChevronRight } from 'lucide-react-native';
 import { randomUUID } from 'expo-crypto';
 import { useTranslation } from 'react-i18next';
@@ -24,6 +32,7 @@ import {
 import { CompanionSheet } from './CompanionSheet';
 import {
   effectiveTodoDeadline,
+  scheduleTodoDeferralRefresh,
   todoDateLabel,
   todoOverdue,
   todoLocalDate,
@@ -44,6 +53,7 @@ interface Page {
   items: TeammateTodo[];
   total: number;
   completedTotal: number;
+  nextDeferredAt?: string | null;
   offset: number;
   limit: number;
 }
@@ -163,6 +173,18 @@ function CompanionTodosContent({ visible, onClose, deviceId, deviceName, botId, 
       epoch.current++;
     };
   }, [reload]);
+  useEffect(() => {
+    if (!visible || !online || !page.nextDeferredAt) return;
+    // A mounted-list visibility refresh, never a background reminder or action.
+    return scheduleTodoDeferralRefresh(page.nextDeferredAt, () => void reload());
+  }, [visible, online, page.nextDeferredAt, reload]);
+  useEffect(() => {
+    if (!visible || !online) return;
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void reload();
+    });
+    return () => subscription.remove();
+  }, [visible, online, reload]);
   useEffect(
     () => () => {
       mounted.current = false;

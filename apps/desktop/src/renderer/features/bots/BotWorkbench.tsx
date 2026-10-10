@@ -73,6 +73,7 @@ import {
   countUnjudgedCandidates,
   groupWorkbenchTiles,
   workbenchGroupHasFollowUp,
+  workbenchItemNeedsLocalReference,
   tierWorkbenchProjectOptions,
   type ExternalSessionCandidate,
   type WorkbenchPathHints,
@@ -558,7 +559,10 @@ export function BotWorkbench({ botId, sessionId }: { botId: string; sessionId: s
       {/* 还没接手项目时,伙伴已有的自动化(例行任务、导入来的自动化)照常列在下面。 */}
       {!picking || routineTiles.length > 0 ? (
         <TaskGroups
-          tiles={picking ? routineTiles : tiles.filter(tile => tile.type !== 'session' && tile.type !== 'item')}
+          tiles={picking ? routineTiles : tiles.filter(tile =>
+            tile.type !== 'session' &&
+            (tile.type !== 'item' || workbenchItemNeedsLocalReference(tile, projectDirs, caseInsensitive))
+          )}
           now={now}
           language={i18n.language}
           showEmpty={false}

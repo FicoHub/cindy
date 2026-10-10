@@ -16,6 +16,8 @@ import {
 import {
   effectiveTodoDeadline,
   createTodoDueComparator,
+  nextTodoDeferralAt,
+  scheduleTodoDeferralRefresh,
   todoDateLabel,
   todoOverdue,
   todoLocalDate,
@@ -132,6 +134,22 @@ export function TodoPanel({ transport, botId }: { transport: TodoTransport; botI
       unsub?.();
     };
   }, [botId, refresh]);
+  const nextDeferredAt = nextTodoDeferralAt(items);
+  useEffect(() => {
+    if (!nextDeferredAt) return;
+    return scheduleTodoDeferralRefresh(nextDeferredAt, () => void refresh());
+  }, [nextDeferredAt, refresh]);
+  useEffect(() => {
+    const foreground = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', foreground);
+    window.addEventListener('focus', foreground);
+    return () => {
+      document.removeEventListener('visibilitychange', foreground);
+      window.removeEventListener('focus', foreground);
+    };
+  }, [refresh]);
   const selected = items.find((x) => x.id === detail);
   const matches = (x: TeammateTodo) =>
     (origin === 'all' || x.origin === origin) &&

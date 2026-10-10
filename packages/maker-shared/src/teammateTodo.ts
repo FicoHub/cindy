@@ -121,6 +121,8 @@ export function validateTodoDeadline(d: TodoDeadline | null): void {
   if (
     !d ||
     !['date', 'instant'].includes(d.kind) ||
+    typeof d.date !== 'string' ||
+    d.date.length !== 10 ||
     !/^\d{4}-\d{2}-\d{2}$/.test(d.date) ||
     !Number.isFinite(Date.parse(d.date)) ||
     new Date(d.date).toISOString().slice(0, 10) !== d.date
@@ -358,8 +360,8 @@ export function applyTodoPatch(
         throw new TodoError('INVALID_INPUT');
       text(s.id, 512, true);
       text(s.label, 300, true);
-      if (s.ref && (s.ref.length > 2000 || !/^https:\/\/[^\s]+$/.test(s.ref)))
-        throw new TodoError('INVALID_REFERENCE');
+      if (s.ref !== undefined) text(s.ref, 2000);
+      if (s.ref && !/^https:\/\/[^\s]+$/.test(s.ref)) throw new TodoError('INVALID_REFERENCE');
       if (s.version !== undefined && (!Number.isSafeInteger(s.version) || s.version < 0))
         throw new TodoError('INVALID_INPUT');
       if (s.project !== undefined) text(s.project, 4096, true);
@@ -414,7 +416,13 @@ export function applyTodoPatch(
     t.deadlineOverride = { value: patch.deadlineOverride.value };
   }
   if (patch.deadlineCandidate !== undefined) {
-    if (patch.deadlineCandidate) {
+    if (patch.deadlineCandidate !== null) {
+      if (
+        !patch.deadlineCandidate ||
+        typeof patch.deadlineCandidate !== 'object' ||
+        Array.isArray(patch.deadlineCandidate)
+      )
+        throw new TodoError('INVALID_INPUT');
       validateTodoDeadline(patch.deadlineCandidate.value);
       text(patch.deadlineCandidate.reason, 2000, true);
     }
@@ -441,7 +449,7 @@ export function applyTodoPatch(
     case 'complete': {
       if (!patch.completion) throw new TodoError('COMPLETION_EVIDENCE_REQUIRED');
       text(patch.completion.summary, 4000, true);
-      if (patch.completion.ref) text(patch.completion.ref, 2000, true);
+      if (patch.completion.ref !== undefined) text(patch.completion.ref, 2000);
       t.history.push({ ...patch.completion, at: now.toISOString() });
       t.status = 'done';
       t.decision = null;
@@ -481,6 +489,37 @@ export function applyTodoPatch(
   if (at < 0) state.items.push(t);
   else state.items[at] = t;
   return t;
+}
+
+/** Earliest visibility boundary; independent of pagination, with no reminder or execution side effect. */
+export function nextTodoDeferralAt(items: TeammateTodo[], now = new Date()): string | null {
+  let next: string | null = null;
+  for (const t of items) {
+    const until = t.decision?.kind === 'later' ? t.decision.until : undefined;
+    if (
+      until &&
+      Date.parse(until) > now.getTime() &&
+      (!next || Date.parse(until) < Date.parse(next))
+    )
+      next = until;
+  }
+  return next;
+}
+
+/** One mounted-view refresh; long waits are chunked locally without reading or running work. */
+export function scheduleTodoDeferralRefresh(until: string, refresh: () => void): () => void {
+  const at = Date.parse(until);
+  if (!Number.isFinite(at)) return () => {};
+  let timer: ReturnType<typeof setTimeout>;
+  const arm = () => {
+    const remaining = at - Date.now();
+    timer =
+      remaining > 2_147_483_647
+        ? setTimeout(arm, 2_147_483_647)
+        : setTimeout(refresh, Math.max(0, remaining));
+  };
+  arm();
+  return () => clearTimeout(timer);
 }
 
 export interface TodoListQuery {
@@ -537,6 +576,7 @@ export function queryTodoItems(items: TeammateTodo[], q: TodoListQuery = {}, now
     total: filtered.length,
     offset,
     limit,
+    nextDeferredAt: nextTodoDeferralAt(items, now),
     completedTotal: items.filter((t) => t.status === 'done' && todoVisible(t, now)).length,
   };
 }

@@ -2,7 +2,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { applyTodoPatch, emptyTodoState } from '@cindy/maker-shared/teammate-todo';
+import { applyTodoPatch, emptyTodoState, queryTodoItems } from '@cindy/maker-shared/teammate-todo';
 
 const h = vi.hoisted(() => ({
   sheet: {} as any,
@@ -12,12 +12,16 @@ const h = vi.hoisted(() => ({
   openLink: vi.fn(async () => {}),
   onChanged: vi.fn(() => () => {}),
   close: vi.fn(),
+  appState: new Set<(state: string) => void>(),
 }));
 vi.mock('react-native', () => ({
   View: ({ children }: any) => createElement('div', null, children),
   ScrollView: ({ children }: any) => createElement('div', null, children),
   ActivityIndicator: () => null,
   Linking: { openURL: vi.fn() },
+  AppState: { addEventListener: (_: string, fn: (state: string) => void) => {
+    h.appState.add(fn); return { remove: () => h.appState.delete(fn) };
+  } },
   Pressable: ({ children, onPress, disabled, accessibilityLabel }: any) =>
     createElement(
       'button',
@@ -142,7 +146,7 @@ beforeEach(() => {
   host = document.createElement('div');
   root = createRoot(host);
 });
-afterEach(() => act(() => root.unmount()));
+afterEach(() => { act(() => root.unmount()); vi.useRealTimers(); });
 
 it('releases dismiss and button busy state on disconnect without replaying an in-flight action', async () => {
   let oldResult!: (result: unknown) => void, newResult!: (result: unknown) => void;
@@ -209,4 +213,65 @@ it('does not send a stale operation whose link opens only after disconnect', asy
   expect(h.sheet.preventDismiss).toBe(false);
   await render(true);
   expect(row().disabled).toBe(false);
+});
+
+it.each(['open', 'hidden'] as const)(
+  'reloads %s at the nearest deferral expiry and cancels the timer when closed',
+  async (view) => {
+    vi.useFakeTimers();
+    const start = new Date('2026-10-10T12:00:00Z');
+    vi.setSystemTime(start);
+    const deferred = {
+      ...todo,
+      decision: { kind: 'later' as const, until: '2026-10-10T12:02:00Z' },
+    };
+    h.get.mockImplementation(async (...args) => ({
+      blocks: [
+        {
+          primitive: 'teammate-todos',
+          data: queryTodoItems([deferred], JSON.parse(args[5]), new Date()),
+        },
+      ],
+    }));
+    await act(async () => root.render(<CompanionTodos {...props} />));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    if (view === 'hidden') {
+      await act(async () => button('hidden').click());
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    }
+    expect(!!host.querySelector('[data-testid="todo-one"]')).toBe(view === 'hidden');
+    const calls = h.get.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(120_000));
+    expect(h.get.mock.calls.length).toBe(calls + 1);
+    expect(!!host.querySelector('[data-testid="todo-one"]')).toBe(view === 'open');
+    expect(h.action).not.toHaveBeenCalled();
+    await act(async () => root.render(<CompanionTodos {...props} visible={false} />));
+    expect(h.appState.size).toBe(0);
+    const closedCalls = h.get.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(120_000));
+    expect(h.get.mock.calls.length).toBe(closedCalls);
+  },
+);
+
+it('rechecks expired deferrals on foreground without an action or a repeating scan', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-10T12:00:00Z'));
+  const deferred = { ...todo, decision: { kind: 'later' as const, until: '2026-10-10T12:02:00Z' } };
+  h.get.mockImplementation(async (...args) => ({
+    blocks: [
+      {
+        primitive: 'teammate-todos',
+        data: queryTodoItems([deferred], JSON.parse(args[5]), new Date()),
+      },
+    ],
+  }));
+  await act(async () => root.render(<CompanionTodos {...props} />));
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(host.querySelector('[data-testid="todo-one"]')).toBeNull();
+  const calls = h.get.mock.calls.length;
+  vi.setSystemTime(new Date('2026-10-10T12:05:00Z'));
+  await act(async () => h.appState.forEach((fn) => fn('active')));
+  expect(h.get.mock.calls.length).toBe(calls + 1);
+  expect(row()).toBeDefined();
+  expect(h.action).not.toHaveBeenCalled();
 });

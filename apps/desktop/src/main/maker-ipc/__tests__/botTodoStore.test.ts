@@ -273,6 +273,20 @@ it('rejects valid JSON with corrupt or overlong text without rewriting the file'
   const t = await s.patch(p);
   const clean = await s.read();
   for (const fields of [
+    { deadlineCandidate: false },
+    { deadlineOverride: false },
+    { suggestedDate: {} },
+    { suggestedDate: 0 },
+    { suggestedDate: '2026-02-30' },
+    { suggestedDate: 'x'.repeat(11) },
+    { suggestedDate: 'not-a-date' },
+    { history: [{ summary: '依据', at: '2026-10-10T00:00:00Z', ref: {} }] },
+    { history: [{ summary: '依据', at: '2026-10-10T00:00:00Z', ref: 'x'.repeat(2001) }] },
+    { sources: [{ ...p.sources[0], project: {} }] },
+    { sources: [{ ...p.sources[0], observedAt: 0 }] },
+    { associations: [{ kind: 'task', id: 't', label: {} }] },
+    { decision: { kind: 'deleted', until: {} } },
+    { next: { label: 'x'.repeat(101), instruction: '继续', kind: 'advance' } },
     { title: {} },
     { outcome: [] },
     { title: 'x'.repeat(301) },
@@ -311,4 +325,29 @@ it('rejects valid JSON with corrupt or overlong text without rewriting the file'
     ).rejects.toThrow('CORRUPT_STORE');
     expect(await readFile(file, 'utf8')).toBe(content);
   }
+});
+
+it('preserves valid suggested dates and local legacy evidence while rejecting invalid optional write fields', async () => {
+  const { file } = await fixture();
+  const store = createBotTodoStore(file, async () => ({}));
+  const t = await store.patch({ ...p, suggestedDate: '2026-10-13' });
+  await store.patch({
+    id: t.id,
+    expectedRevision: t.revision,
+    operation: 'complete',
+    completion: { summary: '已核对文件', ref: '/cindy/notes.md' },
+  });
+  const saved = (await store.read()).items[0];
+  expect(saved.suggestedDate).toBe('2026-10-13');
+  expect(saved.history[0].ref).toBe('/cindy/notes.md');
+  for (const patch of [
+    { deadlineCandidate: false },
+    { suggestedDate: {} },
+    { completion: { summary: '依据', ref: {} }, operation: 'complete' },
+    { sources: [{ ...p.sources[0], ref: false }] },
+  ])
+    await expect(
+      store.patch({ ...patch, id: saved.id, expectedRevision: saved.revision } as any),
+    ).rejects.toThrow();
+  expect((await store.read()).items[0]).toEqual(saved);
 });

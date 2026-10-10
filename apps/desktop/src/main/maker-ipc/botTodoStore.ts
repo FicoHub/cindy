@@ -17,6 +17,10 @@ import { withCrossProcessLock } from '../device-link/crossProcessLock.js';
 import type { WorkbenchTaskJudgment } from '../../shared/botWorkbench.js';
 import { parseWorkbenchTaskId } from '../../shared/botWorkbench.js';
 
+function validText(value: unknown, max: number, required = false): boolean {
+  return typeof value === 'string' && value.length <= max && (!required || !!value.trim());
+}
+
 function validTimestamp(value: unknown): boolean {
   try {
     validateTodoTimestamp(value);
@@ -119,6 +123,8 @@ export function createBotTodoStore(
     try {
       const raw = JSON.parse(await fs.readFile(file, 'utf8')) as TodoState;
       if (
+        !raw ||
+        typeof raw !== 'object' ||
         raw.version !== 1 ||
         !Array.isArray(raw.items) ||
         !raw.cursors ||
@@ -156,34 +162,45 @@ export function createBotTodoStore(
           t.sources.some(
             (s) =>
               !s ||
-              typeof s.id !== 'string' ||
-              !s.id ||
-              typeof s.label !== 'string' ||
+              !validText(s.id, 512, true) ||
+              !validText(s.label, 300, true) ||
               !['conversation', 'mail', 'feishu', 'github', 'community', 'task'].includes(s.kind) ||
-              (s.ref !== undefined && (typeof s.ref !== 'string' || !/^https:\/\//.test(s.ref))),
+              (s.ref !== undefined &&
+                (!validText(s.ref, 2000) || !/^https:\/\/[^\s]+$/.test(s.ref))) ||
+              (s.project !== undefined && !validText(s.project, 4096, true)) ||
+              (s.version !== undefined && (!Number.isSafeInteger(s.version) || s.version < 0)) ||
+              (s.observedAt !== undefined && !validTimestamp(s.observedAt)),
           ) ||
           t.associations.some(
             (a) =>
               !a ||
               !['task', 'pr'].includes(a.kind) ||
-              typeof a.id !== 'string' ||
-              typeof a.label !== 'string',
+              !validText(a.id, 512, true) ||
+              !validText(a.label, 300, true),
           ) ||
           t.history.some(
-            (h) => !h || typeof h.summary !== 'string' || !h.summary || !validTimestamp(h.at),
+            (h) =>
+              !h ||
+              !validText(h.summary, 4000, true) ||
+              !validTimestamp(h.at) ||
+              (h.ref !== undefined && !validText(h.ref, 2000)),
           ) ||
           (t.next !== null &&
             (!t.next ||
-              typeof t.next.label !== 'string' ||
-              typeof t.next.instruction !== 'string' ||
+              !validText(t.next.label, 100, true) ||
+              !validText(t.next.instruction, 4000, true) ||
               !['advance', 'view', 'decide'].includes(t.next.kind))) ||
           (t.decision !== null &&
             (!t.decision ||
               !['deleted', 'muted', 'later'].includes(t.decision.kind) ||
-              (t.decision.kind === 'later' && !validTimestamp(t.decision.until)))) ||
+              (t.decision.until !== undefined && !validTimestamp(t.decision.until)) ||
+              (t.decision.kind === 'later' && !t.decision.until))) ||
           (t.action !== null &&
             (!t.action ||
-              typeof t.action.requestId !== 'string' ||
+              !validText(t.action.requestId, 80, true) ||
+              !Number.isSafeInteger(t.action.revision) ||
+              t.action.revision < 1 ||
+              (t.action.error !== undefined && !validText(t.action.error, 1000)) ||
               !['received', 'accepted', 'failed', 'unknown'].includes(t.action.state)))
         )
           throw new TodoError('CORRUPT_STORE');
@@ -213,8 +230,27 @@ export function createBotTodoStore(
           throw new TodoError('CORRUPT_STORE');
         try {
           validateTodoDeadline(t.sourceDeadline);
-          if (t.deadlineOverride) validateTodoDeadline(t.deadlineOverride.value);
-          if (t.deadlineCandidate) {
+          if (t.suggestedDate !== null) {
+            if (!validText(t.suggestedDate, 10)) throw new TodoError('CORRUPT_STORE');
+            if (t.suggestedDate)
+              validateTodoDeadline({ kind: 'date', date: t.suggestedDate, timeZone: 'UTC' });
+          }
+          if (t.deadlineOverride !== undefined) {
+            if (
+              !t.deadlineOverride ||
+              typeof t.deadlineOverride !== 'object' ||
+              Array.isArray(t.deadlineOverride)
+            )
+              throw new TodoError('CORRUPT_STORE');
+            validateTodoDeadline(t.deadlineOverride.value);
+          }
+          if (t.deadlineCandidate !== null) {
+            if (
+              !t.deadlineCandidate ||
+              typeof t.deadlineCandidate !== 'object' ||
+              Array.isArray(t.deadlineCandidate)
+            )
+              throw new TodoError('CORRUPT_STORE');
             validateTodoDeadline(t.deadlineCandidate.value);
             if (
               typeof t.deadlineCandidate.reason !== 'string' ||

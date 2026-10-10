@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   applyTodoPatch,
   emptyTodoState,
   effectiveTodoDeadline,
   preflightTodoEvents,
   queryTodoItems,
+  scheduleTodoDeferralRefresh,
   createTodoDueComparator,
   todoOverdue,
   todoVisible,
@@ -426,4 +427,54 @@ it('normalizes problem keys before lookup and preflight rather than creating dup
   ).toBe('suppressed');
   expect(s.items).toHaveLength(1);
   expect(ignored.key).toBe('quote:1');
+});
+
+it('returns the next deferral boundary even outside a page and makes expired entries visible without changing deadlines', () => {
+  const state = emptyTodoState();
+  for (let n = 0; n < 36; n++) applyTodoPatch(state, { ...patch, key: 'k' + n }, 'todo-' + n, now);
+  const later = applyTodoPatch(
+    state,
+    { id: 'todo-35', expectedRevision: 1, operation: 'later', until: '2026-10-10T12:02:00Z' },
+    'unused',
+    now,
+  );
+  applyTodoPatch(
+    state,
+    { id: 'todo-34', expectedRevision: 1, operation: 'later', until: '2026-10-10T12:03:00Z' },
+    'unused',
+    now,
+  );
+  const open = queryTodoItems(state.items, { limit: 25 }, now);
+  expect(open.items).toHaveLength(25);
+  expect(open.nextDeferredAt).toBe('2026-10-10T12:02:00Z');
+  expect(queryTodoItems(state.items, { view: 'hidden' }, now).total).toBe(2);
+  const after = new Date('2026-10-10T12:02:00Z');
+  expect(queryTodoItems(state.items, {}, after).total).toBe(35);
+  expect(queryTodoItems(state.items, { view: 'hidden' }, after).total).toBe(1);
+  expect(queryTodoItems(state.items, {}, after).nextDeferredAt).toBe('2026-10-10T12:03:00Z');
+  expect(effectiveTodoDeadline(later)).toEqual(effectiveTodoDeadline(state.items[0]));
+});
+
+it('refreshes once at a long deferral boundary and cancels without polling or executing', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(now);
+  try {
+    const refresh = vi.fn();
+    const until = new Date(now.getTime() + 2_147_483_647 + 5000).toISOString();
+    const cancel = scheduleTodoDeferralRefresh(until, refresh);
+    await vi.advanceTimersByTimeAsync(2_147_483_647);
+    expect(refresh).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(refresh).toHaveBeenCalledOnce();
+    cancel();
+    const cancelled = scheduleTodoDeferralRefresh(
+      new Date(Date.now() + 5000).toISOString(),
+      refresh,
+    );
+    cancelled();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(refresh).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
 });

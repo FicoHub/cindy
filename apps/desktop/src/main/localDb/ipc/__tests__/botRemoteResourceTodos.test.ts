@@ -158,3 +158,16 @@ it('projects host-only paths and metadata out of both reads and update responses
   expect((await access.list()).items[0].sources[0].project).toBe('/host/private/project');
   expect((await access.list()).items[0].next.instruction).toBe('Read /host/private/project');
 });
+
+it('projects the next deferral expiry even when the deferred item is absent from the open page', async () => {
+  const access = await env.access();
+  await access.patch({ key: 'visible', title: '可见事务', outcome: '核对完成' });
+  const later = await access.patch({ key: 'later', title: '稍后事务', outcome: '核对完成' });
+  const until = new Date(Date.now() + 60_000).toISOString();
+  await access.patch({ id: later.id, expectedRevision: later.revision, operation: 'later', until });
+  const resource = await remoteResourceRegistry.get(context, { client, ref });
+  const page = resource.blocks?.[0].data as { items: Array<{ id: string }>; nextDeferredAt: string };
+  expect(page.items).toHaveLength(1);
+  expect(page.items[0].id).not.toBe(later.id);
+  expect(page.nextDeferredAt).toBe(until);
+});
