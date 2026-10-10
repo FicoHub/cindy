@@ -1,3 +1,4 @@
+import { calibratedResponseDuration } from '@cindy/maker-shared/usage-format';
 import { captureTurnUsageContext, type TurnUsageContext } from './turnUsageContext.js';
 import { isOpenAiSubscriptionProviderId } from '../maker-host/codex-account-auth.js';
 import type { AgentEvent, Session } from '@cindy/maker-core';
@@ -7,7 +8,6 @@ import { readClaudeApiKey } from '../maker-host/auth-adapters.js';
 import { recordSessionTurnSpend } from '../sessionSpendBroadcaster.js';
 import { recordSchedulerTurnCost, recordTurnUsageOnMessage } from '../turnCostBroadcaster.js';
 import { recordModelMismatchOnMessage } from '../modelMismatchBroadcaster.js';
-import { isClaudeSubscriptionProviderId } from '../maker-host/subscription-account-auth.js';
 import { detectClaudeModelMismatch } from '../../shared/modelMismatch.js';
 import { triggerClaudeAccountUsageRefresh } from '../usage/claudeAccountUsage.js';
 import {
@@ -29,7 +29,6 @@ import {
   billingRouteForExplicitProvider,
   buildClaudeTurnUsageDetails,
   computePriceQuoteTurnMoney,
-  isAnthropicModel,
   normalizeTurnUsageSegments,
   normalizeModelIdForPricing,
   resolveClaudeTurnCostSinks,
@@ -101,6 +100,13 @@ export function recordSessionClaudeTurnUsage(
           total_cost_usd?: unknown;
           duration_ms?: unknown;
           duration_api_ms?: unknown;
+          responseSpeed?: unknown;
+          turnUsage?: {
+            input_tokens?: number;
+            output_tokens?: number;
+            cache_read_input_tokens?: number;
+            cache_creation_input_tokens?: number;
+          };
           usage?: {
             input_tokens?: number;
             output_tokens?: number;
@@ -169,11 +175,18 @@ export function recordSessionClaudeTurnUsage(
         : undefined,
       doneData?.is_error !== true,
     );
+    const claudeTurnOutputTokens = modelUsageDeltas?.length
+      ? modelUsageDeltas.reduce((sum, delta) => sum + delta.outputTokensDelta, 0)
+      : typeof doneData?.turnUsage?.output_tokens === 'number' ? doneData.turnUsage.output_tokens : undefined;
     const claudeGenerationDurationMs = outputLagTiming.suppressTiming
       ? undefined
-      : typeof doneData?.duration_api_ms === 'number'
-        ? doneData.duration_api_ms
-        : undefined;
+      : doneData?.responseSpeed !== undefined
+        ? claudeTurnOutputTokens !== undefined
+          ? calibratedResponseDuration(doneData.responseSpeed, claudeTurnOutputTokens)
+          : undefined
+        : typeof doneData?.duration_api_ms === 'number'
+          ? doneData.duration_api_ms
+          : undefined;
     // total_cost_usd 累计基线: 主路径不靠它算钱, 但仍跟住, 以便万一某轮缺 modelUsage
     // 走兜底时累计差才准。先取"更新前"基线给兜底用, 再写入本轮累计。
     const prevReportedCost = deps.lastReportedCostUsdBySession.get(session.id);
@@ -254,7 +267,12 @@ export function recordSessionClaudeTurnUsage(
         const { turnMoney, estimatedTurnMoney, perModel } = resolveClaudeTurnCostSinks(
           deltas,
           pricing,
-          { providerId: sessionProviderForBilling, billingRoute, region: CURRENT_CINDY_REGION },
+          {
+            providerId: sessionProviderForBilling,
+            billingRoute,
+            region: CURRENT_CINDY_REGION,
+            accessKind: turnContext.accessKind,
+          },
           claudeUsageSegments,
           claudeUsageSegmentsComplete,
         );
@@ -268,19 +286,15 @@ export function recordSessionClaudeTurnUsage(
         }));
         // 按模型记账 (首页仪表盘"按模型拆分"): 保留 provider/SKU 前缀，
         // `codex/` 等预算路由必须精确命中自己的报价，不能回落到裸模型的另一折扣。
-        // 订阅轮打 #billing=subscription 标记(Claude 订阅:Anthropic 模型 + cost=0),
-        // 或 bridge 订阅轮(chatgpt// xai/ 前缀,source==='subscription');两类均需触发
-        // rebroadcastTodaySpend 刷新首页仪表盘。
+        // 订阅分类复用计费解析结果，覆盖显式 Token Plan 与 bridge 订阅路由。
+        // 同一判据驱动估值、模型行标记与首页仪表盘刷新。
         const modelUsageWrites: Promise<unknown>[] = [];
         const subscriptionTurnEstimates: RegionalMoney[] = [];
         let hasSubscriptionValueRow = false;
         for (const m of perModel) {
-          const isClaudeSubscriptionValueRow =
-            isClaudeSubscriptionSession && !m.money && isAnthropicModel(m.model);
-          const isBridgeSubscriptionRow =
-            m.source === 'subscription' && isSubscriptionDirectRoute(m.model);
+          const isSubscriptionValueRow = m.source === 'subscription';
           const subscriptionEstimate =
-            isClaudeSubscriptionValueRow || isBridgeSubscriptionRow
+            isSubscriptionValueRow
               ? computePriceQuoteTurnMoney(
                   m.deltas,
                   (sessionProviderForBilling
@@ -293,19 +307,20 @@ export function recordSessionClaudeTurnUsage(
           if (subscriptionEstimate?.amount) {
             subscriptionTurnEstimates.push(subscriptionEstimate);
           }
-          if (isClaudeSubscriptionValueRow || isBridgeSubscriptionRow)
+          if (isSubscriptionValueRow)
             hasSubscriptionValueRow = true;
           const modelRowMoney =
             m.money?.kind === 'actual-cost'
               ? m.money
-              : isClaudeSubscriptionValueRow || isBridgeSubscriptionRow
+              : isSubscriptionValueRow
                 ? (subscriptionEstimate ?? deps.unpricedSubscriptionValueMarker())
                 : null;
           modelUsageWrites.push(
             recordModelTurnUsage({
+              sessionId: session.id,
               agentKind: 'claude-code',
               model:
-                isClaudeSubscriptionValueRow || isBridgeSubscriptionRow
+                isSubscriptionValueRow
                   ? claudeSubscriptionUsageModelKey(m.model)
                   : m.model,
               // The subscription suffix lets the existing schema reconstruct this amount as
@@ -329,7 +344,7 @@ export function recordSessionClaudeTurnUsage(
           // deltas 非空 → buildClaudeTurnUsageDetails 用 deltas 里的 model, fallbackModel 不取用。
           // 传 perModel → 落「按模型成本明细」(含 subagent 跑的模型, 如 Haiku)。
           const turnUsageDetails = buildClaudeTurnUsageDetails(
-            doneData?.usage,
+            doneData?.turnUsage ?? doneData?.usage,
             resolvedUsageDeltas,
             'unknown',
             perModel,
@@ -363,7 +378,7 @@ export function recordSessionClaudeTurnUsage(
           const turnEstimatedValue =
             estimatedValues.length > 0 ? addRegionalMoney(estimatedValues) : null;
           const turnUsageDetails = buildClaudeTurnUsageDetails(
-            doneData?.usage,
+            doneData?.turnUsage ?? doneData?.usage,
             resolvedUsageDeltas,
             'unknown',
             perModel,
@@ -408,9 +423,11 @@ export function recordSessionClaudeTurnUsage(
         }
         // `doneData.usage` can be the same process-lifetime cumulative snapshot as
         // `total_cost_usd`. Without model deltas or request segments it is not a reliable
-        // per-turn token fact, so retain only model/timing metadata in this fallback.
+        // per-turn token fact. Persist the normalized provider delta only when
+        // its output matches the calibrated measurement; never the aggregate.
         const turnUsageDetails = buildClaudeTurnUsageDetails(
-          undefined,
+          claudeGenerationDurationMs !== undefined && claudeTurnOutputTokens !== undefined
+            ? doneData?.turnUsage : undefined,
           undefined,
           resolvedModel,
           undefined,
@@ -418,7 +435,7 @@ export function recordSessionClaudeTurnUsage(
           claudeTurnDurationMs,
         );
         // 本分支有三个"记不了钱"的出口(本轮 cost 未增长 / 订阅直连 / 非明确
-        // provider-api 路由)。只保留可证明的模型与时长；进程累计 usage 不能冒充本轮 token。
+        // provider-api 路由)。只保留可证明的模型、输出与时长；进程累计 usage 不能冒充本轮 token。
         const recordUsageOnly = async () => {
           if (!turnAssistantPersistId) return;
           await recordTurnUsageOnMessage({
@@ -453,7 +470,7 @@ export function recordSessionClaudeTurnUsage(
         // A cumulative SDK dollar value is authoritative only for an
         // explicitly selected provider API. Remote/unknown routing cannot
         // be attributed to this local account and must stay usage-only.
-        if (route !== 'provider-api') {
+        if (route !== 'provider-api' || turnContext.accessKind === 'managed') {
           await recordUsageOnly();
           return;
         }
