@@ -1,3 +1,5 @@
+import { assertBotTaskCoordination, classifySessionMessagePurpose, coordinationInput } from './botTaskCoordination.js';
+import type { BotTaskCoordination, SessionMessagePurpose } from '../../shared/botTaskCoordination.js';
 import { openSession, setSessionOpeningModelAdmission } from '../localDb/sessionOpening.js';
 import { createPluginTaskReviewResolver } from './pluginTaskReviewContext.js';
 import { isPluginTaskPermissionAllowed, assertPluginTaskResult, createPluginTaskService, readPluginTaskPlanReceipt, PluginTaskError, type PluginTaskService } from './pluginTaskService.js';
@@ -25,6 +27,17 @@ import { describeProviderShareDevice } from '../device-link/providerShareGuest.j
 import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalog.js';
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
+import { readProviderGroupBinding, writeProviderGroupBinding } from '../provider-group/bindings.js';
+import { getProviderGroupDirectory, getProviderGroupRouter, setProviderGroupTurnProbe } from '../provider-group/runtime.js';
+import {
+  createProviderGroupService,
+  PROVIDER_GROUP_SUPERSEDED_ERROR,
+  type ProviderGroupRoute,
+  type ProviderGroupService,
+  type ProviderGroupSessionRow,
+  type ProviderGroupStartContext,
+} from '../provider-group/service.js';
+import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
 import {
   isRemoteProviderInvocationAllowed,
   setRemoteProviderInvocationEnabled,
@@ -148,6 +161,7 @@ import {
   normalizeAgentInputClearBoundaryMs,
   serializeSessionReferencePayload,
   USAGE_LIMIT_RESET_AUTO_RESUME_REASON,
+  HOST_ONLY_AGENT_PREFIX,
   type AgentInputClearBoundaryOpts,
   type AgentInputCreateOpts,
   type AgentInputQueuedMessage,
@@ -287,6 +301,7 @@ import {
   getCurrentDbClientSnapshot,
   getDbClient,
   isDbClientNotReadyError,
+  tryGetDbClient,
 } from '../localDb/client/current.js';
 import { createBotRuntimeRestoreCoordinator } from './botRuntimeRestore.js';
 import { createWorkingDirectoryRecovery, isUnavailableFilesystemError } from './workingDirectoryRecovery.js';
@@ -422,6 +437,7 @@ import {
   removeWorker,
   renewWorkerCreationReservation,
   reserveWorkerCreation,
+  setRemoteWorkerStatusProvider,
   setSessionOrcaRole,
   setWorkerFocus,
   updateWorkerStatus,
@@ -723,6 +739,7 @@ import {
   AcceptedCallbackDispatchCancelled,
   runAcceptedCallback,
 } from './acceptedCallbackRunner.js';
+import { GroupToolAuthorizationError } from './botGroupToolAuthorization.js';
 import { createElectronIpcHandlerRegistry } from './electronIpcRegistry.js';
 import { refreshCodexMcpEnvironment } from './codexMcpRefresh.js';
 
@@ -871,6 +888,18 @@ import {
 import { tryInjectProjectContext } from './projectContextInject.js';
 import { registerMakerSessionCreateHandler } from './sessionCreateHandler.js';
 import {
+  createOrcaRemoteWorkerHost,
+  createOrcaRemoteWorkerSessionOpener,
+  registerOrcaRemoteWorkerHandlers,
+} from './orcaRemoteWorkerHost.js';
+import { createOrcaRemoteWorkers, type OrcaRemoteWorkers } from './orcaRemoteWorkers.js';
+import { ORCA_EXECUTION_DEVICES_CHANNEL } from '@cindy/device-link';
+import {
+  parseOrcaRemoteLead,
+  serializeOrcaRemoteLead,
+  type OrcaRemoteLead,
+} from '../../shared/orcaRemoteWorker.js';
+import {
   applyPendingAgentSwitchIfIdle,
   createPendingAgentSwitchRegistry,
   performSessionAgentSwitch,
@@ -914,7 +943,11 @@ import { clearSealedCodexPlanState, readCodexPlanState } from '../localDb/codexP
 import { buildCompletedPlanGuardNote, buildPlanReconcileNote } from './planReconcile.js';
 import { peekGoalInactiveNote } from '../goal-host/inactiveNote.js';
 import { readTurnUsageResetAt } from '../goal-host/usageLimit.js';
-import { readAccountUsageLimit, subscriptionFamilyOf } from '../usage/accountUsageLimit.js';
+import {
+  readAccountUsageLimit,
+  sessionUsesOtherMachineAccount,
+  subscriptionFamilyOf,
+} from '../usage/accountUsageLimit.js';
 import { UsageLimitAutoResume } from './usageLimitAutoResume.js';
 import { type MakerSessionCreateOpts, withCreateSessionStderr } from './sessionRequest.js';
 import { persistAndHydrateSessionProvider } from './sessionProviderBootstrap.js';
@@ -1295,6 +1328,8 @@ async function prepareProjectSkillLinksFailSoft(workingDir: unknown): Promise<bo
 const workerTurnStartSequencer = createWorkerTurnStartSequencer(log);
 // session event wiring 是模块级函数；service 在 registerMakerIpc 内构造后注入给事件回调。
 let orcaTeamServiceForEvents: OrcaTeamService | null = null;
+// 协同远端 Worker 的宿主装配；bootstrapSession 据此拒绝在本机启动远端 Worker 的代理任务。
+let orcaRemoteWorkersForHost: OrcaRemoteWorkers | null = null;
 // silent-stop 自动续跑守卫(决策语义与防死循环不变量见 silentStopAutoResume.ts 文件头)。
 // 纯内存、app 级单例:额度按 sessionId 记账,kill switch 每次决策时现读(改配置即生效)。
 const silentStopAutoResumeGuard = new SilentStopAutoResumeGuard({
@@ -1372,13 +1407,14 @@ async function resolveSessionUsageResetAt(
   if (!row || !agentKind) return null;
   const { providerId, modelId } = resolveSessionRuntimeRoute(sessionId, agentKind, row);
   if (!subscriptionFamilyOf(agentKind, providerId)) return null;
-  // SSH 远程会话的报错用远端主机的本地时间:不带时区的钟点不按本机时区理解。
+  // SSH 远程会话 / 远程 Agent 的报错用那台机器的本地时间:不带时区的钟点不按本机时区理解。
+  const otherMachineAccount = sessionUsesOtherMachineAccount(row);
   const fromError = readTurnUsageResetAt(signals, Date.now(), {
-    localTimeZoneTrusted: !row.remoteHostId,
+    localTimeZoneTrusted: !otherMachineAccount,
   });
   if (fromError !== null) return fromError;
-  // SSH 远程会话用远端主机自己的登录,本机快照属于另一个账号,不能拿来推算。
-  if (row.remoteHostId) return null;
+  // SSH 远端主机 / 远程 Agent 所在电脑用自己的登录,本机快照属于另一个账号,不能拿来推算。
+  if (otherMachineAccount) return null;
   const limit = await readAccountUsageLimit(agentKind, providerId, modelId);
   return limit?.limited ? limit.resetAtMs : null;
 }
@@ -2143,6 +2179,7 @@ interface OrcaCollabService {
       }
   >;
   sendToSession: (params: {
+    messagePurpose?: SessionMessagePurpose;
     /** 省略 → create 新 session;提供 → jump 到该既有 session。 */
     targetSessionId?: string;
     message: string;
@@ -2261,6 +2298,17 @@ interface OrcaCollabService {
           effort: string | null;
           focused: boolean;
           working_dir: string;
+          execution_device?: {
+            device_id: string;
+            device_name: string | null;
+            reachable: boolean | null;
+          };
+        }>;
+        execution_devices?: Array<{
+          device_id: string;
+          name: string;
+          platform: string | null;
+          supported: boolean;
         }>;
       }
     | { ok: false; errorCode: string; message: string }
@@ -2395,6 +2443,10 @@ interface EnableOrcaOptions {
   workerPermissionMode?: OrcaWorkerPermissionMode;
   /** 新建 Lead 专用：先建 Worker，等首条 Lead 输入 accepted 且可查询后再派任务。 */
   deferDelegateTask?: boolean;
+  /** 首个 Worker 放到同账号另一台电脑运行；缺省 = 本机。 */
+  executionDeviceId?: string;
+  /** 运行设备上的工作目录；缺省由那台分配。只在指定运行设备时生效。 */
+  workingDir?: string;
 }
 
 let orcaCollabServiceHolder: OrcaCollabService | null = null;
@@ -2418,6 +2470,22 @@ const botRuntimeRestoreCoordinator = createBotRuntimeRestoreCoordinator({
 
 export function restoreBotRuntimeForCurrentOwner(): Promise<boolean> {
   return botRuntimeRestoreCoordinator.restoreCurrentOwner();
+}
+
+/** 按当前账号恢复协同远端 Worker 的轮询；数据库未就绪时跳过，由接管后的调用补上。 */
+export async function restoreOrcaRemoteWorkersForCurrentOwner(): Promise<void> {
+  const remote = orcaRemoteWorkersForHost;
+  if (!remote || !tryGetDbClient()) return;
+  await remote.start().catch((err) =>
+    log.warn('orca remote workers: restore failed', {
+      err: err instanceof Error ? err.message : String(err),
+    }),
+  );
+}
+
+/** 账号边界：停掉上一账号远端 Worker 的轮询与补发，避免写进下一个账号的数据库。 */
+export function stopOrcaRemoteWorkersForOwnerBoundary(): void {
+  orcaRemoteWorkersForHost?.stop();
 }
 
 function markWorkerManualInterruptIfKnown(
@@ -4114,6 +4182,7 @@ export interface SchedulerQueuedPromptRequest {
 export type SchedulerEnqueueResult = { clientId: string } | { duplicate: true } | { retry: true };
 
 interface SchedulerQueueBridge {
+  ensureQueueRestored(sessionId: string): Promise<boolean>;
   isSessionBusy(sessionId: string): boolean;
   hasQueuedPrompt(sessionId: string, scheduleId: string): boolean;
   enqueuePrompt(req: SchedulerQueuedPromptRequest): Promise<SchedulerEnqueueResult>;
@@ -4129,6 +4198,11 @@ const schedulerQueuedPromptPreparations = new Map<string, {
   onPreparing: () => Promise<void>;
   onPreparationFailed?: (error: unknown) => void;
 }>();
+
+export async function ensureSchedulerQueueRestored(sessionId: string): Promise<boolean> {
+  // 桥未就绪时不能把未知队列当成空闲；让 runner 沿用恢复待定的顺延路径。
+  return schedulerQueueBridgeHolder?.ensureQueueRestored(sessionId) ?? false;
+}
 
 export function isSchedulerTargetSessionBusy(sessionId: string): boolean {
   return schedulerQueueBridgeHolder?.isSessionBusy(sessionId) ?? false;
@@ -7128,11 +7202,22 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   function createOrcaDiagnosticsDeps() {
+    const remoteRuntime = orcaRemoteWorkersForHost?.runtime;
     return {
       readActiveTeam: readActiveOrcaTeamByLeadReadOnly,
       listWorkersByLead,
-      getSessionStatus: orcaSessionStatus,
+      // 远端 Worker 的本机代理行从不运行；状态取运行设备的轮询投影。
+      getSessionStatus: (sessionId: string) =>
+        remoteRuntime?.isRemote(sessionId)
+          ? !remoteRuntime.isReachable(sessionId)
+            ? 'unreachable'
+            : remoteRuntime.isTurnRunning(sessionId) ? 'running' : 'idle'
+          : orcaSessionStatus(sessionId),
       getWorkerFlowStatus: async (sessionId: string) => {
+        if (remoteRuntime?.isRemote(sessionId)) {
+          const running = remoteRuntime.isTurnRunning(sessionId);
+          return { isWorking: running, willQueue: running, queuedCount: 0, queuePaused: false };
+        }
         await inputCoordinator.ensureQueueRestored(sessionId);
         const inspection = inputCoordinator.getQueueInspection(sessionId);
         const live = getStableSessionForTurnBoundary(sessionId);
@@ -7144,7 +7229,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           queuePaused: inputCoordinator.isQueuePaused(sessionId),
         };
       },
-      readLatestAssistantMessage: readLatestWorkerAssistantMessage,
+      readLatestAssistantMessage: (workerSessionId: string) =>
+        remoteRuntime?.isRemote(workerSessionId)
+          ? remoteRuntime.latestReply(workerSessionId)
+          : readLatestWorkerAssistantMessage(workerSessionId),
     };
   }
 
@@ -7347,17 +7435,99 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return verdict.kind === 'reroute' ? verdict.providerId : undefined;
   }
 
+  // 供应商组(docs/product-rules/provider-groups.md)：在 agentSwitchDeps 就绪后装配。
+  let providerGroupService: ProviderGroupService | null = null;
+
+  async function readProviderGroupSessionRow(sessionId: string): Promise<ProviderGroupSessionRow | null> {
+    const [row] = await getDbClient()
+      .drizzle.select({
+        agentKind: sessions.agentKind,
+        model: sessions.model,
+        providerId: sessions.providerId,
+        agentDeviceId: sessions.agentDeviceId,
+        remoteHostId: sessions.remoteHostId,
+        sdkSessionId: sessions.sdkSessionId,
+        orcaRole: sessions.orcaRole,
+        source: sessions.source,
+      })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    // Orca 协同与审查任务对 Agent 位置有各自的契约，首版不归供应商组分配。
+    if (!row || row.orcaRole || row.source === 'review') return null;
+    return {
+      agentKind: dbToMakerAgentKind(row.agentKind),
+      model: row.model ?? null,
+      providerId: row.providerId ?? null,
+      agentDeviceId: row.agentDeviceId ?? null,
+      remoteHostId: row.remoteHostId ?? null,
+      sdkSessionId: row.sdkSessionId ?? null,
+    };
+  }
+
+  async function resolveProviderGroupImplicitProvider(agentKind: AgentKind, model: string): Promise<string | null> {
+    const providers = await getDesktopProviderService().listProviders({
+      allowSideEffects: false,
+      catalog: getActiveCatalog(),
+    });
+    return effectiveSourceIdForModel(providers, null, model, agentKind);
+  }
+
+  async function persistProviderGroupRoute(sessionId: string, route: ProviderGroupRoute): Promise<void> {
+    await getDbClient()
+      .drizzle.update(sessions)
+      .set({ agentDeviceId: route.agentDeviceId, providerId: route.providerId, updatedAt: Date.now() })
+      .where(eq(sessions.id, sessionId));
+    broadcastSessionPatched(sessionId, { agentDeviceId: route.agentDeviceId, providerId: route.providerId });
+  }
+
+  async function hasProviderGroupAssistantHistory(sessionId: string): Promise<boolean> {
+    const [row] = await getDbClient()
+      .drizzle.select({ id: messages.id })
+      .from(messages)
+      .where(and(eq(messages.sessionId, sessionId), eq(messages.role, 'assistant')))
+      .limit(1);
+    return Boolean(row);
+  }
+
+  /**
+   * 新任务第一次启动前按供应商组选电脑；已归组的任务以任务记录为准核对绑定(用户手动挪走时解除)。
+   * 不归组管时原样返回 null。
+   */
+  async function applyProviderGroupAssignment(o: CreateOpts): Promise<ProviderGroupStartContext | null> {
+    if (!providerGroupService || !o.id || o.remoteHostId) return null;
+    if (typeof o.model !== 'string' || !o.model) return null;
+    // 没有建任何组时不读数据库，启动路径与没有这个功能时完全一致。
+    if (Object.keys(listProviderGroups()).length === 0) return null;
+    const context = await providerGroupService.assignBeforeStart({
+      sessionId: o.id,
+      agentKind: o.agentKind,
+      model: o.model,
+    });
+    if (context?.route.agentDeviceId && o.agentDeviceId === undefined) {
+      o.agentDeviceId = context.route.agentDeviceId;
+      o.providerId = context.route.providerId;
+    }
+    return context;
+  }
+
   async function bootstrapSession(o: CreateOpts, assertAccess?: () => void): Promise<{
     session: Awaited<ReturnType<typeof maker.createSession>>;
     didInjectOrcaInstructions: boolean;
     didInjectProjectContext: boolean;
   }> {
     assertAccess?.();
+    // 协同远端 Worker 的代理任务行只承接计槽与回报，真实任务在运行设备上，绝不在本机起 Agent。
+    if (o.id && await orcaRemoteWorkersForHost?.isRemoteWorker(o.id)) {
+      throw new Error('[PRECONDITION_FAILED] this Worker runs on another device and cannot start locally');
+    }
+    assertAccess?.();
     // Agent 在另一台电脑上运行的任务：恢复时调用方可能没带设备，以任务记录为准。
     if (o.id && o.agentDeviceId === undefined && !o.remoteHostId) {
       const agentDeviceId = await readSessionAgentDeviceId(o.id);
       if (agentDeviceId) o.agentDeviceId = agentDeviceId;
     }
+    let providerGroupStart = await applyProviderGroupAssignment(o);
     // 模型与供应商来自那台电脑(由那台按它自己的目录校验)，本机目录里没有它们。
     const agentOnOtherDevice = Boolean(o.agentDeviceId) && !o.remoteHostId;
     if (o.id && !o.remoteHostId) worktreeManager.assertPrecreatedSessionNotCancelled(o.id);
@@ -7411,53 +7581,80 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
     await hydrateProviderIdBeforeSessionStart(o);
     assertAccess?.();
-    if (!agentOnOtherDevice) {
+    /** 本机运行时的启动准入(Agent 在另一台电脑运行时由那台按它自己的目录裁决)。 */
+    const admitLocalRoute = async (): Promise<void> => {
       await ensureManagedOllamaReadyForSession({
         providerId: o.providerId,
         remoteHostId: o.remoteHostId ?? null,
         userDataDir: app.getPath('userData'),
       });
-    }
-    // 停用轴准入(PR #744 review):**新建**会话不得路由到用户停用的模型 / 来源。
-    // renderer 选择器已过滤,但 create-session 在 device-link allowlist 内,老控制端
-    // 可直接点名 —— main 必须自己裁决。resume 豁免(运行中的会话不打断)只给
-    // **经核实的原样续跑**:请求路由与本会话 DB 持久化路由一致才算;resumeSessionId
-    // 是调用方可控字段,携带任意非空 id 同时改点停用 model/provider 不能构成绕过
-    // (PR #744 review 第十六轮)。读不到会话行(远端新建等)按非豁免走正常裁决。
-    // 隐式来源的原生默认落点被停用而有启用替代拷贝时,把会话显式改路由过去(下方
-    // persistAndHydrateSessionProvider 会把它落库):实际路由层对隐式来源走原生
-    // 默认、不查停用标志,仅放行等于继续用停用拷贝付费。
-    if (typeof o.model === 'string' && o.model && !agentOnOtherDevice) {
-      let verifiedResume = false;
-      if (o.resumeSessionId && typeof o.id === 'string' && o.id) {
-        try {
-          const [row] = await getDbClient()
-            .drizzle.select({ model: sessions.model, providerId: sessions.providerId,
-              remoteHostId: sessions.remoteHostId, sdkSessionId: sessions.sdkSessionId, agentKind: sessions.agentKind })
-            .from(sessions)
-            .where(eq(sessions.id, o.id))
-            .limit(1);
-          verifiedResume =
-            !!row && row.model === o.model && (row.providerId ?? null) === (o.providerId ?? null);
-          if (o.agentKind === 'codex' && o.remoteHostId) {
-            verifiedResume = isVerifiedSshCodexResume(o, row ? { ...row, agentKind: dbToMakerAgentKind(row.agentKind) } : undefined);
+      // 停用轴准入(PR #744 review):**新建**会话不得路由到用户停用的模型 / 来源。
+      // renderer 选择器已过滤,但 create-session 在 device-link allowlist 内,老控制端
+      // 可直接点名 —— main 必须自己裁决。resume 豁免(运行中的会话不打断)只给
+      // **经核实的原样续跑**:请求路由与本会话 DB 持久化路由一致才算;resumeSessionId
+      // 是调用方可控字段,携带任意非空 id 同时改点停用 model/provider 不能构成绕过
+      // (PR #744 review 第十六轮)。读不到会话行(远端新建等)按非豁免走正常裁决。
+      // 隐式来源的原生默认落点被停用而有启用替代拷贝时,把会话显式改路由过去(下方
+      // persistAndHydrateSessionProvider 会把它落库):实际路由层对隐式来源走原生
+      // 默认、不查停用标志,仅放行等于继续用停用拷贝付费。
+      if (typeof o.model === 'string' && o.model) {
+        let verifiedResume = false;
+        if (o.resumeSessionId && typeof o.id === 'string' && o.id) {
+          try {
+            const [row] = await getDbClient()
+              .drizzle.select({ model: sessions.model, providerId: sessions.providerId,
+                remoteHostId: sessions.remoteHostId, sdkSessionId: sessions.sdkSessionId, agentKind: sessions.agentKind })
+              .from(sessions)
+              .where(eq(sessions.id, o.id))
+              .limit(1);
+            verifiedResume =
+              !!row && row.model === o.model && (row.providerId ?? null) === (o.providerId ?? null);
+            if (o.agentKind === 'codex' && o.remoteHostId) {
+              verifiedResume = isVerifiedSshCodexResume(o, row ? { ...row, agentKind: dbToMakerAgentKind(row.agentKind) } : undefined);
+            }
+          } catch {
+            verifiedResume = false;
           }
-        } catch {
-          verifiedResume = false;
+        }
+        if (!verifiedResume) {
+          const reroute = await assertModelRouteUsable(o.agentKind, o.model, o.providerId ?? null, o.remoteHostId);
+          if (reroute && shouldApplyExclusiveProviderRerouteLive(o.providerId)) {
+            o.providerId = reroute;
+          }
+        } else if (!(o.agentKind === 'codex' && o.remoteHostId) && shouldApplyExclusiveProviderRerouteLive(o.providerId)) {
+          const pin = await pinExclusiveSessionProvider(o.agentKind, o.model, o.providerId ?? null);
+          if (pin) o.providerId = pin;
         }
       }
-      if (!verifiedResume) {
-        const reroute = await assertModelRouteUsable(o.agentKind, o.model, o.providerId ?? null, o.remoteHostId);
-        if (reroute && shouldApplyExclusiveProviderRerouteLive(o.providerId)) {
-          o.providerId = reroute;
-        }
-      } else if (!(o.agentKind === 'codex' && o.remoteHostId) && shouldApplyExclusiveProviderRerouteLive(o.providerId)) {
-        const pin = await pinExclusiveSessionProvider(o.agentKind, o.model, o.providerId ?? null);
-        if (pin) o.providerId = pin;
+    };
+    if (!agentOnOtherDevice) await admitLocalRoute();
+    assertAccess?.();
+    let session: Awaited<ReturnType<typeof maker.createSession>> | undefined;
+    while (!session) {
+      try {
+        session = await maker.createSession(o);
+      } catch (error) {
+        // 供应商组刚分配的电脑没能启动 Agent(连不上、登录失效等)：换组里下一台再试，
+        // 每台最多一次；不该换或没有下一台时照常报错。
+        const next = providerGroupStart && providerGroupService
+          ? await providerGroupService.nextAfterStartFailure(providerGroupStart, error).catch((retryError) => {
+              log.warn('provider group: choosing the next computer failed', {
+                sessionId: o.id,
+                error: retryError instanceof Error ? retryError.message : String(retryError),
+              });
+              return null;
+            })
+          : null;
+        if (!next) throw error;
+        providerGroupStart = next;
+        o.agentDeviceId = next.route.agentDeviceId ?? undefined;
+        o.providerId = next.route.providerId;
+        assertAccess?.();
+        // 换回本机运行：补上本机的启动准入(停用模型 / 来源、本机模型服务)。
+        if (!o.agentDeviceId) await admitLocalRoute();
+        assertAccess?.();
       }
     }
-    assertAccess?.();
-    const session = await maker.createSession(o);
     await markProjectContextIfNeeded(session.id, didInjectProjectContext);
     wireSessionToIpc(session);
     markOrcaMcpHydratedIfNeeded(session.id, o);
@@ -8276,6 +8473,80 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     logCreateSession: (fields) => log.info('create-session invoked', fields),
     warnStderr: (agentKind, line) => log.warn(`[${agentKind}/stderr] ${line}`),
   });
+
+  // 本机作为运行设备：承接另一台电脑上协同 Lead 派来的 Worker 任务(见 orcaRemoteWorkerHost.ts)。
+  const writeOrcaRemoteLead = async (sessionId: string, lead: OrcaRemoteLead) => {
+    await getDbClient()
+      .drizzle.update(sessions)
+      .set({ orcaRemoteLead: serializeOrcaRemoteLead(lead) })
+      .where(eq(sessions.id, sessionId));
+    broadcastSessionPatched(sessionId, { orcaRemoteLead: lead });
+  };
+  registerOrcaRemoteWorkerHandlers(makerSessionRegistry, createOrcaRemoteWorkerHost({
+    getCaller: () => {
+      const context = getDeviceLinkInvokeContext();
+      return context
+        ? {
+            controllerDeviceId: context.controllerDeviceId,
+            controllerName: context.controllerName,
+            sharedTask: context.sharedTask,
+          }
+        : null;
+    },
+    readSession: async (sessionId) => {
+      const [row] = await getDbClient()
+        .drizzle.select({
+          orcaRemoteLead: sessions.orcaRemoteLead,
+          status: sessions.status,
+          workingDir: sessions.workingDir,
+          model: sessions.model,
+          agentKind: sessions.agentKind,
+          effort: sessions.effort,
+          fastMode: sessions.fastMode,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      if (!row) return null;
+      return {
+        orcaRemoteLead: parseOrcaRemoteLead(row.orcaRemoteLead),
+        status: row.status,
+        workingDir: row.workingDir,
+        model: row.model,
+        agentKind: row.agentKind === 'cc' ? 'claude-code' : (row.agentKind as 'codex' | 'pi'),
+        effort: row.effort,
+        fastMode: row.fastMode,
+      };
+    },
+    openSession: createOrcaRemoteWorkerSessionOpener({
+      openSession,
+      insertSession: async (row) => {
+        await getDbClient().drizzle.insert(sessions).values(row).run();
+      },
+      bootstrapSession: async (opened, assertCurrent) => {
+        const agentKind = opened.agentKind === 'codex' || opened.agentKind === 'pi'
+          ? opened.agentKind
+          : 'claude-code';
+        await bootstrapSession(buildCreateOptsWithStderr({
+          id: opened.id,
+          agentKind,
+          workspaceKind: opened.workspaceKind,
+          // openSession 已为 dialogue 分配目录；project 由调用方给出并经 device-link 目录守卫。
+          workingDir: opened.workingDir ?? '',
+          model: opened.model,
+          providerId: opened.providerId,
+          effort: (opened.effort || undefined) as CreateOpts['effort'],
+          fastMode: opened.fastMode,
+          permissionMode: opened.permissionMode as CreateOpts['permissionMode'],
+          title: opened.title,
+        }), assertCurrent);
+      },
+      broadcastSessionCreated,
+    }),
+    writeRemoteLead: writeOrcaRemoteLead,
+    withSessionLock: withSendToSessionLock,
+    now: Date.now,
+  }));
 
   const readSourceReviewCards = async (sourceSessionId: string) =>
     getDbClient()
@@ -9148,7 +9419,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     withCloseSuppressed: withRehydrateCloseSuppressed,
     pendingSwitches: agentSwitchPending,
-    selectSameAgentModel: async (sessionId, intent, applyNow, assertSelectionCurrent) => {
+    selectSameAgentModel: async (sessionId, intent, applyNow, assertSelectionCurrent, beforeMutation) => {
       const result = await applySessionRuntimeSelection(sessionId, intent.model, intent.providerId, {
         effort: (intent.effort ?? null) as SessionRuntimeProfile['effort'],
         fastMode: intent.fastMode ?? false,
@@ -9156,7 +9427,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         ...(intent.confirmedContextWindow ? { confirmedContextWindow: intent.confirmedContextWindow } : {}),
       }, { source: 'user', sessionLockHeld: true, applyingUserSelectionOnSend: applyNow,
         runtimeSource: intent.runtimeSource, configStaged: intent.configStaged === true,
-        assertSelectionCurrent });
+        assertSelectionCurrent, beforeMutation });
       return result;
     },
     onPendingSwitchChanged: (sessionId, intent) => {
@@ -9168,6 +9439,79 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   };
   registerMakerSessionAgentSwitchHandler(makerSessionRegistry, agentSwitchDeps);
+
+  /** 终态错误后输入协调器收尾、turn 真正停下来再交接(交接拒绝运行中的 turn)。 */
+  async function waitForProviderGroupTurnIdle(sessionId: string): Promise<void> {
+    for (let i = 0; i < 40 && maker.getSession(sessionId)?.isTurnRunning(); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  providerGroupService = createProviderGroupService({
+    router: getProviderGroupRouter(),
+    directory: getProviderGroupDirectory(),
+    readGroup: readProviderGroup,
+    readBinding: readProviderGroupBinding,
+    writeBinding: (sessionId, binding) => writeProviderGroupBinding(sessionId, binding),
+    readSessionRow: readProviderGroupSessionRow,
+    resolveImplicitProvider: resolveProviderGroupImplicitProvider,
+    persistRoute: persistProviderGroupRoute,
+    hasAssistantHistory: hasProviderGroupAssistantHistory,
+    isFailoverEligible: isUsageLimitAutoResumeEligible,
+    leaseRecovery: (sessionId, token) =>
+      agentInputCoordinatorHolder?.leaseUsageLimitRecovery(sessionId, token) ?? null,
+    isLeaseCurrent: (sessionId, lease) =>
+      agentInputCoordinatorHolder?.isUsageLimitRecoveryLeaseCurrent(sessionId, lease) ?? false,
+    rearmContinue: (sessionId, lease, resumeAt) =>
+      agentInputCoordinatorHolder?.rearmUsageLimitWait(sessionId, lease, resumeAt) ?? null,
+    cancelContinue: (sessionId, token) => {
+      agentInputCoordinatorHolder?.cancelUsageLimitWait(sessionId, token);
+    },
+    switchAgentLocation: async (sessionId, route, switchOptions) => {
+      const isCurrent = switchOptions?.isCurrent;
+      const assertCurrent = () => {
+        if (isCurrent && !isCurrent()) throw new Error(PROVIDER_GROUP_SUPERSEDED_ERROR);
+      };
+      const run = async () => {
+        assertCurrent();
+        const result = await performSessionAgentSwitch(agentSwitchDeps, {
+          sessionId,
+          targetAgentKind: route.agentKind,
+          model: route.model,
+          providerId: route.providerId,
+          agentDeviceId: route.agentDeviceId,
+          applyNow: true,
+          // 发送前换电脑：随后的 lazy-create 按任务记录在新电脑上启动，不重复 bootstrap。
+          ...(switchOptions?.beforeSend ? { skipBootstrap: true } : {}),
+          // 用户在等锁、读交接素材期间接手：在改动之前停下。
+          ...(isCurrent ? { assertSelectionCurrent: assertCurrent } : {}),
+        });
+        // 同引擎同位置等情况会按 no-op 返回：没有真正换过去，按交接失败处理。
+        if (!result.switched) throw new Error('provider group: the agent switch did not apply');
+      };
+      // 发送前换电脑已在发送事务里；运行中失败后的换电脑是异步触发的，与其他内部调用一样在发送锁内交接，
+      // 不与用户同时发来的消息交错。
+      if (switchOptions?.beforeSend) {
+        await run();
+        return;
+      }
+      assertCurrent();
+      await waitForProviderGroupTurnIdle(sessionId);
+      assertCurrent();
+      await withSendToSessionLock(sessionId, run);
+    },
+    isTurnRunning: (sessionId) => maker.getSession(sessionId)?.isTurnRunning() ?? false,
+    continueSession: async (sessionId, token, info) =>
+      agentInputCoordinatorHolder
+        ? agentInputCoordinatorHolder.continueAfterUsageLimitReset(sessionId, token, info)
+        : 'superseded',
+    fallback: (sessionId, signals, token) => usageLimitAutoResume.onTurnError(sessionId, signals, token),
+    // 组内电脑的报错用那台机器的本地时间：不带时区的钟点不按本机时区理解。
+    readResetAt: (signals) => readTurnUsageResetAt(signals, Date.now(), { localTimeZoneTrusted: false }),
+    now: () => Date.now(),
+    log,
+  });
+  setProviderGroupTurnProbe((sessionId) => maker.getSession(sessionId)?.isTurnRunning() ?? false);
   registerMakerMessageDeleteHandler(makerSessionRegistry, {
     getSessionRow: async (sessionId) => {
       const [row] = await getDbClient()
@@ -9325,6 +9669,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       delegateTask: opts.delegateTask,
       deferDelegateTask: opts.deferDelegateTask,
       workerPermissionMode: opts.workerPermissionMode,
+      ...(opts.executionDeviceId
+        ? {
+            executionDeviceId: opts.executionDeviceId,
+            ...(opts.workingDir ? { workingDir: opts.workingDir } : {}),
+          }
+        : {}),
     });
     if (!result.ok) throwOrcaServiceFailure(result);
     log.info('enableOrca done', {
@@ -9350,6 +9700,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     await assertReviewSettingsUnlocked(leadSessionId);
     const lead = maker.getSession(leadSessionId);
     const leadRow = await getSessionRowSnapshot(leadSessionId);
+    // Worker 不能再当 Lead：本机 Worker 的 MCP 工具已按 vendorOptions 拒绝，这里补上
+    // IPC / 远程入口；另一台电脑派来的远端 Worker 同样不能嵌套开启协同。
+    if (leadRow?.orcaRole === 'worker' || leadRow?.orcaRemoteLead) {
+      throwIpcError('PRECONDITION_FAILED', '[WORKER_CANNOT_NEST] a worker task cannot start collaboration');
+    }
     const rawWorkingDir =
       typeof leadRow?.workingDir === 'string' ? leadRow.workingDir : lead?.workDir;
     const normalizedWorkingDir =
@@ -9489,6 +9844,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   async function sendToSessionInternal(params: {
+    botTaskCoordination?: BotTaskCoordination;
     targetSessionId?: string;
     message: string;
     persistedContent?: string;
@@ -9927,6 +10283,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           origin: queuedOrigin,
           sourcePlugin,
           autoReviewUserText: params.autoReviewUserText,
+          botTaskCoordination: params.botTaskCoordination,
           authorizationGuard: params.authorizationGuard,
         });
         return {
@@ -9992,6 +10349,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             origin: queuedOrigin,
             sourcePlugin,
             autoReviewUserText: params.autoReviewUserText,
+            botTaskCoordination: params.botTaskCoordination,
           });
           return {
             ok: true as const,
@@ -10122,6 +10480,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               origin: queuedOrigin,
               sourcePlugin,
               autoReviewUserText: params.autoReviewUserText,
+              botTaskCoordination: params.botTaskCoordination,
             });
             return {
               ok: true as const,
@@ -10238,6 +10597,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             origin: queuedOrigin,
             sourcePlugin,
             autoReviewUserText: params.autoReviewUserText,
+            botTaskCoordination: params.botTaskCoordination,
           });
           return {
             ok: true as const,
@@ -10425,12 +10785,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   botDirectMessageServiceHolder = createBotDirectMessageService({
     transport: createBotMessageTransport({ selfDeviceId: getSelfDeviceId,
       listDevices: () => handleListDevices(deviceDirectoryDeps()), invoke: invokeBotPeer }),
+    discardQueuedDelivery: async (sessionId, clientId, assertOwner) => {
+      await inputCoordinator.ensureQueueRestored(sessionId);
+      assertOwner();
+      inputCoordinator.remove(sessionId, clientId);
+    },
     hasQueuedDelivery: async (sessionId, clientId) => {
       await inputCoordinator.ensureQueueRestored(sessionId);
       return inputCoordinator.hasKnownClientId(sessionId, clientId);
     },
     dispatch: ({
       targetSessionId,
+      dispatcherSessionId,
       message,
       persistedContent,
       clientId,
@@ -10439,6 +10805,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     }) =>
       dispatchBotSessionMessage({
         targetSessionId,
+        dispatcherSessionId,
         message,
         persistedContent,
         clientId,
@@ -10455,11 +10822,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           : undefined,
         onAcceptedRollback,
       }),
-    ensureCanonicalSession: async (botId) => {
+    ensureCanonicalSession: async (botId, beforeRecovery) => {
       if (!botDelegationServiceHolder) {
         return { ok: false as const, errorCode: 'DELEGATION_UNAVAILABLE', message: '伙伴消息服务尚未就绪' };
       }
-      return botDelegationServiceHolder.ensureCanonicalSession(botId);
+      return botDelegationServiceHolder.ensureCanonicalSession(botId, beforeRecovery);
     },
     captureOwnerScope: captureDataOwnerBroadcastScope,
     isOwnerScopeCurrent: (scope) =>
@@ -10475,7 +10842,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   setBotRemoteMessageService(botDirectMessageServiceHolder);
   botGroupChatServiceHolder?.dispose();
   // 分工 steps run in the group's folder, the 项目文件夹, or one worktree per plan (bot-group-chat.md §7.5).
-  const botGroupAttachments = createBotGroupAttachmentStore({ ownerRoot: () => ownerScopedUserDataPath() });
+  const botGroupAttachments = createBotGroupAttachmentStore({ ownerRoot: () => ownerScopedUserDataPath(), log });
   const botGroupWorkDir = createBotGroupWorkDir({
     ownerRoot: () => ownerScopedUserDataPath(),
     detectRepo: async (dir) => {
@@ -10688,7 +11055,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         message,
         persistedContent,
         clientId,
-        onAccepted,
+        onAccepted: onAccepted ? async (replayed) => {
+          try {
+            await onAccepted(replayed);
+          } catch (error) {
+            if (error instanceof GroupToolAuthorizationError) {
+              throw new AcceptedCallbackDispatchCancelled(error.message);
+            }
+            throw error;
+          }
+        } : undefined,
         dispatcherSessionId,
       }),
     discardDelegationQueuedInputs: (sessionId, delegationId) =>
@@ -10839,6 +11215,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     assertTrustedAppRendererEvent(event);
     const chat = botGroupChatServiceHolder?.chatServer;
     return chat ? chat.previewInvite(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
+  });
+  ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_REVOKEINVITE, async (event, input) => {
+    assertTrustedAppRendererEvent(event);
+    const chat = botGroupChatServiceHolder?.chatServer;
+    return chat ? chat.revokeInvite(input) : { ok: false, errorCode: 'HOST_NOT_READY' };
   });
   ipcMain.handle(MAKER_INVOKE.CHAT_SERVER_ACCEPTINVITE, async (event, input) => {
     assertTrustedAppRendererEvent(event);
@@ -11818,6 +12199,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   async function enqueueSendToSessionMessage(params: {
+    botTaskCoordination?: BotTaskCoordination;
     targetSessionId: string;
     inheritTargetPlanMode?: boolean;
     message: string;
@@ -11863,6 +12245,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   }
 
   async function buildSessionControlInputItem(params: {
+    botTaskCoordination?: BotTaskCoordination;
     targetSessionId: string;
     inheritTargetPlanMode?: boolean;
     message: string;
@@ -11909,10 +12292,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 排队行的遮蔽按 text 判定,所以 text 保留前缀,只在最终 wire 组装时去掉
     // (agentOmitsTriggerPrefix → buildMakerUserMessage)。
     const hiddenTriggerForAgent = !params.message.startsWith(UI_ACTION_TRIGGER_PREFIX)
-      && params.persistedContent === `${UI_ACTION_TRIGGER_PREFIX}${params.message}`;
+      && params.persistedContent.startsWith(UI_ACTION_TRIGGER_PREFIX);
+    // Group peer envelopes belong only to the current model dispatch. Keep the
+    // safe authored body in queue text/history; the symbol never crosses JSON.
+    const modelOnlyEnvelope = params.clientId.startsWith('bot-dm:') && hiddenTriggerForAgent
+      && params.persistedContent !== `${UI_ACTION_TRIGGER_PREFIX}${params.message}`;
     return {
       clientId: params.clientId,
-      text: hiddenTriggerForAgent ? params.persistedContent : params.message,
+      text: modelOnlyEnvelope ? params.persistedContent
+        : hiddenTriggerForAgent ? `${UI_ACTION_TRIGGER_PREFIX}${params.message}` : params.message,
+      ...(modelOnlyEnvelope ? { [HOST_ONLY_AGENT_PREFIX]: params.message.slice(0, params.message.length - params.persistedContent.slice(UI_ACTION_TRIGGER_PREFIX.length).length) } : {}),
+      ...(params.botTaskCoordination ? { botTaskCoordination: params.botTaskCoordination } : {}),
       ...(hiddenTriggerForAgent ? { agentOmitsTriggerPrefix: true as const } : {}),
       ...(params.autoReviewUserText !== undefined ? { autoReviewUserText: params.autoReviewUserText } : {}),
       ...(params.toolsDisabled === true ? { toolsDisabled: true } : {}),
@@ -11932,7 +12322,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         ...(fileAttachments?.length ? { files: fileAttachments } : {}),
       },
       createOpts,
-      ...(params.origin ? { origin: params.origin } : {}),
+      ...(params.origin ? { origin: modelOnlyEnvelope && (params.origin.kind === 'session' || params.origin.kind === 'orca')
+        ? { ...params.origin, displayText: params.persistedContent } : params.origin } : {}),
       ...(params.sourcePlugin ? { sourcePlugin: params.sourcePlugin } : {}),
     };
   }
@@ -12035,6 +12426,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         providerId?: unknown;
         workerPermissionMode?: unknown;
         deferDelegateTask?: unknown;
+        executionDeviceId?: unknown;
+        workingDir?: unknown;
       };
       const workerAgent: AgentKind =
         body.workerAgent === 'codex' ? 'codex' : body.workerAgent === 'pi' ? 'pi' : 'claude-code';
@@ -12063,6 +12456,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             : undefined,
         workerPermissionMode: body.workerPermissionMode,
         deferDelegateTask: body.deferDelegateTask,
+        // 运行设备与那台上的目录(可选)；旧控制端不带，行为不变。
+        ...(typeof body.executionDeviceId === 'string' && body.executionDeviceId.trim()
+          ? {
+              executionDeviceId: body.executionDeviceId.trim(),
+              ...(typeof body.workingDir === 'string' && body.workingDir.trim()
+                ? { workingDir: body.workingDir.trim() }
+                : {}),
+            }
+          : {}),
       });
     },
   );
@@ -12115,11 +12517,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           const result = await orcaTeamService.sendToWorker({
             callerLeadSessionId: leadSessionId,
             targetSessionId: workerSessionId,
-            message: buildUiAssignmentInitialTask({
-              leadSessionId,
-              initialTask: initialTask.trim(),
-              snapshotBeforeMs,
-            }),
+            // 远端 Worker 在另一台电脑，没有读取 Lead 历史的 Worker 桥，只发任务原文。
+            message: orcaRemoteWorkersForHost?.runtime.isRemote(workerSessionId)
+              ? initialTask.trim()
+              : buildUiAssignmentInitialTask({
+                  leadSessionId,
+                  initialTask: initialTask.trim(),
+                  snapshotBeforeMs,
+                }),
           }, assertCurrent);
           if (!result.ok) throwOrcaServiceFailure(result);
           return result;
@@ -12254,6 +12659,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     await assertCurrent?.();
     const workerRecycleScope = captureSessionRecycleScope();
     const archivedWorkerSessionIds = await archiveWorkersByTeam(team.id, assertCurrent);
+    // 远端 Worker：停止那台的当前一轮并通知结束协同(任务与文件保留)；不可达的留待重连后补发。
+    void orcaRemoteWorkers.releaseEnded(archivedWorkerSessionIds);
     await Promise.all(
       archivedWorkerSessionIds.map(async (sessionId) => {
         await assertCurrent?.();
@@ -12318,6 +12725,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       label: label.value,
       initialTask:
         typeof b.initialTask === 'string' && b.initialTask.length > 0 ? b.initialTask : undefined,
+      // 运行设备与那台上的目录(可选)；旧控制端不带，行为不变。
+      ...(typeof b.executionDeviceId === 'string' && b.executionDeviceId.trim()
+        ? {
+            executionDeviceId: b.executionDeviceId.trim(),
+            ...(typeof b.workingDir === 'string' && b.workingDir.trim()
+              ? { workingDir: b.workingDir.trim() }
+              : {}),
+          }
+        : {}),
     });
     if (!result.ok) throwOrcaServiceFailure(result);
     return {
@@ -12402,7 +12818,36 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     );
   };
 
-  const orcaTeamService = createOrcaTeamService({
+  // 协同远端 Worker：Worker 在同账号另一台电脑运行(见 orcaRemoteWorkers.ts)。
+  // 其代理任务行永不在本机跑 Agent，团队服务的会话依赖按是否远端分流。
+  const orcaRemoteWorkers = createOrcaRemoteWorkers({
+    getOwnerToken: getCurrentDbClientSnapshot,
+    remoteInvoke: (deviceId, channel, args) => invokeBotPeer(deviceId, channel, args),
+    listDevices: () => handleListDevices(deviceDirectoryDeps()),
+    getTeamService: () => orcaTeamServiceForEvents,
+    broadcastOrcaWorkerChanged: (leadSessionId) => {
+      broadcastToAllWindows(MAKER_PUSH.ORCA_WORKER_CHANGED, { leadSessionId });
+    },
+    readLeadTitle: async (leadSessionId) => {
+      const [row] = await getDbClient()
+        .drizzle.select({ title: sessions.title })
+        .from(sessions)
+        .where(eq(sessions.id, leadSessionId))
+        .limit(1);
+      return row?.title ?? '';
+    },
+    log,
+  });
+  orcaRemoteWorkersForHost = orcaRemoteWorkers;
+  setRemoteWorkerStatusProvider((proxySessionId, deviceId) => ({
+    deviceName: orcaRemoteWorkers.deviceName(deviceId),
+    reachable: orcaRemoteWorkers.runtime.isReachable(proxySessionId),
+    ...(orcaRemoteWorkers.runtime.workingDir(proxySessionId)
+      ? { workingDir: orcaRemoteWorkers.runtime.workingDir(proxySessionId)! }
+      : {}),
+  }));
+
+  const orcaTeamService = createOrcaTeamService(orcaRemoteWorkers.wrapTeamDeps({
     captureControlAuthority: async (leadSessionId) => (await captureOrcaPluginAuthority(leadSessionId)).assertCurrent,
     withSessionSendLock: withSendToSessionLock,
     getWorkerLinkBySessionId: (workerSessionId) => getWorkerLink({ workerSessionId }),
@@ -12634,8 +13079,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return { accepted: result.ok };
     },
     log,
-  });
+  }));
   orcaTeamServiceForEvents = orcaTeamService;
+  // 数据库可能晚于本注册就绪；bootstrap 在接管数据库后会再调一次，两种顺序都覆盖。
+  void restoreOrcaRemoteWorkersForCurrentOwner();
+  ipcMain.handle(ORCA_EXECUTION_DEVICES_CHANNEL, async (event) => {
+    if (!isDeviceLinkInvoke()) assertTrustedAppRendererEvent(event);
+    // 共享任务访客看不到本账号的设备目录。
+    if (getDeviceLinkInvokeContext()?.sharedTask) throwIpcError('PERMISSION_DENIED', 'not available to shared task guests');
+    return { devices: await orcaRemoteWorkers.listExecutionDevices() };
+  });
 
   const getProviderRoutingContext = () =>
     readOrcaWorkerProviderRoutingContext({
@@ -12713,6 +13166,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const task = await pluginTaskServiceForCurrentOwner!().get(receipt.pluginId,params.leadSessionId);
       if (epoch !== getCurrentDbClientSnapshot()) throw new PluginTaskError('PERMISSION_DENIED','Account changed');
       assertPluginWorkerAutoAuthorized(receipt.pluginId, task);
+      // Plugin directory grants identify resources on this computer, not same-named
+      // paths on another device. Reject before directory lookup or remote creation.
+      if (params.executionDeviceId !== undefined) {
+        throw new PluginTaskError('PERMISSION_DENIED', 'Plugin-owned tasks cannot create Workers on another device');
+      }
       const cfg = readPluginTaskConfig(receipt.pluginId);
       const resolveAuthorizedDirectory = (requested: string) => resolvePluginWorkerDirectory({
         requested, leadDirectory: task.workingDir,
@@ -12828,6 +13286,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     broadcastOrcaWorkerChanged: (leadSessionId) => {
       broadcastToAllWindows(MAKER_PUSH.ORCA_WORKER_CHANGED, { leadSessionId });
     },
+    openRemoteWorker: (input) => orcaRemoteWorkers.openRemoteWorker(input),
+    recordRemoteWorker: (input) => orcaRemoteWorkers.recordRemoteWorker(input),
+    discardRemoteWorker: (input) => orcaRemoteWorkers.discardRemoteWorker(input),
   });
 
   const orcaUiAssignmentHistoryGate = createOrcaUiAssignmentHistoryGate({
@@ -12888,6 +13349,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       });
     },
     sendWorkerReadyPlaceholder: async ({ workerSessionId, agentKind, entrypoint, context }, assertCurrent) => {
+      // 远端 Worker 的任务在运行设备上已建好并启动，无需本机占位消息。
+      if (orcaRemoteWorkers.runtime.isRemote(workerSessionId)) return;
       const workerSession = maker.getSession(workerSessionId);
       if (!workerSession) {
         throw new Error(`worker session ${workerSessionId} not found for ready placeholder`);
@@ -12917,6 +13380,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       });
     },
     rollbackCreatedWorker: async ({ workerId, workerSessionId }) => {
+      if (await orcaRemoteWorkers.rollbackCreatedWorker(workerSessionId)) return;
       const workerSession = maker.getSession(workerSessionId);
       if (workerSession) {
         await maker.closeSession(workerSessionId).catch(() => undefined);
@@ -13030,6 +13494,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     /** 系统配置对齐(IM 渠道默认跟随 / 伙伴模型对齐)登记: 落地时不打「脱离跟随」标记。 */
     configStaged?: boolean;
     assertSelectionCurrent?: () => void;
+    beforeMutation?: () => Promise<void>;
     /** Internal calls from the send / switch transaction already own the route lock. */
     sessionLockHeld?: boolean;
     applyingUserSelectionOnSend?: boolean;
@@ -13803,7 +14268,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           : readSessionRuntimeFallbackSettings().enabled,
       };
     },
-    setSessionRuntime: async ({ targetSessionId, expectedGeneration, patch }) => {
+    setSessionRuntime: async ({ targetSessionId, expectedGeneration, patch, beforeMutation }) => {
       if (patch.harness !== undefined) {
         return setSessionRuntimeHarness({
           withSessionLock: withSendToSessionLock,
@@ -13832,16 +14297,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             if (!axes.ok) throwIpcError('INVALID_PARAMS', `target model runtime axes unavailable: ${axes.reason}`);
             return { ...profile, providerId: providerId ?? null, effort: axes.effort, fastMode: axes.fastMode };
           },
-          stage: async (id, profile, assertSelectionCurrent) => {
+          stage: async (id, profile, assertSelectionCurrent, beforeMutation) => {
             return performSessionAgentSwitch(agentSwitchDeps, {
               sessionId: id, targetAgentKind: profile.agentKind, model: profile.model,
               providerId: profile.providerId, effort: profile.effort, fastMode: profile.fastMode,
-              runtimeSource: 'agent', assertSelectionCurrent,
+              runtimeSource: 'agent', assertSelectionCurrent, beforeMutation,
             });
           },
-        }, { targetSessionId, expectedGeneration, patch: { ...patch, harness: patch.harness } });
+        }, { targetSessionId, expectedGeneration, beforeMutation, patch: { ...patch, harness: patch.harness } });
       }
       const profiles = await readSessionRuntimeProfiles(targetSessionId);
+      if (beforeMutation) await beforeMutation();
       if (!profiles) {
         return {
           ok: false,
@@ -13863,6 +14329,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           { effort: next.effort, fastMode: next.fastMode },
           {
             source: 'agent',
+            beforeMutation,
             expectedGeneration,
             deferWhileRunning: true,
             effectiveProfile: profiles.effective,
@@ -13931,11 +14398,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     steerQueuedMessage: async (sessionId, item, expectedTurn) => {
       await inputCoordinator.ensureQueueRestored(sessionId);
+      await expectedTurn.beforeMutation?.();
       return inputCoordinator.steer(sessionId, item, {
         touchUserSend: true,
         fallbackToTurn: false,
         expectedTurnSession: expectedTurn.session,
         expectedTurnGeneration: expectedTurn.turnGeneration,
+        beforeMutation: expectedTurn.beforeMutation,
       });
     },
     getQueueSnapshot: async (sessionId) => {
@@ -14018,7 +14487,30 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     stopSessionTurn: (params) => sessionControlService.stopSessionTurn(params),
     getSessionRuntime: (params) => sessionControlService.getSessionRuntime(params),
     setSessionRuntime: (params) => sessionControlService.setSessionRuntime(params),
-    sendToSession: sendToSessionInternal,
+    sendToSession: async (params) => {
+      const ownerScope = captureDataOwnerBroadcastScope();
+      let classification: Awaited<ReturnType<typeof classifySessionMessagePurpose>>;
+      try {
+        classification = await classifySessionMessagePurpose({
+          senderSessionId: params.dispatcherSessionId,
+          targetSessionId: params.targetSessionId,
+          purpose: params.messagePurpose,
+        });
+      } catch (error) {
+        return { ok: false, errorCode: 'INVALID_ARGS', message: error instanceof Error ? error.message : String(error) };
+      }
+      if (!isDataOwnerBroadcastScopeCurrent(ownerScope)) {
+        return { ok: false, errorCode: 'AGENT_NOT_READY', message: 'Data owner changed before delivery.' };
+      }
+      return sendToSessionInternal({
+        ...params,
+        ...(classification.delegatedContinuation ? { autoReviewUserText: { kind: 'delegated-continuation' as const } } : {}),
+        ...(classification.coordination ? {
+          ...coordinationInput(params.message, classification.coordination),
+          forceQueue: true,
+        } : {}),
+      });
+    },
     enableOrca: enableOrcaInternal,
     disableOrca: disableOrcaInternal,
     // MCP worker 派活必须经 OrcaTeamService，确保 running、resume idle、广播和
@@ -14108,7 +14600,19 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     getWorkspaceInfo: async ({ leadSessionId }) => {
       try {
-        return await getOrcaWorkspaceInfoReadOnly(createOrcaDiagnosticsDeps(), leadSessionId);
+        const info = await getOrcaWorkspaceInfoReadOnly(createOrcaDiagnosticsDeps(), leadSessionId);
+        if (!info.ok || !orcaRemoteWorkersForHost) return info;
+        // 运行设备目录只给 Lead 选 execution_device_id 用；探测失败不影响其余诊断。
+        const devices = await orcaRemoteWorkersForHost.listExecutionDevices().catch(() => []);
+        return {
+          ...info,
+          execution_devices: devices.map((d) => ({
+            device_id: d.deviceId,
+            name: d.name,
+            platform: d.platform,
+            supported: d.supported,
+          })),
+        };
       } catch (err) {
         return {
           ok: false,
@@ -14298,6 +14802,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (!isAutomaticPrompt) {
         interruptedTurnAutoResumeGuard.noteUserSend(sessionId);
         usageLimitAutoResume.noteUserAction(sessionId);
+        providerGroupService?.noteUserAction(sessionId);
       }
     }
     // 落库失败 → 撤掉刚才那条待确认登记:那条消息压根不存在,留着会让后续事件去 patch
@@ -14668,8 +15173,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 调用方自报;与手机说明同层(只进 wire 消息)。
     isCindyMakeSession: async (sessionId) =>
       (await readSessionSource(sessionId)) === CINDY_MAKE_SESSION_SOURCE,
-    applyPendingAgentSwitch: (sessionId) =>
-      applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId),
+    applyPendingAgentSwitch: async (sessionId) => {
+      await applyPendingAgentSwitchIfIdle(agentSwitchDeps, sessionId);
+      // 已归组的任务所在那台现在不能用时，先换到组里下一台再发(失败不影响这次发送)。
+      await providerGroupService?.beforeSend(sessionId).catch((error) => {
+        log.warn('provider group: pre-send check failed', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
     prepareUnhealthySession: (sessionId) =>
       contextOverflowRolloverHolder?.prepareUnhealthySession(sessionId) ?? Promise.resolve(false),
     workdirDiagnostics: workdirLog,
@@ -15122,6 +15635,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       assertCurrentInputGeneration(sessionId, readExpectedInputGeneration(sendOpts));
       sess = readCurrentSteerSession();
+      // 同轮插话也属于新输入。必须在 vendor await 前通知，旧轮可能先于 steer ack 结束。
+      // 共用入口同时覆盖 INPUT_STEER、队列提升和旧 STEER IPC。
+      publishUiSessionIntervention(sessionId);
       await sess.steer(steerPayload as never, {
         logTitle: meta?.title,
         messageUuid: so.messageUuid,
@@ -15823,7 +16339,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     isResumableTurnErrorCandidate: canRecoverTurn,
     // 被按住的 error 最终没接管 → 只补落 error 行(横幅 coordinator 自己设)。
     onUsageLimitedTurnError: (sessionId, signals, _item, candidateToken) => {
-      usageLimitAutoResume.onTurnError(sessionId, signals, candidateToken);
+      // 供应商组分配的任务先试自动换电脑，不换时由它交回额度重置后自动继续。
+      if (providerGroupService) providerGroupService.onTurnError(sessionId, signals, candidateToken);
+      else usageLimitAutoResume.onTurnError(sessionId, signals, candidateToken);
     },
     onResumableTurnErrorDiscarded: (
       sessionId: string,
@@ -16090,6 +16608,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       orcaInterAgentDispatcher.discardQueuedOrcaInterAgentAcceptedCallback(item.clientId);
     },
     onAcceptedQueuedMessage: async (sessionId, item, restoredFromSnapshot): Promise<void> => {
+      if (restoredFromSnapshot && item.clientId.startsWith('bot-dm:')) {
+        if (!botDirectMessageServiceHolder) throw new AcceptedCallbackDispatchCancelled('Bot message recovery unavailable');
+        await botDirectMessageServiceHolder.assertRestoredQueuedDelivery(sessionId, item.clientId);
+      }
       // 已派发 → 该项不会再走 discard,释放 scheduler 的 discard 监听防泄漏。
       schedulerQueuedPromptDiscardWatchers.delete(item.clientId);
       schedulerQueuedPromptPreparations.delete(item.clientId);
@@ -16178,6 +16700,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         silentStopAutoResumeGuard.noteUserSend(sessionId);
         interruptedTurnAutoResumeGuard.noteUserSend(sessionId);
         usageLimitAutoResume.noteUserAction(sessionId);
+        providerGroupService?.noteUserAction(sessionId);
       }
       publishUiContinuation(sessionId, clientId);
     },
@@ -16194,6 +16717,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       publishUiSessionIntervention(sessionId);
     },
     previewQueuedUserTurn: (sessionId, item) => {
+      if (item.botTaskCoordination) return;
       notifyAgentIslandUserPrompt(
         { id: sessionId, agentKind: item.createOpts?.agentKind, workDir: item.workingDir },
         // 预览给人看的正文:落库可见内容优先(发给模型的 text 可能带来源 / 回执前缀);
@@ -16323,6 +16847,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     onUserMessageRewritten: (sessionId, item, info) => (revokeTrustedDesktopQueueOrigin(item), broadcastGhostMessageRewritten({ sessionId, clientId: item.clientId, ...info })),
     beforeDispatchUserTurn: async (sessionId, item) => {
+      if (item.botTaskCoordination) await assertBotTaskCoordination(sessionId, item.botTaskCoordination);
       autoResumeBookkeeping.markReplacementDispatching(sessionId, item.clientId);
       const liveSession = maker.getSession(sessionId);
       if (liveSession) {
@@ -16417,6 +16942,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         inputCoordinator.shouldQueueNewTurn(sessionId) ||
         isSessionTurnDispatchBoundaryBusy(sessionTurnActivityTracker, sessionId, sess)
       );
+    },
+    ensureQueueRestored: async (sessionId) => {
+      await inputCoordinator.ensureQueueRestored(sessionId).catch(() => undefined);
+      return inputCoordinator.isQueueRestored(sessionId);
     },
     hasQueuedPrompt: (sessionId, scheduleId) =>
       inputCoordinator.hasQueuedItemWhere(
@@ -16848,6 +17377,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const normalized: AgentInputQueuedMessage = { ...msg };
     delete normalized.sharedTaskAuthor;
     delete normalized.autoReviewUserText;
+    delete normalized.botTaskCoordination;
     if (normalized.durableDelivery !== true) delete normalized.durableDelivery;
     // Only Main-created welcomes and restored host snapshots may carry this policy.
     delete normalized.toolsDisabled;
@@ -17330,11 +17860,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         let duplicate = false;
         const projection = inputCoordinator.enqueue(sid, queued, {
           ...(opts && typeof opts === 'object' ? (opts as { sendAtMs?: number }) : undefined),
-          // INPUT_ENQUEUE 只承载显式用户输入(composer 发送 / UI trigger / device-link
-          // 被控端转投的用户消息):崩溃恢复出的暂停队列遇到显式输入即放行,解开
-          // 「继续任务/新消息全部排队直到重启」的死锁。Orca 自动投递走 main 侧直调
-          // enqueue,不带此 flag,恢复暂停语义不变。
-          resumeRestorePausedQueue: true,
+          // 本机与远控用户显式输入可放行崩溃恢复暂停，避免「继续任务」再次排进暂停队列。
+          // 远端 Orca 派活也经此 IPC。来源盖章会剥掉 wire 的 origin，因此从规范化远控载荷
+          // 读取自动投递意图，只用于收紧恢复暂停，不授予来源身份或权限；本机仍按显式输入处理。
+          resumeRestorePausedQueue: !(deviceLinkInvoke && isAutomaticInputOriginKind(parsed.origin?.kind)),
           onDuplicate: () => {
             duplicate = true;
           },
@@ -18326,6 +18855,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 那台的 Agent 认为需要换进程(跨来源等)时关掉本次连接，下一次发送按新路由重新启动
       // 并接上原来的对话；否则直接在那台的会话里切换。
       const rebuild = await live.requiresModelSwitchRebuild?.(model, { providerId: targetProviderId }) ?? false;
+      if (internalOptions.beforeMutation) await internalOptions.beforeMutation();
+      assertRuntimeOwnerCurrent();
       if (rebuild) {
         await withRehydrateCloseSuppressed(sessionId, () => maker.closeSession(sessionId, 'runtime-refresh'));
       } else {
@@ -18687,6 +19218,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // authoritative until a real send holds this same lock and consumes the final choice.
       if (internalOptions.source === 'user' && !internalOptions.applyingUserSelectionOnSend &&
           !runtimeStatus.remoteHostId && !runtimeStatus.orcaRole) {
+        if (internalOptions.beforeMutation) await internalOptions.beforeMutation();
         assertRuntimeOwnerCurrent();
         assertSharedTaskCurrent.admit();
         clearPendingCredentialSwitchForSession(sessionId, { wake: false });
@@ -18721,6 +19253,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         : await resolvePendingRuntimeAxisPatch(sessionId, axisPatch);
       const deferLockedSelection = async () => {
         const meta = await maker.getSessionMeta(sessionId);
+        if (internalOptions.beforeMutation) await internalOptions.beforeMutation();
         if (!meta) return { deferred: false, superseded: true };
         if (supersededByOwnerBoundary()) {
           return { deferred: false, superseded: true };
@@ -18862,6 +19395,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             providerId: targetRouteProviderId,
           })
         : undefined;
+      if (internalOptions.beforeMutation) await internalOptions.beforeMutation();
       if (runtimeAgentKind === 'pi' && (runtimeRouteChanged || piConfigurationRefresh) && liveSessionBeforeRouteChange) {
         if (!piPreview || piPreview.action === 'unavailable') {
           throwIpcError(
@@ -19380,6 +19914,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         const result: Awaited<ReturnType<typeof applyRuntimeSetModelChange>> = routeExplicit
           ? await applyRuntimeSetModelChange({
               maker,
+              beforeMutation: internalOptions.beforeMutation,
               admit: () => { assertRuntimeOwnerCurrent(); assertSharedTaskCurrent.admit(); },
               sessionId,
               model,
@@ -19875,6 +20410,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 不让到点的续跑抢在切换期间派发。切换失败时错误与手动重试仍在,不恢复等待。
       if (typeof sessionId === 'string') {
         usageLimitAutoResume.noteUserAction(sessionId);
+        providerGroupService?.noteUserAction(sessionId);
         agentInputCoordinatorHolder?.cancelUsageLimitWait(sessionId);
       }
       return handleSetModel(sessionId, model, providerId, revision, selection, { source: 'user' });

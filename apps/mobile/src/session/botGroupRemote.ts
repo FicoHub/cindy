@@ -99,7 +99,7 @@ const MEMBER_STATUSES = new Set<BotGroupMemberStatus>(['active', 'paused', 'erro
 const MESSAGE_KINDS = new Set<BotGroupMessageView['kind']>(['message', 'round-end', 'notice', 'plan', 'plan-end']);
 const AUTHOR_KINDS = new Set<BotGroupMessageView['authorKind']>(['user', 'bot', 'system']);
 const NOTICE_CODES = new Set<string>([
-  'member-failed', 'member-timeout', 'member-unavailable', 'plan-failed', 'plan-stopped', 'workdir-unavailable',
+  'member-joined', 'member-failed', 'member-timeout', 'member-unavailable', 'plan-failed', 'plan-stopped', 'workdir-unavailable',
 ]);
 const PLAN_STATUSES = new Set<BotGroupPlanView['status']>([
   'proposed', 'running', 'waiting', 'done', 'stopped', 'dismissed', 'superseded',
@@ -145,6 +145,10 @@ function parseMember(value: unknown): BotGroupMemberView | null {
   return {
     botId,
     name,
+    ...(id(record.actorId) ? { actorId: id(record.actorId)! } : {}),
+    ...(record.actorKind === 'human' || record.actorKind === 'bot' || record.actorKind === 'integration' ? { actorKind: record.actorKind } : {}),
+    ...(typeof record.isOwned === 'boolean' ? { isOwned: record.isOwned } : {}),
+    ...(typeof record.isSelf === 'boolean' ? { isSelf: record.isSelf } : {}),
     avatar: text(record.avatar, 4_096) ?? '',
     avatarColor: text(record.avatarColor, 64) ?? '',
     status: enumOf(record.status, MEMBER_STATUSES) ?? 'missing',
@@ -294,6 +298,8 @@ function parseLastMessage(value: unknown): BotGroupLastMessage | null {
     authorKind,
     authorName: text(record.authorName, MAX_NAME) ?? '',
     preview: text(record.preview, 4_096) ?? '',
+    ...(typeof record.noticeCode === 'string' && NOTICE_CODES.has(record.noticeCode)
+      ? { noticeCode: record.noticeCode as BotGroupMessageView['noticeCode'] } : {}),
     createdAt,
   };
 }
@@ -325,6 +331,8 @@ export function parseBotGroupChatData(value: unknown): BotGroupRemoteChatData | 
   return {
     id: groupId,
     name,
+    serverBacked: record.serverBacked === true,
+    supportsMemberRemoval: record.supportsMemberRemoval === true,
     replyMode: record.replyMode === 'mentioned' ? 'mentioned' : 'all',
     speakingMode: record.speakingMode === 'sequential' ? 'sequential' : 'auto',
     members,
@@ -356,8 +364,20 @@ export function botGroupChatDataFromResource(resource: Pick<RemoteResource, 'blo
 
 /** Specific codes first: the transport code (INVALID_PARAMS / NOT_FOUND) wraps them. */
 const ERROR_CODES: readonly BotGroupErrorCode[] = [
+  'INVALID_ATTACHMENT',
+  'ATTACHMENT_UNAVAILABLE',
+  'ATTACHMENT_TOO_LARGE',
+  'MEDIA_UPLOAD_FAILED',
+  'AUTH_REQUIRED',
+  'CHAT_UNAVAILABLE',
+  'IMPORT_PENDING',
+  'REQUEST_TIMEOUT',
+  'PERMISSION_DENIED',
+  'SERVICE_ERROR',
+  'GROUP_ARCHIVED',
   'MEMBER_LIMIT',
   'MEMBER_UNAVAILABLE',
+  'MENTION_UNAVAILABLE',
   'PLAN_OPEN',
   'PLAN_CLOSED',
   'HOST_NOT_READY',
@@ -405,11 +425,13 @@ export interface BotGroupSendAttempt {
   division: boolean;
   /** Ids of the attached uploads, in order. */
   attachmentIds: readonly string[];
+  /** Explicit target identity, independent of the displayed names. */
+  mentionSignature?: string;
   clientId: string;
 }
 
 /**
- * A retry of the same text with the same 「分工」 tag and the same attachments reuses its
+ * A retry of the same text, targets, 「分工」 tag and attachments reuses its
  * clientId, so the host returns the message it already stored instead of writing it twice.
  */
 export function nextBotGroupSendAttempt(
@@ -418,10 +440,14 @@ export function nextBotGroupSendAttempt(
   division: boolean,
   newClientId: () => string,
   attachmentIds: readonly string[] = [],
+  mentions?: BotGroupMention,
 ): BotGroupSendAttempt {
+  const mentionSignature = mentions === undefined ? undefined : JSON.stringify([mentions.all, mentions.botIds]);
   return previous && previous.text === text && previous.division === division
+    && previous.mentionSignature === mentionSignature
     && previous.attachmentIds.length === attachmentIds.length
     && previous.attachmentIds.every((attachmentId, index) => attachmentId === attachmentIds[index])
     ? previous
-    : { text, division, attachmentIds: [...attachmentIds], clientId: newClientId() };
+    : { text, division, attachmentIds: [...attachmentIds], clientId: newClientId(),
+      ...(mentionSignature === undefined ? {} : { mentionSignature }) };
 }

@@ -8,6 +8,7 @@
  */
 
 import path from 'node:path';
+import { chatGroupFailure } from './chatServerErrors.js';
 
 import { inArray } from 'drizzle-orm';
 import type {
@@ -96,6 +97,13 @@ const COPY = {
     ja: '{name}：{text}',
     ko: '{name}: {text}',
   },
+  memberJoined: {
+    en: '{name} joined the group',
+    'zh-CN': '{name}加入了群聊',
+    'zh-TW': '{name}加入了群聊',
+    ja: '{name}さんがグループに参加しました',
+    ko: '{name} 님이 그룹에 참여했습니다',
+  },
 } satisfies Record<string, Copy>;
 
 function fill(template: string, vars: Record<string, string | number>): string {
@@ -128,6 +136,8 @@ export function botGroupRemotePreview(group: BotGroupSummary): RemoteLocalizedTe
   }
   const last = group.lastMessage;
   if (!last) return undefined;
+  if (last.authorKind === 'system' && last.noticeCode === 'member-joined')
+    return localized(COPY.memberJoined, { name: last.authorName });
   return last.authorKind === 'bot' && last.authorName
     ? localized(COPY.lastMessage, { name: last.authorName, text: last.preview })
     : last.preview;
@@ -178,12 +188,15 @@ export function botGroupRemoteChatData(detail: BotGroupDetail): BotGroupRemoteCh
       ? { ...message, attachments: message.attachments.map((attachment) => ({ ...attachment, path: null })) }
       : message)),
     supportsAttachments: true,
+    supportsMemberRemoval: detail.serverBacked === true,
   };
 }
 
 function fallbackMarkdown(detail: BotGroupDetail): string {
   const lines = detail.messages
-    .filter((message) => message.kind === 'message' && (message.content.trim() || message.attachments.length > 0))
+    .filter((message) => (message.kind === 'message' || (message.kind === 'notice' && message.authorKind === 'system' &&
+      (message.noticeCode === 'member-joined' || message.noticeCode === null))) &&
+      (message.content.trim() || message.attachments.length > 0))
     .slice(-FALLBACK_MESSAGES)
     .map((message) => {
       // Older phones cannot show attachments; they still see what was attached.
@@ -192,6 +205,7 @@ function fallbackMarkdown(detail: BotGroupDetail): string {
       const clipped = Array.from(text).length > FALLBACK_MESSAGE_CHARS
         ? `${Array.from(text).slice(0, FALLBACK_MESSAGE_CHARS - 1).join('')}…`
         : text;
+      if (message.authorKind === 'system') return clipped;
       return message.authorKind === 'user' ? `> ${clipped}` : `**${message.authorName}**: ${clipped}`;
     });
   return lines.length > 0 ? lines.join('\n\n') : detail.name;
@@ -336,10 +350,20 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
         : null;
       if (!groupId) throw new RemoteResourceRegistryError('INVALID_PARAMS', 'INVALID_PARAMS');
       // Every action re-checks that the phone may still see this group, and any teammate it names.
-      await readVisibleGroup(groupId);
-      if (actionId === 'update' && typeof input.organizerBotId === 'string') await assertBotsVisible([input.organizerBotId]);
-      if (actionId === 'set-members') await assertBotsVisible(botIdsInput());
-      if (actionId === 'plan-edit' && typeof input.botId === 'string') await assertBotsVisible([input.botId]);
+      const visibleGroup = await readVisibleGroup(groupId);
+      const candidateId = actionId === 'update' ? input.organizerBotId : actionId === 'plan-edit' ? input.botId : undefined;
+      if (typeof candidateId === 'string') {
+        const member = visibleGroup.members.find(member => member.botId === candidateId);
+        if (visibleGroup.serverBacked) {
+          if (!member || member.actorKind !== 'bot' || member.status !== 'active')
+            throw new RemoteResourceRegistryError('INVALID_PARAMS', 'MEMBER_UNAVAILABLE');
+        } else await assertBotsVisible([candidateId]);
+      }
+      if (actionId === 'set-members') {
+        // Preserve server humans and foreign companions; only newly added IDs need local visibility.
+        const currentMemberIds = new Set(visibleGroup.members.map(member => member.botId));
+        await assertBotsVisible(botIdsInput().filter(botId => !currentMemberIds.has(botId)));
+      }
       const current = ownerService();
       const planInput = { groupId, planId: input.planId };
       let result: { ok: true } | BotGroupFailure;
@@ -367,6 +391,15 @@ export function registerBotGroupRemoteResourceProvider(service: () => BotGroupCh
             if (input[key] !== undefined) patch[key] = input[key];
           }
           result = await current.updateGroup(patch);
+          break;
+        }
+        case 'remove-member': {
+          const member = visibleGroup.members.find(member => member.actorId === input.actorId);
+          if (!visibleGroup.serverBacked || !current.chatServer || !member?.actorId)
+            throw new RemoteResourceRegistryError('INVALID_PARAMS', 'NOT_FOUND');
+          const removed = await current.chatServer.manage({ groupId, action: { type: 'member', action: 'remove', actorId: member.actorId } });
+          if (!removed.ok) refuse(chatGroupFailure(new Error(removed.errorCode)));
+          result = { ok: true };
           break;
         }
         case 'set-members':

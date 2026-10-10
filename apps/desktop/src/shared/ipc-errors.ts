@@ -185,6 +185,7 @@ export type IpcErrorCode =
   | 'LEARN_BUSY' // 已有 learn run 在进行(全局并发 1)
   | 'LEARN_INVALID_STATE' // run 状态不允许该操作(如对非 awaiting-review 调 apply)
   // remote-ssh：连接阶段
+  | 'SSH_HOST_KEY_MISMATCH'
   | 'SSH_CONNECT_FAILED'
   | 'SSH_AUTH_FAILED'
   | 'SSH_CONFIG_IO_FAILED'
@@ -273,6 +274,7 @@ export type IpcErrorCode =
   | 'MODEL_ACCESS_DISABLED' // 服务端灰度未启用(503)——走手填兜底
   | 'MODEL_ACCESS_UNSUPPORTED' // 企业未接入(403)——XD 网关不可用,不重试
   | 'MODEL_CATALOG_FETCH_DISABLED' // 模型目录远程拉取被禁用(XDT_DISABLE_MODELS_FETCH),未发起请求
+  | 'PLAN_CHANGE_RENEWAL_PREPAID' // 下一期已付未生效，等待本期结束后升级
   | 'PLAN_CHANGE_NOT_AVAILABLE' // 当前订阅不能切换到目标套餐，可返回候选列表重选
   | 'RESUME_NOT_AVAILABLE' // 当前订阅已到期、渠道协议失效或状态不可恢复
   // 钉钉机器人连接
@@ -409,6 +411,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'GOAL_NOT_FOUND',
   'LEARN_BUSY',
   'LEARN_INVALID_STATE',
+  'SSH_HOST_KEY_MISMATCH',
   'SSH_CONNECT_FAILED',
   'SSH_AUTH_FAILED',
   'SSH_CONFIG_IO_FAILED',
@@ -479,6 +482,7 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'MODEL_ACCESS_DISABLED',
   'MODEL_ACCESS_UNSUPPORTED',
   'MODEL_CATALOG_FETCH_DISABLED',
+  'PLAN_CHANGE_RENEWAL_PREPAID',
   'PLAN_CHANGE_NOT_AVAILABLE',
   'RESUME_NOT_AVAILABLE',
   'DINGTALK_AUTH_FAILED',
