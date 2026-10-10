@@ -1,6 +1,6 @@
 /**
- * 「分享 {供应商}」管理页(设计稿场景 2；产品规则 §7.2)。从设置 → 模型供应商的「管理分享」
- * 进入，可返回。只列**这台电脑**上的分享：待审批申请、已分享的人与按模型的用量。
+ * 「{供应商} · 远程与分享」页(供应商分享 §7.2；供应商组 §10)。从设置 → 模型供应商「允许被远程调用」一行的
+ * 「远程与分享」入口进入，可返回。只列**这台电脑**上的设置：供应商组、待审批申请、已分享的人与按模型的用量。
  *
  * 打开期间每次 OWNED_CHANGED 都按当前时间段重读(main 因此保持快速拉取，申请能尽快出现)；
  * 关闭、恢复、删除、同意、拒绝都立即生效，结果以 toast 说明。
@@ -18,6 +18,7 @@ import { toast } from '@/lib/toast';
 import { formatModelShort } from '@/lib/usageFormat';
 import { cn } from '@/lib/utils';
 import { mapIpcErrorToI18nKey } from '@/utils/ipcError';
+import { ProviderGroupSection } from '@/features/provider-group/ProviderGroupSection';
 
 import type {
   ProviderShareMemberView,
@@ -185,7 +186,13 @@ export function ProviderShareManagePage({
   const canCreateLink = gate === 'on' && ready;
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto pb-8" data-testid="provider-share-manage">
+    // 这一页自己滚动(设置页外层在「模型供应商」分区不滚)。始终预留滚动条槽位：展开组内电脑的配额、
+    // 加载出已分享的人等让内容超过一屏时，滚动条出现不再把整页挤窄 12px(2026-10-11 用户反馈宽度跳变)。
+    // 槽位用 -mr-3 挪进外层右侧留白，内容宽度与「模型供应商」卡片保持一致。
+    <div
+      className="-mr-3 flex h-full min-h-0 flex-col overflow-y-auto pb-8 [scrollbar-gutter:stable]"
+      data-testid="provider-share-manage"
+    >
       <button
         type="button"
         onClick={onBack}
@@ -195,18 +202,27 @@ export function ProviderShareManagePage({
         {t('settings.providers.title')}
       </button>
 
-      <div className="flex shrink-0 flex-wrap items-start gap-3">
+      {/* 标题已经说明这页是什么；这台电脑的名字由本机那行与下方「分享」说明承载，不在这里重复一遍。 */}
+      <div className="flex shrink-0 flex-wrap items-center gap-3">
         <div
           aria-hidden="true"
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--settings-integration-avatar-border)] bg-[var(--settings-integration-avatar-bg)] text-[var(--settings-integration-avatar-icon)]"
         >
           {providerIcon}
         </div>
+        <h2 className="min-w-0 flex-1 text-16 font-medium leading-[1.3] text-[var(--settings-section-title)]">
+          {t('providerGroup.page.title', { provider: providerName })}
+        </h2>
+      </div>
+
+      <ProviderGroupSection providerId={providerId} providerName={providerName} />
+
+      <div className="mt-8 flex shrink-0 flex-wrap items-start gap-3">
         <div className="flex min-w-[240px] flex-1 flex-col gap-1">
-          <h2 className="text-16 font-medium leading-[1.3] text-[var(--settings-section-title)]">
-            {t('providerShare.manage.title', { provider: providerName })}
-          </h2>
-          <p className="text-13 leading-[1.5] text-[var(--settings-section-desc)]">
+          <h3 className="text-13 font-medium text-[var(--settings-section-title)]">
+            {t('providerGroup.page.shareTitle')}
+          </h3>
+          <p className="text-12 leading-[1.5] text-[var(--settings-section-desc)]">
             {selfDeviceName
               ? t('providerShare.manage.descriptionWithDevice', { provider: providerName, device: selfDeviceName })
               : t('providerShare.manage.description', { provider: providerName })}

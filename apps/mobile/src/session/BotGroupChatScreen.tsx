@@ -25,6 +25,7 @@ import { useTranslation } from 'react-i18next';
 import { resolveRemoteText } from '@cindy/device-link';
 import {
   BOT_GROUP_REMOTE_COLLECTION_ID,
+  isBotGroupRuntimeFailureCode,
   type BotGroupAttachment,
   type BotGroupMemberView,
   type BotGroupMessageView,
@@ -458,10 +459,15 @@ function BotGroupTimelineItem({
   if (message.kind === 'plan-end') return <BotGroupPlanEndDivider stepCount={plan ? plan.steps.length : null} />;
   if (message.kind === 'notice' || message.authorKind === 'system') {
     const name = message.authorName.trim() || member?.name || '';
+    if (isBotGroupRuntimeFailureCode(message.runtimeFailureCode)) {
+      return <Text style={styles.runtimeFailureNotice} testID="botGroup.notice">{
+        `${t(`groupChat.notice.runtimeFailure.${message.runtimeFailureCode}`, { name })}\n${t('groupChat.notice.runtimeFailureSetupHint')}`
+      }</Text>;
+    }
     const variant = botGroupNoticeVariant(message.noticeCode, message.planId !== null);
     return <Text style={styles.notice} testID="botGroup.notice">{variant ? t(`groupChat.notice.${variant}`, { name }) : message.content}</Text>;
   }
-  if (message.authorKind === 'user' && message.isSelf !== false) {
+  if (message.kind === 'message' && message.authorKind === 'user' && message.isSelf !== false) {
     // Older computers send no attachments; a message with only attachments has no bubble.
     const attachments = message.attachments ?? [];
     const bubble = message.content.trim().length > 0 || attachments.length === 0;
@@ -478,9 +484,13 @@ function BotGroupTimelineItem({
       </View>
     </View>;
   }
-  // Name snapshot from when it was said; the avatar follows the live profile.
-  const author = identityFor(message.authorBotId ?? '', message.authorName || member?.name || '');
+  // Server plans retain the human creator as author, but the card belongs to its organizer.
   const isPlanCard = message.kind === 'plan';
+  const organizer = isPlanCard ? members.find(candidate => candidate.botId === plan?.organizerBotId) : undefined;
+  const author = isPlanCard
+    ? identityFor(plan?.organizerBotId ?? '', organizer?.name || plan?.organizerName || '')
+    : identityFor(message.authorBotId ?? '', message.authorName || member?.name || '');
+  if (isPlanCard) continued = false;
   return <View style={[styles.botRow, continued && styles.botRowContinued]} testID={isPlanCard ? 'botGroup.message.plan' : 'botGroup.message.bot'}>
     {continued ? <View style={styles.avatarSpacer} /> : <View style={styles.avatarSlot}>
       <BotGroupAvatar deviceId={deviceId} identity={author} size={BOT_GROUP_MESSAGE_AVATAR_SIZE} online={online} />
@@ -517,6 +527,8 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   olderNote: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, textAlign: 'center' },
   time: { color: colors.textTertiary, fontSize: typeScale.caption, lineHeight: lineHeight.caption, textAlign: 'center' },
   notice: { color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, textAlign: 'center' },
+  runtimeFailureNotice: { color: colors.textSecondary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption,
+    fontWeight: fontWeight.regular, textAlign: 'center' },
   dividerText: { flexShrink: 1, color: colors.textTertiary, fontSize: typeScale.footnote, lineHeight: lineHeight.caption, textAlign: 'center' },
   userRow: { flexDirection: 'row', justifyContent: 'flex-end' },
   // Full width so the bubble keeps its 86% cap and attachments their own size limits.
