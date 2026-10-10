@@ -1,12 +1,12 @@
 /**
  * 组内电脑的实时情况：哪些电脑能加进组、组里每台现在能不能用。
  *
- * 数据都来自现有通道，不新增协议：同账号电脑读 device-link 设备列表 + 那台的 `maker:provider:list`
- * (只留开了「允许被远程调用」的供应商)，分享来的读收到的分享 + `share:<id>` 的目录。目录短时缓存，
- * 避免设置页刷新与连续分配时反复读远端。
+ * 数据都来自现有通道：同账号电脑读 device-link 设备列表 + 那台的 `maker:provider:list`
+ * (只留开了「允许被远程调用」的供应商)，分享来的读收到的分享 + `share:<id>` 的目录(新版分享者在目录里
+ * 带上本账号在那台正在运行的任务数 `guestRunning`)。目录短时缓存，避免设置页刷新与连续分配时反复读远端。
  */
 import type { ProviderView } from '@cindy/model-providers';
-import type { ProviderShareReceived } from '@cindy/device-link';
+import { readProviderShareGuestRunning, type ProviderShareReceived } from '@cindy/device-link';
 
 import {
   PROVIDER_SHARE_AGENT_DEVICE_PREFIX,
@@ -45,6 +45,11 @@ export interface ResolvedProviderGroupMember {
   reason?: ProviderGroupUnavailableReason;
   /** 那台电脑上的这个供应商(state 为 ok 时一定有)。 */
   view?: ProviderView;
+  /**
+   * 分享来的电脑报来的：本账号(每台电脑，含不经组直接用的)此刻在这个分享上正在运行一轮的任务数。
+   * 分享者电脑较旧给不出、或不是分享来的电脑时没有。
+   */
+  reportedRunning?: number;
 }
 
 const CATALOG_TTL_MS = 15_000;
@@ -148,7 +153,9 @@ export function createProviderGroupDirectory(deps: ProviderGroupDirectoryDeps): 
       if (reason === 'REMOVED') return { member, label, ownerName, state: 'unavailable', reason: 'share-removed' };
       return { member, label, ownerName, state: 'offline' };
     }
-    return withView(member, label, ownerName, views);
+    const resolved = withView(member, label, ownerName, views);
+    const reportedRunning = resolved.view ? readProviderShareGuestRunning(resolved.view) : null;
+    return reportedRunning === null ? resolved : { ...resolved, reportedRunning };
   }
 
   function withView(

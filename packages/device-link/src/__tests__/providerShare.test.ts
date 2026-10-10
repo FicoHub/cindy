@@ -161,6 +161,19 @@ describe('provider share identity scrubbing', () => {
     expect(readProviderShareGroupSize(null)).toBeNull();
   });
 
+  it('keeps only a sane guest running count', async () => {
+    const { readProviderShareGuestRunning, scrubSharedProvider } = await import('../providerShareCatalog.js');
+    expect(scrubSharedProvider({ id: 'anthropic', name: 'Anthropic', guestRunning: 0 }))
+      .toEqual({ id: 'anthropic', name: 'Anthropic', guestRunning: 0 });
+    expect(scrubSharedProvider({ id: 'anthropic', guestRunning: 3 })).toEqual({ id: 'anthropic', guestRunning: 3 });
+    for (const guestRunning of [-1, 2.5, 4097, '3', null]) {
+      expect(scrubSharedProvider({ id: 'anthropic', guestRunning })).toEqual({ id: 'anthropic' });
+    }
+    expect(readProviderShareGuestRunning({ guestRunning: 4 })).toBe(4);
+    expect(readProviderShareGuestRunning({ guestRunning: '4' })).toBeNull();
+    expect(readProviderShareGuestRunning(null)).toBeNull();
+  });
+
   it('drops a login name cut short by the 50-character auto-name limit', async () => {
     const { scrubProviderShareLabel, scrubSharedProvider } = await import('../providerShareCatalog.js');
     const longName = 'Alexandra Konstantinopoulou-Whitfield Junior';

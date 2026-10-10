@@ -128,6 +128,34 @@ describe('resolveMembers', () => {
     ]);
   });
 
+  it('takes the running count a shared computer reports for this account', async () => {
+    const catalogs: Record<string, ProviderView[]> = {
+      mini: [view('anthropic-1a2b3c4d', 'Claude', { guestRunning: 5 } as unknown as Partial<ProviderView>)],
+      'share:s1': [view('anthropic', 'Anthropic', { guestRunning: 3 } as unknown as Partial<ProviderView>)],
+      'share:s3': [view('anthropic', 'Anthropic', { guestRunning: -1 } as unknown as Partial<ProviderView>)],
+      'share:s4': [view('anthropic', 'Anthropic')],
+    };
+    const directory = createProviderGroupDirectory(deps({
+      readDeviceProviders: async (id: string) => catalogs[id] ?? [],
+      listReceivedShares: () => [share('s1'), share('s3'), share('s4')],
+    }));
+    const member = (key: string, kind: 'device' | 'share', agentDeviceId: string, providerId: string) => ({
+      key, kind, agentDeviceId, providerId, limit: 4, weight: 1, paused: false,
+    });
+    const resolved = await directory.resolveMembers('anthropic', {
+      strategy: 'least',
+      autoSwitch: true,
+      members: [
+        member('device:mini:anthropic-1a2b3c4d', 'device', 'mini', 'anthropic-1a2b3c4d'),
+        member('share:s1:anthropic', 'share', 'share:s1', 'anthropic'),
+        member('share:s3:anthropic', 'share', 'share:s3', 'anthropic'),
+        member('share:s4:anthropic', 'share', 'share:s4', 'anthropic'),
+      ],
+    });
+    // 只认分享来的电脑报来的合理值；同账号电脑的目录不带这个字段，带了也不认；旧分享者不报时没有。
+    expect(resolved.map((r) => r.reportedRunning ?? null)).toEqual([null, 3, null, null]);
+  });
+
   it('names members for activity records without the sharer’s computer name', () => {
     const directory = createProviderGroupDirectory(deps());
     const member = (patch: Partial<ProviderGroupConfig['members'][number]>) => ({

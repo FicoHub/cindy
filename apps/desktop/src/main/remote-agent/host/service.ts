@@ -178,6 +178,7 @@ export function installRemoteAgentHost(options: { getMaker: () => Maker; userDat
     abortControllers: (match) => current.abortControllers(match),
     purgeControllers: (match) => current.purgeControllers(match),
     activeControllers: () => current.activeControllers(),
+    turnRunningControllers: () => current.turnRunningControllers(),
   });
 }
 
