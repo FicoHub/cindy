@@ -191,6 +191,26 @@ describe('docs output cwd-bound writer', () => {
     );
   });
 
+  // Codex P1 (round 33): every newly created output parent must be made durable in its
+  // containing directory, not only the deepest output directory.
+  it('syncs the containing directory of every newly created output parent', async () => {
+    const realOpen = fs.promises.open.bind(fs.promises);
+    const realRoot = await fs.promises.realpath(root);
+    const synced: string[] = [];
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const handle = await realOpen(...args);
+      if (args[1] === 'r' && (await handle.stat()).isDirectory()) {
+        const origSync = handle.sync.bind(handle);
+        handle.sync = async () => { synced.push(path.relative(realRoot, path.resolve(String(args[0])))); await origSync(); };
+      }
+      return handle;
+    });
+    await runDocsOutputWriteForTest(await missingParentRequest('report.bin', 'nested'), root);
+    // '' = session root (contains nested/), 'nested' (contains reports/).
+    expect(synced).toEqual(expect.arrayContaining(['', 'nested']));
+    expect(synced.indexOf('')).toBeLessThan(synced.indexOf('nested'));
+  });
+
   it('atomically replaces an existing regular file', async () => {
     await fs.promises.writeFile(path.join(root, 'report.bin'), 'old');
     await runDocsOutputWriteForTest(await request('report.bin', 'new', true), root);
@@ -615,6 +635,33 @@ process.stdout.write(JSON.stringify({ code, outsideExists, movedValue }));
       expect(await fs.promises.readFile(path.join(root, 'report.bin'), 'utf8')).toBe('new');
     } finally {
       renameSpy.mockRestore();
+    }
+  });
+
+  // Codex P2 (round 33): the exclusive link uses the same arbitration barrier as the
+  // overwrite rename; an abort while the link is unsettled must not report cleaned:true and
+  // leave a zero-byte target behind (a retry on the same path would then hit FILE_EXISTS).
+  it('abortInFlightWrite waits for a pending exclusive link and withdraws the published target', async () => {
+    const realLink = fs.promises.link.bind(fs.promises);
+    let releaseLink: () => void = () => {};
+    const gate = new Promise<void>((r) => { releaseLink = r; });
+    let linkStarted = false;
+    const linkSpy = vi.spyOn(fs.promises, 'link').mockImplementation(async (from, to) => {
+      await realLink(from, to); // the link has landed on disk ...
+      linkStarted = true;
+      await gate; // ... but its continuation has not run yet
+    });
+    try {
+      const pending = runDocsOutputWriteForTest(await request('linked.bin', 'payload', false), root);
+      await waitFor(() => linkStarted);
+      const abort = abortInFlightWrite(); // arrives before the writer observes the link
+      await new Promise((r) => setTimeout(r, 10));
+      releaseLink();
+      expect(await abort).toEqual({ cleaned: true });
+      await expect(pending).rejects.toBeDefined();
+      await expect(fs.promises.lstat(path.join(root, 'linked.bin'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      linkSpy.mockRestore();
     }
   });
 

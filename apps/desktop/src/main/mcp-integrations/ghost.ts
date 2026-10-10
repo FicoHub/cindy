@@ -830,11 +830,12 @@ async function writeLargeResultToRemote(
   }
 }
 
-/** A remote withdrawal that could not be confirmed; raw upstream diagnostics stay in `cause`. */
+/** A withdrawal that could not be confirmed; raw diagnostics stay in `cause`. */
+function spillCleanupUnconfirmed(code: 'REMOTE_SPILL_CLEANUP_UNCONFIRMED' | 'LOCAL_SPILL_CLEANUP_UNCONFIRMED', stage: string, cause: unknown): Error {
+  return Object.assign(new Error(`${stage}; cleanup unconfirmed, private output may remain`, { cause }), { code });
+}
 function remoteSpillCleanupUnconfirmed(stage: string, cause: unknown): Error {
-  return Object.assign(new Error(`${stage}; cleanup unconfirmed, private output may remain`, { cause }), {
-    code: 'REMOTE_SPILL_CLEANUP_UNCONFIRMED',
-  });
+  return spillCleanupUnconfirmed('REMOTE_SPILL_CLEANUP_UNCONFIRMED', stage, cause);
 }
 
 /** Race a probe against the remaining reconcile budget; the loser's outcome is ignored. */
@@ -1021,21 +1022,29 @@ async function discardLargeResultFile(
     }
     return;
   }
-  try {
-    if (hold) {
-      // Inode-bound: the retained handle follows the file wherever its directory went.
+  if (hold) {
+    // Inode-bound: the retained handle follows the file wherever its directory went. A
+    // failed stat/truncate (EIO, EROFS…) leaves the complete private output in place: report
+    // it like the remote branch instead of degrading to the caller's original error.
+    let erased = false;
+    try {
       const st = await hold.stat({ bigint: true });
       if (st.isFile() && st.dev.toString() === anchor.dev && st.ino.toString() === anchor.ino) {
         await hold.truncate(0);
-        return;
+        erased = true;
       }
+    } catch (cause) {
+      throw spillCleanupUnconfirmed('LOCAL_SPILL_CLEANUP_UNCONFIRMED', 'local spill rollback', cause);
     }
+    if (erased) return;
+  }
+  try {
     const abs = path.join(target.workingDir, relPath);
     const [wdReal, parentReal] = await Promise.all([fs.promises.realpath(target.workingDir), fs.promises.realpath(path.dirname(abs))]);
     if (parentReal !== wdReal && !parentReal.startsWith(wdReal + path.sep)) return;
     await truncateIfSame(path.join(parentReal, path.basename(abs)), anchor);
   } catch {
-    /* best-effort: the write already failed to be accounted for; keep the original error */
+    /* best-effort without a held inode: the path may no longer name our file */
   }
 }
 

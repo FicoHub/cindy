@@ -35,9 +35,10 @@ export async function boundGhostResult(
   } catch (err) {
     // Never echo storage errors (which can contain private paths), or retry the
     // plugin: a successful write operation may already have had side effects.
-    // The one structured state kept is a remote withdrawal that could not be confirmed:
-    // the complete private output may remain on that host without a ref lifecycle.
-    cleanupUnconfirmed = (err as { code?: unknown } | null)?.code === "REMOTE_SPILL_CLEANUP_UNCONFIRMED";
+    // The one structured state kept is a withdrawal (local or remote) that could not be
+    // confirmed: the complete private output may remain without a ref lifecycle.
+    const code = (err as { code?: unknown } | null)?.code;
+    cleanupUnconfirmed = code === "REMOTE_SPILL_CLEANUP_UNCONFIRMED" || code === "LOCAL_SPILL_CLEANUP_UNCONFIRMED";
   }
   const pointer = {
     ...(savedTo ? { saved_to: savedTo } : {}),
@@ -49,7 +50,7 @@ export async function boundGhostResult(
     hint: savedTo
       ? "The complete JSON result is saved at saved_to. Read selected portions with file tools; do not load the whole file into context. Do not repeat the original tool action."
       : cleanupUnconfirmed
-        ? "The tool already ran, but its oversized result could not be saved, and withdrawing the partially stored copy on the remote host was not confirmed: private output may remain there. Only this preview is available. Do not repeat a side-effecting action; use a narrower read query to recover data."
+        ? "The tool already ran, but its oversized result could not be saved, and withdrawing the partially stored copy was not confirmed: private output may remain in the task working directory. Only this preview is available. Do not repeat a side-effecting action; use a narrower read query to recover data."
         : "The tool already ran, but its oversized result could not be saved. Only this preview is available. Do not repeat a side-effecting action; use a narrower read query to recover data.",
   };
   // Preserve card/media routing, setup advice, and original success/error status.

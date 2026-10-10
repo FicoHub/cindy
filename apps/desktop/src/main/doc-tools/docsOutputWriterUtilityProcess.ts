@@ -136,6 +136,9 @@ async function ensureParent(request: DocsOutputWriteRequest, workingDir: string)
       if (!created.isDirectory() || created.isSymbolicLink()) {
         throw new OutputWriteError('PATH_NOT_ALLOWED', '输出目录创建后不是普通目录');
       }
+      // The new directory entry only survives a crash once its containing directory is
+      // synced; later syncs cover the deepest output directory only. Same as createFolder.
+      await syncDirectory(path.dirname(current));
     }
   }
   await verifyParent(request, workingDir);
@@ -326,7 +329,7 @@ let inFlight: {
   target: string;
   published: () => boolean;
   committedOverwrite: () => boolean;
-  /** Settles when an in-progress overwrite rename has a known outcome (either way). */
+  /** Settles when an in-progress publish (overwrite rename or exclusive link) has a known outcome. */
   commitPending: () => Promise<void> | null;
   /**
    * Fail-closed cleanup of this write (zero the inode, drop our names), memoized so the
@@ -353,7 +356,8 @@ export async function abortInFlightWrite(): Promise<{ cleaned: boolean }> {
   // user's only copy. Never zero it while that outcome is unknown — wait for the rename to
   // settle (success or failure) and then re-read the commit flag.
   const pending = current.commitPending();
-  if (pending) await pending;
+  // Wait for the outcome only; a failed commit is reported by the writer itself.
+  if (pending) await pending.catch(() => undefined);
   if (current.committedOverwrite()) return { cleaned: false }; // the replacement is the user's file
   // Only a confirmed erasure + name removal counts; any I/O failure reports false so the
   // parent runs its own reclaim instead of trusting a partial cleanup. The run is shared
@@ -464,7 +468,15 @@ async function writeWithinVerifiedParent(
         commitPending = null;
       }
     } else {
-      await publishExclusive(staging, target);
+      // Same arbitration barrier as the overwrite rename: an abort arriving while the link
+      // is unsettled waits for it, then sees `published` and withdraws the target too.
+      assertNotAborted();
+      commitPending = publishExclusive(staging, target).then(() => { published = true; });
+      try {
+        await commitPending;
+      } finally {
+        commitPending = null;
+      }
     }
     published = true;
     assertNotAborted();

@@ -69,10 +69,10 @@ describe("ghost_call oversized result boundary", () => {
 
   // Codex P1 (round 32): an unconfirmed remote withdrawal stays a structured state; the
   // raw storage diagnostic is still never echoed.
-  it("keeps an unconfirmed remote cleanup visible while hiding the storage diagnostic", async () => {
+  it.each(["REMOTE_SPILL_CLEANUP_UNCONFIRMED", "LOCAL_SPILL_CLEANUP_UNCONFIRMED"])("keeps an unconfirmed cleanup visible while hiding the storage diagnostic (%s)", async code => {
     const call = vi.fn(async () => ({ ok: true as const, result: { data: "x".repeat(70000) } }));
     const save = vi.fn(async () => {
-      throw Object.assign(new Error("remote spill rollback; cleanup unconfirmed /secret/host-path"), { code: "REMOTE_SPILL_CLEANUP_UNCONFIRMED" });
+      throw Object.assign(new Error("spill rollback; cleanup unconfirmed /secret/host-path"), { code });
     });
     const response = await handleGhostCall({ callGhostTool: call, saveLargeGhostResult: save }, input);
     const projected = JSON.parse(response.content[0].text);

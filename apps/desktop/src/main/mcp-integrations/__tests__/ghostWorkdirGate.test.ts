@@ -3615,6 +3615,43 @@ describe('oversized ghost result Host storage', () => {
     }
   });
 
+  // Codex P1 (round 33): a local withdrawal through the held inode that fails (EIO, EROFS…)
+  // leaves the complete private output in place; it is reported, not swallowed.
+  it('reports an unconfirmed local withdrawal when erasing through the hold fails', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ghost-spill-local-unconfirmed-'));
+    const realOpen = fs.promises.open.bind(fs.promises);
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof fs.promises.open>) => {
+      const handle = await realOpen(...args);
+      if (String(args[0]).includes(`${path.sep}tool-results${path.sep}`)) {
+        handle.truncate = async () => { throw Object.assign(new Error('EIO: private /host/path'), { code: 'EIO' }); };
+      }
+      return handle;
+    });
+    try {
+      const deps = makeDeps('codex');
+      sessionSnapshotMock.mockResolvedValue({ workingDir: root, remoteHostId: null, permissionMode: 'auto', planModeEnabled: false });
+      writeDocsOutputMock.mockImplementation(async input => {
+        await fs.promises.mkdir(path.dirname(input.path), { recursive: true });
+        await fs.promises.writeFile(input.path, input.data);
+        const st = await fs.promises.lstat(input.path, { bigint: true });
+        return { identity: { dev: st.dev.toString(), ino: st.ino.toString() } };
+      });
+      ledgerAddRefMock.mockImplementation(async () => { throw new Error('FOREIGN KEY constraint failed'); });
+      await expect(deps.saveLargeGhostResult!(JSON.stringify({ image: `cindy-media://blobs/${'d'.repeat(64)}.png` }))).rejects.toMatchObject({
+        code: 'LOCAL_SPILL_CLEANUP_UNCONFIRMED',
+        message: expect.stringContaining('cleanup unconfirmed'),
+      });
+    } finally {
+      openSpy.mockRestore();
+      ledgerAddRefMock.mockImplementation(async (params: TestLedgerRef) => {
+        const id = params.id ?? `ref-${++ledgerRefSeq}`;
+        ledgerRefs.push({ ...params, id });
+        return id;
+      });
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
+  });
+
   // Codex P1 (round 4): the ledger mutations are async boundaries too — an instance that ends
   // while refs are being committed must not keep refs or the private file in its name.
   it('rolls back refs and the file when the instance ends while media refs are committed', async () => {
