@@ -27,7 +27,9 @@ import { readDeviceProviderViews } from '../remote-agent/controller/deviceCatalo
 import { checkDeviceRoute } from '../remote-agent/controller/deviceRouteCheck.js';
 import { isProviderShareAgentDeviceId } from '../../shared/providerShare.js';
 import {
+  isProviderGroupReleased,
   listRemoteProviderGroupBindings,
+  markProviderGroupReleased,
   readProviderGroupBinding,
   writeProviderGroupBinding,
 } from '../provider-group/bindings.js';
@@ -9483,6 +9485,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     localDeviceId: getSelfDeviceId,
     readBinding: readProviderGroupBinding,
     writeBinding: (sessionId, binding) => writeProviderGroupBinding(sessionId, binding),
+    isReleased: isProviderGroupReleased,
+    markReleased: (sessionId, group) => markProviderGroupReleased(sessionId, group),
     readSessionRow: readProviderGroupSessionRow,
     resolveImplicitProvider: resolveProviderGroupImplicitProvider,
     persistRoute: persistProviderGroupRoute,

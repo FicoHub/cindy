@@ -8,7 +8,7 @@ import type { ProviderView } from '@cindy/model-providers';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/providerGroup';
-import type { ProviderGroupBinding } from '../bindings';
+import type { ProviderGroupBinding, ProviderGroupRef } from '../bindings';
 import type { ProviderGroupDirectory, ResolvedProviderGroupMember } from '../directory';
 import { createProviderGroupGuestSwitch, PROVIDER_GROUP_SWITCH_OFFER_TTL_MS } from '../guestSwitch';
 import { createProviderGroupRouter, PROVIDER_GROUP_DEFAULT_COOLDOWN_MS } from '../router';
@@ -59,6 +59,8 @@ function harness(options: {
   };
   const offline = new Set(options.offline ?? []);
   const bindings = new Map<string, ProviderGroupBinding>();
+  /** 因组内电脑被移出或组被删除而解除过的任务 → 那个组。 */
+  const released = new Map<string, ProviderGroupRef>();
   const directory: ProviderGroupDirectory = {
     async resolveMembers(_providerId, current) {
       return current.members.map((m): ResolvedProviderGroupMember => offline.has(m.key)
@@ -100,6 +102,13 @@ function harness(options: {
       if (binding) bindings.set(id, { ...binding, at: now });
       else bindings.delete(id);
     }),
+    isReleased: (id: string, group: ProviderGroupRef) => {
+      const entry = released.get(id);
+      return entry?.providerId === group.providerId && (entry.groupDeviceId ?? null) === (group.groupDeviceId ?? null);
+    },
+    markReleased: vi.fn(async (id: string, group: ProviderGroupRef) => {
+      released.set(id, group);
+    }),
     readSessionRow: vi.fn(async () => row),
     resolveImplicitProvider: vi.fn(async () => 'anthropic'),
     persistRoute: vi.fn(async (_id: string, route: { agentDeviceId: string | null; providerId: string | null }) => {
@@ -124,7 +133,7 @@ function harness(options: {
     log: { info: vi.fn(), warn: vi.fn() },
   } satisfies ProviderGroupServiceDeps;
   const service = createProviderGroupService(deps);
-  return { service, deps, row, bindings, router, config, offline, advance: (ms: number) => { now += ms; } };
+  return { service, deps, row, bindings, released, router, config, offline, advance: (ms: number) => { now += ms; } };
 }
 
 async function flush() {
@@ -169,6 +178,14 @@ describe('assignBeforeStart', () => {
     expect(h.bindings.get('s1')?.memberKey).toBe('local');
   });
 
+  it('does not take back a task released when this computer left the group or the group was deleted', async () => {
+    const h = harness();
+    h.deps.hasAssistantHistory.mockResolvedValue(true);
+    h.released.set('s1', { providerId: 'anthropic', groupDeviceId: null });
+    expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
+    expect(h.bindings.has('s1')).toBe(false);
+  });
+
   it('does nothing for providers without a group', async () => {
     const h = harness({ row: { providerId: 'openai' } });
     expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
@@ -208,6 +225,16 @@ describe('assignBeforeStart', () => {
     h.bindings.set('s1', { providerId: 'anthropic', memberKey: MINI.key, at: 1 });
     expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
     expect(h.bindings.has('s1')).toBe(false);
+    // 挪到组外不算解除：挪回组那一项时照常纳入。
+    expect(h.released.size).toBe(0);
+  });
+
+  it('remembers a task whose computer was removed from the group, so it is not taken back', async () => {
+    const h = harness({ members: [LOCAL, STUDIO], row: { agentDeviceId: 'mini', providerId: MINI.providerId, sdkSessionId: 'x' } });
+    h.bindings.set('s1', { providerId: 'anthropic', memberKey: MINI.key, at: 1 });
+    expect(await h.service.assignBeforeStart({ sessionId: 's1', agentKind: 'claude-code', model: MODEL })).toBeNull();
+    expect(h.bindings.has('s1')).toBe(false);
+    expect(h.released.get('s1')).toEqual({ providerId: 'anthropic', groupDeviceId: null });
   });
 });
 
@@ -288,12 +315,43 @@ describe('onTurnError (automatic switch)', () => {
     expect(off.deps.fallback).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves tasks that are not group-bound to the existing handling', async () => {
-    const h = harness();
-    h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
+  it('leaves tasks that are not in any group to the existing handling', async () => {
+    for (const row of [{ providerId: 'openai' }, { agentDeviceId: 'other', providerId: 'anthropic' }]) {
+      const h = harness({ row });
+      h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
+      await flush();
+      expect(h.deps.fallback).toHaveBeenCalledTimes(1);
+      expect(h.deps.leaseRecovery).not.toHaveBeenCalled();
+      expect(h.bindings.size).toBe(0);
+    }
+  });
+
+  it('takes in a task that was already running here before the group existed, then moves it', async () => {
+    const h = harness({ row: { sdkSessionId: 'native-1' } });
+    h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 7);
     await flush();
-    expect(h.deps.fallback).toHaveBeenCalledTimes(1);
-    expect(h.deps.leaseRecovery).not.toHaveBeenCalled();
+    expect(h.router.coolingUntil('anthropic', 'local')).not.toBeNull();
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ agentDeviceId: 'mini', providerId: MINI.providerId }),
+      expect.anything(),
+    );
+    expect(h.bindings.get('s1')?.memberKey).toBe(MINI.key);
+    expect(h.deps.fallback).not.toHaveBeenCalled();
+  });
+
+  it('does not take in a released or ineligible task when it fails', async () => {
+    const released = harness({ row: { sdkSessionId: 'native-1' } });
+    released.released.set('s1', { providerId: 'anthropic', groupDeviceId: null });
+    const ineligible = harness({ row: { sdkSessionId: 'native-1' } });
+    ineligible.deps.isFailoverEligible.mockResolvedValue(false);
+    for (const h of [released, ineligible]) {
+      h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
+      await flush();
+      expect(h.bindings.size).toBe(0);
+      expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+      expect(h.deps.fallback).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('does nothing when the user already took over the error', async () => {
