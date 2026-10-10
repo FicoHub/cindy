@@ -103,7 +103,7 @@ describe('Todo public access', () => {
   it('single-click dispatches only once and preserves received vs accepted', async () => {
     let resolve: (value: { ok: boolean }) => void = () => {};
     const send = vi.fn(
-      () =>
+      (_input: Parameters<Parameters<typeof configureBotTodoDispatch>[0]>[0]) =>
         new Promise<{ ok: boolean }>((r) => {
           resolve = r;
         }),
