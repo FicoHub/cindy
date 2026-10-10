@@ -103,26 +103,37 @@ const SYNTAX_CHECK_TIMEOUT_MS = 5_000;
 
 /**
  * POSIX shell 语法预检(`sh -n -c`,只解析不执行)。返回 shell 的报错文本;语法
- * 正确、Windows(cmd.exe 没有对应能力)或预检本身没能完成(spawn 失败 / 超时)
- * 时返回 undefined,交给真实执行按原协议处理。
+ * 正确、Windows(cmd.exe 没有对应能力)或预检本身没能完成(参数非法 / spawn
+ * 失败 / 超时 / 取消)时返回 undefined,交给真实执行按原协议处理。
  */
-export function findShellSyntaxError(command: string): Promise<string | undefined> {
-  if (process.platform === 'win32') return Promise.resolve(undefined);
+export function findShellSyntaxError(
+  command: string,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<string | undefined> {
+  if (process.platform === 'win32' || options.signal?.aborted) return Promise.resolve(undefined);
   return new Promise((resolve) => {
-    execFile(
-      POSIX_SHELL,
-      ['-n', '-c', command],
-      { timeout: SYNTAX_CHECK_TIMEOUT_MS },
-      (err, _stdout, stderr) => {
-        // 只有 shell 正常退出且非 0 才是语法错误;err.code 为字符串(ENOENT 等)或
-        // 超时被杀时不下结论。
-        if (!err || typeof err.code !== 'number') {
-          resolve(undefined);
-          return;
-        }
-        resolve(String(stderr).trim() || `${POSIX_SHELL} -n exited with code ${err.code}`);
-      },
-    );
+    try {
+      execFile(
+        POSIX_SHELL,
+        ['-n', '-c', command],
+        {
+          timeout: Math.min(SYNTAX_CHECK_TIMEOUT_MS, options.timeoutMs ?? SYNTAX_CHECK_TIMEOUT_MS),
+          signal: options.signal,
+        },
+        (err, _stdout, stderr) => {
+          // 只有 shell 正常退出且非 0 才是语法错误;err.code 为字符串(ENOENT /
+          // ABORT_ERR 等)或超时被杀时不下结论。
+          if (!err || typeof err.code !== 'number') {
+            resolve(undefined);
+            return;
+          }
+          resolve(String(stderr).trim() || `${POSIX_SHELL} -n exited with code ${err.code}`);
+        },
+      );
+    } catch {
+      // 参数非法(如命令含 NUL)时 Node 同步抛错:不下结论,交给真实执行折叠成失败结果。
+      resolve(undefined);
+    }
   });
 }
 
@@ -167,8 +178,14 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
   if (input.signal?.aborted) return abortedResult();
 
   const resolved = resolveHookCommand(input.command);
-  const syntaxError = await findShellSyntaxError(resolved.command);
+  // 预检与真实执行共用同一个取消信号和超时预算。
+  const syntaxError = await findShellSyntaxError(resolved.command, {
+    signal: input.signal,
+    timeoutMs,
+  });
   if (input.signal?.aborted) return abortedResult();
+  const remainingTimeoutMs =
+    timeoutMs === undefined ? undefined : Math.max(1, timeoutMs - (Date.now() - startedAt));
   if (syntaxError) {
     return {
       status: 'failed',
@@ -245,14 +262,14 @@ export async function executePreRunHook(input: PreRunHookInput): Promise<PreRunH
       setTimeout(() => settle({ exitCode: null }), 1_000).unref?.();
     };
 
-    // 未配置 timeoutMs 时不武装定时器 —— 不限时。
+    // 未配置 timeoutMs 时不武装定时器 —— 不限时;配置了则只用预检后剩余的预算。
     const timer =
-      timeoutMs === undefined
+      remainingTimeoutMs === undefined
         ? undefined
         : setTimeout(() => {
             timedOut = true;
             killProcessTree(child?.pid, child, armForceSettle);
-          }, timeoutMs);
+          }, remainingTimeoutMs);
     timer?.unref?.();
 
     // 任务 pause/delete → 与超时同款树杀 + 1s 强制 settle:abortInflightAndWait

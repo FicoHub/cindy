@@ -202,6 +202,21 @@ describe.skipIf(process.platform === 'win32')('前置检查命令语法预检', 
     await expect(findShellSyntaxError('if true; then echo')).resolves.toBeTruthy();
   });
 
+  it('命令含 NUL:预检不同步抛错,执行仍折叠成失败结果', async () => {
+    await expect(findShellSyntaxError('node -e "1"\0')).resolves.toBeUndefined();
+    const result = await executePreRunHook({ command: 'node -e "1"\0', stdinPayload: payload });
+    expect(result.status).toBe('failed');
+    expect(result.decision).toBe('block');
+    expect(result.spawnError || result.error).toBeTruthy();
+  });
+
+  it('预检响应取消信号:已取消时不再预检,执行返回 aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(findShellSyntaxError(`node '/a b/x.mjs'//'`, { signal: controller.signal }))
+      .resolves.toBeUndefined();
+  });
+
   it('保存时校验:语法错误抛 invalid,正确命令放行', async () => {
     await expect(assertPreRunHookCommandSyntax(`node '/a b/x.mjs'//'`)).rejects.toThrow(
       /^invalid pre-run hook configuration: shell syntax error in command: /,
