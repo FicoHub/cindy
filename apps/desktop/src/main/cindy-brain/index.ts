@@ -88,6 +88,7 @@ import {
   readGhostRecommendationEntries,
   replaceGhostRecommendations,
   markGhostRecommendationInstalled,
+  recordGhostAdded,
   consumeGhostRecommendationPriority,
   forgetGhostRecommendations,
 } from './ghostRecommendationStore.js';
@@ -208,7 +209,9 @@ import {
   evaluateGhostSetupAssessment,
   handleGhostSetupStatusRequest,
   parseOauthConnectSecretKey,
+  type GhostSetupProbes,
 } from './ghostSetupStatus.js';
+import { mobilePluginConfiguration } from './mobilePluginConfiguration.js';
 import { getGhostSetupChangeBus } from './ghostSetupChangeBus.js';
 import { GhostSetupManifestTracker } from './ghostSetupManifestTracker.js';
 import {
@@ -328,16 +331,6 @@ import { recordGhostPickedDir } from './pickGrantsStore.js';
 import { GhostPreviewSlot } from './previewSlot.js';
 import { GhostScheduleSlot, isMainShellWindowUrl } from './scheduleSlot.js';
 import { GhostWorkspaceSlot, type WorkspaceSessionService } from './workspaceSlot.js';
-import { GhostIOSSimulatorSlot, type IOSSimulatorSlotFocusContext } from './iosSimulatorSlot.js';
-import { resolveIOSSimulatorPluginAccess } from './iosSimulatorPluginGate.js';
-import {
-  clearIOSSimulatorRendererAccess,
-  focusIOSSimulatorRendererSession,
-  getIOSSimulatorRendererSessionAccess,
-  requestIOSSimulatorRendererSessionAccess,
-  syncIOSSimulatorRendererAccessForSessionChange,
-} from '../mcp-integrations/ios-simulator-renderer-access.js';
-import { getIOSSimulatorPluginStatus } from '../mcp-integrations/ios-simulator.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
 import { GhostNotifySlot, sanitizeGhostNoticeText } from './notifySlot.js';
 import { GhostBadgeSlot } from './badgeSlot.js';
@@ -492,6 +485,8 @@ import {
   type CindyCapabilityKey,
 } from './cindyPrefsStore.js';
 import { isCindyOverrideModelAllowed } from './cindyOverrideWhitelist.js';
+import { createGhostComposerListHandler } from './ghostComposerIpc.js';
+import { GHOST_COMPOSER_LIST_CHANNEL } from '../../shared/ghostComposer.js';
 import {
   isGhostDisabledForWorkdir,
   listDisabledGhostIdsForWorkdir,
@@ -1007,14 +1002,6 @@ export function waitForGhostMutations(): Promise<void> {
 export function isGhostAvailableForActiveSession(id: string): boolean {
   if (isAppSessionBoundaryPending()) return false;
   return !isCindyAccountGhostId(id) || getAppCapabilities().canUseCindyAccountServices;
-}
-
-/** Live Host capability gate shared by Agent transports and Renderer IPC. */
-export function getIOSSimulatorPluginAccessDecision(workingDir: string | null = null) {
-  return resolveIOSSimulatorPluginAccess(getGhostManager().list(), workingDir, {
-    isAvailableForActiveSession: isGhostAvailableForActiveSession,
-    isDisabledForWorkdir: isGhostDisabledForWorkdir,
-  });
 }
 
 function availableGhosts(): InstalledGhost[] {
@@ -2642,7 +2629,6 @@ function noteGhostWindowSessionFocused(sender: WebContents, sessionId: string | 
   // active again.
   const previous = ghostSessionFocusByWebContents.get(sender.id);
   if (previous !== sessionId) {
-    syncIOSSimulatorRendererAccessForSessionChange(sender, sessionId);
     ghostSessionFocusByWebContents.set(sender.id, sessionId);
     if (!ghostSessionFocusTrackedWebContents.has(sender.id)) {
       ghostSessionFocusTrackedWebContents.add(sender.id);
@@ -2661,125 +2647,6 @@ function mainShellWindows(): BrowserWindow[] {
   return BrowserWindow.getAllWindows().filter(
     (window) => !window.isDestroyed() && isMainShellWindowUrl(window.webContents.getURL()),
   );
-}
-
-function focusedIOSSimulatorContext(): IOSSimulatorSlotFocusContext | null {
-  const candidates = mainShellWindows();
-  const focused = BrowserWindow.getFocusedWindow();
-  const focusedMainShell =
-    focused && !focused.isDestroyed() && candidates.includes(focused) ? focused : null;
-  // 主壳窗在前台时只认它自己的任务；它在非任务页时不能借用另一窗口的任务。
-  const eligible = focusedMainShell
-    ? [focusedMainShell]
-    : candidates.filter((window) =>
-        Boolean(getIOSSimulatorRendererSessionAccess(window.webContents)),
-      );
-  // 独立插件窗没有可信 opener/task 绑定；只有唯一候选时才允许回落，多窗歧义 fail closed。
-  if (eligible.length !== 1) return null;
-  const window = eligible[0]!;
-  const access = getIOSSimulatorRendererSessionAccess(window.webContents);
-  if (!access) return null;
-  return {
-    sessionId: access.sessionId,
-    windowWebContentsId: window.webContents.id,
-    revision: access.generation,
-  };
-}
-
-function focusedIOSSimulatorAuthorizationCandidate(): {
-  window: BrowserWindow;
-  sessionHint: string;
-} | null {
-  const candidates = mainShellWindows();
-  const focused = BrowserWindow.getFocusedWindow();
-  const focusedMainShell =
-    focused && !focused.isDestroyed() && candidates.includes(focused) ? focused : null;
-  // If a detached plugin/sidebar window has focus, only a single main shell is
-  // unambiguous. The renderer report below is an untrusted hint for the native
-  // confirmation flow, never the resulting authorization context.
-  const window = focusedMainShell ?? (candidates.length === 1 ? candidates[0]! : null);
-  if (!window || window.webContents.isDestroyed()) return null;
-  const sessionHint = ghostSessionFocusByWebContents.get(window.webContents.id)?.trim();
-  return sessionHint ? { window, sessionHint } : null;
-}
-
-async function authorizeFocusedIOSSimulatorContext(): Promise<IOSSimulatorSlotFocusContext | null> {
-  const existing = focusedIOSSimulatorContext();
-  if (existing) return existing;
-
-  const candidate = focusedIOSSimulatorAuthorizationCandidate();
-  if (!candidate) return null;
-  const granted = await requestIOSSimulatorRendererSessionAccess(
-    candidate.window.webContents,
-    candidate.sessionHint,
-  );
-  if (!granted) return null;
-
-  // Confirmation can outlive a focus/route transition. The registry invalidates
-  // those pending grants; this second identity check also keeps the candidate
-  // window and its route hint stable before reading the authoritative snapshot.
-  const currentCandidate = focusedIOSSimulatorAuthorizationCandidate();
-  if (
-    currentCandidate?.window !== candidate.window ||
-    currentCandidate.sessionHint !== candidate.sessionHint
-  ) {
-    return null;
-  }
-  const access = getIOSSimulatorRendererSessionAccess(candidate.window.webContents);
-  if (!access || access.sessionId !== candidate.sessionHint) return null;
-  return {
-    sessionId: access.sessionId,
-    windowWebContentsId: candidate.window.webContents.id,
-    revision: access.generation,
-  };
-}
-
-function isIOSSimulatorContextCurrent(context: IOSSimulatorSlotFocusContext): boolean {
-  const current = focusedIOSSimulatorContext();
-  return (
-    current?.sessionId === context.sessionId &&
-    current.windowWebContentsId === context.windowWebContentsId &&
-    current.revision === context.revision
-  );
-}
-
-let iosSimulatorSlotSingleton: GhostIOSSimulatorSlot | null = null;
-
-/**
- * 插件只获知脱敏状态并可请求当前主窗口打开 Host 面板。实际视频、输入、
- * 生命周期与 fallback 均留在 iOS Simulator Host，不经插件逻辑页中转。
- */
-export function getGhostIOSSimulatorSlot(): GhostIOSSimulatorSlot {
-  if (!iosSimulatorSlotSingleton) {
-    iosSimulatorSlotSingleton = new GhostIOSSimulatorSlot({
-      getGhost: findAvailableGhost,
-      focusedContext: focusedIOSSimulatorContext,
-      authorizeFocusedContext: authorizeFocusedIOSSimulatorContext,
-      isContextCurrent: isIOSSimulatorContextCurrent,
-      getStatus: getIOSSimulatorPluginStatus,
-      focusViewer: (context, instanceId, mobile) => {
-        if (!isIOSSimulatorContextCurrent(context)) return false;
-        const window = mainShellWindows().find(
-          (candidate) => candidate.webContents.id === context.windowWebContentsId,
-        );
-        if (!window) return false;
-        try {
-          if (window.isDestroyed() || window.webContents.isDestroyed()) return false;
-          const opened = focusIOSSimulatorRendererSession(
-            context.sessionId,
-            instanceId,
-            window.webContents,
-          );
-          if (opened && mobile) return mobilePluginPages?.present(mobile.pageId, mobile.ghostId, { kind: 'simulator' }) ?? false;
-          return opened;
-        } catch {
-          return false;
-        }
-      },
-      log,
-    });
-  }
-  return iosSimulatorSlotSingleton;
 }
 
 let cindySlotSingleton: GhostCindySlot | null = null;
@@ -5205,18 +5072,12 @@ function getGhostOauthReauthSuggest(
  * omit setup; ghost_call preflight is strict, so storage or manifest drift
  * errors block dispatch.
  */
-export function getGhostSetupAssessment(ghostId: string): GhostSetupAssessment {
-  const ghost = findAvailableGhost(ghostId);
-  if (!ghost || !ghostSetupKvStore) {
-    throw new Error(`ghost setup unavailable: ${ghostId}`);
-  }
-  const runtimeManifest = withRuntimeFiloGoogleClient(ghost.manifest);
+function getGhostSetupProbes(ghostId: string, runtimeManifest: GhostManifest): GhostSetupProbes {
+  if (!ghostSetupKvStore) throw new Error(`ghost setup unavailable: ${ghostId}`);
   const oauthManager = getGhostOauthAccountManager();
   const connectionManager = getGhostConnectionManager();
   let kvSnapshot: Record<string, unknown> | null = null;
-  const assessment = evaluateGhostSetupAssessment(
-    runtimeManifest,
-    {
+  return {
       secretSaved: (key) => ghostSecretSaved(ghostId, key),
       oauthStatus: (key) => {
         const decl = runtimeManifest.network?.secrets?.find((secret) => secret.key === key)?.oauth;
@@ -5232,7 +5093,18 @@ export function getGhostSetupAssessment(ghostId: string): GhostSetupAssessment {
         if (kvSnapshot === null) kvSnapshot = ghostSetupKvStore?.readStrict(ghostId) ?? {};
         return kvSnapshot[key];
       },
-    },
+  };
+}
+
+export function getGhostSetupAssessment(ghostId: string): GhostSetupAssessment {
+  const ghost = findAvailableGhost(ghostId);
+  if (!ghost || !ghostSetupKvStore) {
+    throw new Error(`ghost setup unavailable: ${ghostId}`);
+  }
+  const runtimeManifest = withRuntimeFiloGoogleClient(ghost.manifest);
+  const assessment = evaluateGhostSetupAssessment(
+    runtimeManifest,
+    getGhostSetupProbes(ghostId, runtimeManifest),
     {
       revision: getGhostSetupChangeBus().currentRevision(ghostId),
       strict: true,
@@ -5975,6 +5847,7 @@ function throwUninstallError(rejection: UninstallRejection): never {
       throwIpcError('INVALID_PARAMS', rejection.reason);
     case 'not-installed':
       throwIpcError('NOT_FOUND', rejection.reason);
+    case 'feature-retired':
     case 'approval-required':
       throwIpcError('PRECONDITION_FAILED', rejection.reason);
     default:
@@ -6051,6 +5924,10 @@ async function installAndDockLocked(
     throw new Error(
       `装入包的 ghostId(${result.ghost.manifest.id})与加锁使用的 id(${opts.ghostId})不一致`,
     );
+  }
+  if (!installedBefore) {
+    try { recordGhostAdded(result.ghost.manifest.id); }
+    catch { log.warn('ghost addition history unavailable'); }
   }
   // 内置墓碑清除已并入 GhostManager 的 durable install journal(marker.clearBuiltinTombstone
   // + 提交时清除 + 崩溃恢复补清),此处不再直接调用:瞬时状态写失败会保留 marker 交由
@@ -6854,6 +6731,26 @@ export function registerGhostIpc(): void {
   const runtime = getGhostRuntime();
   mobilePluginPages = new MobilePluginPages({
     list: availableGhosts,
+    listOrder: () => {
+      const order = new Map<string, { addedAt?: number; recentIndex?: number }>();
+      try {
+        for (const entry of readGhostRecommendationEntries()) {
+          if (entry.addedAt !== undefined) order.set(entry.id, { addedAt: entry.addedAt });
+        }
+      } catch { log.warn('ghost addition history unavailable'); }
+      try {
+        loadGhostRecentIds().forEach((id, recentIndex) => order.set(id, { ...order.get(id), recentIndex }));
+      } catch { log.warn('ghost recent usage unavailable'); }
+      return order;
+    },
+    setupAssessment: getGhostSetupAssessment,
+    configuration: (id, assessment) => {
+      const ghost = findAvailableGhost(id);
+      if (!ghost) throw new Error('PLUGIN_UNAVAILABLE');
+      const manifest = withRuntimeFiloGoogleClient(ghost.manifest);
+      return mobilePluginConfiguration(manifest, getGhostSetupProbes(id, manifest), assessment);
+    },
+    runtimeState: id => runtime.stateOf(id),
     revision: ghost => JSON.stringify([ghost.manifest.version, ghostInstallApprovalToken(ghost.approval)]),
     captureOwner: () => { const scope = captureDataOwnerBroadcastScope(); return () => isDataOwnerBroadcastScopeCurrent(scope); },
     // This existing peer fence is invalidated on disconnect, revoke, owner switch and relay teardown.
@@ -7335,7 +7232,6 @@ export function registerGhostIpc(): void {
       invalidateForgePackTicketsForOwner(getActiveAppSession());
       // 当前任务绑定属于窗口内的 owner 上下文，切账号/会员身份后不得沿用旧快照。
       ghostSessionFocusByWebContents.clear();
-      clearIOSSimulatorRendererAccess();
       if (!getAppCapabilities().canUseCindyAccountServices) suspendCindyAccountGhosts();
       // Even when provisioning itself is a no-op, the renderer and agent
       // roster must immediately reflect the new session capability set.
@@ -7509,14 +7405,6 @@ export function registerGhostIpc(): void {
       const result = await getGhostWorkspaceSlot().handleRequest(id, source === undefined ? payload : { ...request, focus: false }, current);
       if (source !== undefined && request.focus === true && result.ok && current?.()) mobilePluginPages?.present(source as string, id, { kind: 'task', taskId: result.sessionId });
       return result;
-    }
-    // ios-simulator-request = 当前任务的脱敏只读状态与 Host 面板入口。
-    // 视频帧、输入与 Sidecar 进程均不跨插件边界；任务身份由 Host 窗口绑定。
-    if (type === 'ios-simulator-request') {
-      const { mobilePageId, ...request } = payload as Record<string, unknown>;
-      const current = mobilePageId === undefined ? undefined : mobilePluginPages?.captureSource(mobilePageId, id);
-      if (mobilePageId !== undefined && !current) throw new Error('PLUGIN_PAGE_UNAVAILABLE');
-      return getGhostIOSSimulatorSlot().handleRequest(id, request, current ? { pageId: mobilePageId as string, current } : undefined);
     }
     // preview-request = 右侧栏开预览标签(preview 槽):URL 必须命中身份卡
     // preview.hosts 白名单;守门/限速在 previewSlot,落地在 renderer。
@@ -7713,9 +7601,49 @@ export function registerGhostIpc(): void {
     },
   );
 
+  // The detached sidebar keeps its shell; retirement details always open in a main window.
+  ipcMain.handle('ghosts:open-retirement', (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id))
+      throwIpcError('INVALID_PARAMS', 'Invalid plugin id');
+    requireGhostAvailableForActiveSession(id);
+    if (
+      !getGhostManager()
+        .list()
+        .some((ghost) => ghost.manifest.id === id && ghost.retirement)
+    ) {
+      throwIpcError('NOT_FOUND', 'Retired plugin is not installed');
+    }
+    const windows = mainShellWindows();
+    const target = windows.find((window) => window.isFocused()) ?? windows[0];
+    if (!target) throwIpcError('PRECONDITION_FAILED', 'Main window is unavailable');
+    target.webContents.send('ghosts:retirement-open', id);
+    if (target.isMinimized()) target.restore();
+    target.show();
+    target.focus();
+    return { ok: true };
+  });
+
+  ipcMain.handle('ghosts:acknowledge-retirement', (event, id: unknown) => {
+    assertTrustedAppRendererEvent(event);
+    if (typeof id !== 'string' || !isValidGhostId(id))
+      throwIpcError('INVALID_PARAMS', 'Invalid plugin id');
+    requireGhostAvailableForActiveSession(id);
+    try {
+      getGhostManager().acknowledgeRetirement(id);
+    } catch (error) {
+      throwIpcError('INTERNAL', error instanceof Error ? error.message : String(error));
+    }
+    return { ok: true };
+  });
+
   ipcMain.on('ghosts:list', (event) => {
     event.returnValue = { ghosts: availableGhosts().map(projectGhostForRenderer) };
   });
+  ipcMain.handle(GHOST_COMPOSER_LIST_CHANNEL, createGhostComposerListHandler({
+    list: availableGhosts,
+    disabledIds: listDisabledGhostIdsForWorkdir,
+  }));
   // Author tasks may contain private context: local trusted application UI only.
   ipcMain.on('ghosts:recommendations', (event) => {
     const empty = { ownerId: null, sources: [], recentIds: [], newlyInstalledId: null };

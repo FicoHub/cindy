@@ -42,6 +42,7 @@
     "./message-normalize": "./src/messageNormalize.ts",
     "./message-presentation": "./src/messagePresentation.ts",
     "./message-search": "./src/messageSearch.ts",
+    "./message-source": "./src/messageSource.ts",
     "./message-window": "./src/messageWindow.ts",
     "./orca-team": "./src/orcaTeam.ts",
     "./mobile-home": "./src/mobileHome.ts",
@@ -91,7 +92,8 @@
     "./botTimeline": "./src/botTimeline.ts",
     "./remote-desktop-viewer": "./src/remote-desktop/viewerRuntime.js",
     "./remote-desktop-mobile": "./src/remote-desktop/mobileHtml.ts",
-    "./remote-desktop-scripts": "./src/remote-desktop/viewerScripts.ts"
+    "./remote-desktop-scripts": "./src/remote-desktop/viewerScripts.ts",
+    "./teammate-todo": "./src/teammateTodo.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

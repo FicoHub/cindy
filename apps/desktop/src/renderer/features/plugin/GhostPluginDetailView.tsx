@@ -46,13 +46,13 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import {
   isOfficialGhostId,
+  ghostTrustLabelKey,
   type GhostPermissionItem,
   type GhostToolDecl,
   type InstalledGhost,
 } from '../../../shared/ghost';
 import { type GhostPluginDetail } from './lib/ghostPluginViewModel';
 import { GhostPluginIcon } from './GhostPluginIcon';
-import { IOSSimulatorPreferences } from './IOSSimulatorPreferences';
 import { ghostPluginSummary } from './lib/ghostPluginDetailModel';
 import { ghostPrimaryAction } from './lib/ghostPluginViewModel';
 import { permissionItemIcon } from './lib/permissionItemIcon';
@@ -136,7 +136,6 @@ export function GhostPluginDetailView({
   const primaryEnabled =
     enabled &&
     (primaryAction === 'panel' ||
-      primaryAction === 'capability' ||
       (primaryAction === 'command' && detail.canUse));
   const cindyCapabilities = detail.cindyCapabilities;
   // Local imports with the same id cannot use the host gh credential. Match the
@@ -153,7 +152,6 @@ export function GhostPluginDetailView({
     hasGithubConnection ||
     detail.hasMainView ||
     detail.hasSettingsUi ||
-    detail.hostCapability === 'ios-simulator' ||
     cindyCapabilities.length > 0 ||
     detail.hasTaskPreferences;
   const summary = hasGithubConnection
@@ -290,7 +288,7 @@ export function GhostPluginDetailView({
                   title={!enabled ? t('settings.ghosts.detail.useDisabled') : undefined}
                   className="plugin-detail-primary-action min-w-[88px] whitespace-nowrap"
                 >
-                  {primaryAction === 'command' || primaryAction === 'capability' ? (
+                  {primaryAction === 'command' ? (
                     <MessageCircle size={14} aria-hidden="true" />
                   ) : null}
                   {t(
@@ -439,7 +437,6 @@ export function GhostPluginDetailView({
                 'space-y-3',
               )}
             >
-              {detail.hostCapability === 'ios-simulator' ? <IOSSimulatorPreferences /> : null}
               {detail.hasMainView ? (
                 <div
                   className={cn(
@@ -812,16 +809,7 @@ export function DetailsSection({
   panelStatus: string | null;
 }) {
   const { t } = useTranslation();
-  const trustLabelKey =
-    detail.trust.level === 'cindy-official'
-      ? 'official'
-      : detail.trust.level === 'reviewed'
-        ? 'reviewed'
-        : detail.trust.level === 'verified-publisher'
-          ? 'verifiedPublisher'
-          : detail.trust.publisherSigned
-            ? 'signedUnverified'
-            : 'unsigned';
+  const trustLabelKey = ghostTrustLabelKey(detail.trust);
   const facts: Array<{
     key: string;
     label: string;

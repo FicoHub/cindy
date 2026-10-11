@@ -18,7 +18,6 @@ import { downloadRemoteMediaShareTemp } from './remoteMediaDiskCacheExpo';
 import { usePluginResultCard } from './usePluginResultCard';
 import { extractPayloadToolResultMedia, managedToolMediaKind } from '@cindy/maker-shared/payload-summary';
 import { AuthorizationMessageCard } from './AuthorizationMessageCard';
-import { sharedTaskAuthorName } from '@cindy/maker-shared';
 import { collectBotMessageTimeGroups, formatBotMessageGroupTime } from '@cindy/maker-shared/botTimeline';
 import { CompanionMessageCard } from '@/session/CompanionMessageCard';
 import { CompanionEntering } from '@/session/CompanionEntering';
@@ -41,13 +40,17 @@ import {
   Copy,
   Ellipsis,
   ExternalLink,
+  Ghost,
   Layers,
   ListTodo,
   LoaderCircle,
+  MessageSquare,
+  Monitor,
   RefreshCw,
   PencilLine,
   Share as ShareIcon,
   Send,
+  Smartphone,
   Split,
   Sparkles,
   Timer,
@@ -97,7 +100,6 @@ import {
 } from '@cindy/maker-shared/chat-quotes';
 import { formatCompactTokens } from '@cindy/maker-shared/usage-format';
 import { QuoteCapsule } from '@/session/QuoteCapsule';
-import { StreamingStatusText } from '@/session/StreamingStatusText';
 import { useReduceMotionEnabled } from '@/hooks/useReduceMotion';
 import { motionDuration, motionEasing } from '@/theme/tokens';
 import { mobileAgentLabelFromUnknown } from '@/session/sessionAgentSwitch';
@@ -217,6 +219,7 @@ import {
   type MobileMarkdownBlock,
   type MobileMarkdownBlockGroup,
   type MobileMarkdownInline,
+  type MobileMarkdownInlineMark,
   type MobileMarkdownTextRunGroupingOptions,
 } from '@/session/messageMarkdown';
 import { MarkdownBlockContent } from '@/session/MarkdownBlockContent';
@@ -253,9 +256,23 @@ import {
   type RemotePathVerdict,
 } from '@/session/remotePathVerdict';
 import {
+  useRemoteDeviceIdentity,
   useRemoteSessionMessages,
   useRemoteSessions,
 } from '@/session/remoteSessionStore';
+import {
+  shouldShowSourceDevice,
+  type MessageSourceDevice,
+  type MessageSourcePlugin,
+} from '@cindy/maker-shared/message-source';
+import {
+  automationOriginLabel,
+  imSourceHeaderTitle,
+  sessionOriginLabel,
+  sourceDeviceLabel,
+  sourceIdText,
+  sourcePluginLabel,
+} from '@/session/messageSourceLabels';
 import {
   compactSessionMessageLabel,
   mobileSessionMessageDisplayText,
@@ -300,6 +317,7 @@ import {
 } from '@cindy/maker-shared/agent-task';
 import {
   buildMessageActionBarPresentation,
+  formatToolRowText,
   summarizeMessageBubblePresentation,
   summarizeTodoCardPresentation,
   summarizeToolGroupPresentation,
@@ -330,7 +348,7 @@ import type {
   MobileMediaPlayerKind,
   MobileMediaPlayerStatus,
 } from '@/session/mediaPlayerWebViewHtml';
-import { formatMobileSystemCard } from '@/session/systemCard';
+import { formatAgentSwitchLocationLabel, formatMobileSystemCard } from '@/session/systemCard';
 import { MobileBoundaryNotice } from '@/session/MobileBoundaryNotice';
 import {
   getMobileAutoResumePresentation,
@@ -401,6 +419,7 @@ import { i18n } from '@/i18n';
 import { formatLocalizedDuration } from '@/session/sessionDurationFormat';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
 import { mobileToolRowWording } from '@/i18n/toolWording';
+import type { HistoryWorkLine } from '@cindy/maker-shared/message-window';
 
 const MESSAGE_CONTROL_HIT_SLOP = { bottom: 10, left: 10, right: 10, top: 10 };
 const MESSAGE_CONTROL_TOUCH_SIZE = 44;
@@ -661,6 +680,13 @@ interface MessageActions {
   onOpenForkOrigin?: () => void;
   /** 「由任务「X」发送」来源标签点击:跳到同一设备上的来源任务。 */
   onOpenOriginSession?: (sessionId: string) => void;
+  /**
+   * 本机(这台手机)的 device-link 设备 id:设备来源标签只标「别的设备」发来的消息,
+   * 本机发出的不标(shouldShowSourceDevice)。
+   */
+  viewerDeviceId?: string | null;
+  /** 「从手机「X」发送」设备标签点击:打开设备详情;设备已删除时由宿主提示。 */
+  onOpenSourceDevice?: (deviceId: string) => void;
   onOpenPayload?: (payload: MessagePayload) => void;
   onLoadToolInput?: (ref: MobileToolInputProjection) => Promise<MobileToolInputDetail>;
   onBlockingOverlayChange?: (blocked: boolean) => void;
@@ -716,6 +742,8 @@ export function MessageRenderer({
   onLoadToolInput,
   onOpenForkOrigin,
   onOpenOriginSession,
+  viewerDeviceId,
+  onOpenSourceDevice,
   onBlockingOverlayChange,
   onOpenSessionLink,
   onPreviewRewind,
@@ -1721,6 +1749,8 @@ export function MessageRenderer({
     onDeleteMessage,
     onOpenForkOrigin,
     onOpenOriginSession,
+    viewerDeviceId,
+    onOpenSourceDevice,
     onOpenSessionLink,
     onPreviewRewind,
     onEnterShareSelection,
@@ -1767,6 +1797,8 @@ export function MessageRenderer({
     onForkMessage,
     onOpenForkOrigin,
     onOpenOriginSession,
+    viewerDeviceId,
+    onOpenSourceDevice,
     onLoadToolInput,
     onOpenSessionLink,
     onPreviewRewind,
@@ -2883,9 +2915,15 @@ const RenderItemView = memo(function RenderItemView({
     ),
     [item],
   );
+  // 旧 Hook(落库正文是拼好的 Agent prompt)降级为左对齐系统卡,不挂 fork / rewind /
+  // delete 等用户操作;本机 IM 落库的是用户原文(userTextContent),保持 user kind 与普通
+  // 用户消息的全部操作,只在 MessageBubble 里换成左对齐的「Cindy · 来自 X」卡片。
   const hookSourceUserItem = useMemo(
     () => (
-      item.type === 'message' && item.message.kind === 'user' && item.message.hookSource
+      item.type === 'message'
+        && item.message.kind === 'user'
+        && item.message.hookSource
+        && !item.message.hookSource.userTextContent
         ? { ...item, message: { ...item.message, kind: 'system' as const, align: 'agent' as const } }
         : null
     ),
@@ -2903,7 +2941,7 @@ const RenderItemView = memo(function RenderItemView({
         ? (
           <>
             {item.message.sessionOrigin ? (
-              <SessionOriginLabel origin={item.message.sessionOrigin} onOpen={actions.onOpenOriginSession} />
+              <SessionOriginLabel align="agent" origin={item.message.sessionOrigin} onOpen={actions.onOpenOriginSession} />
             ) : null}
             <OrcaCollabCard card={item.message.orcaCard} screenWidth={actions.screenWidth}
               blockKey={JSON.stringify([actions.remoteDeviceId, item.key])} />
@@ -2957,6 +2995,7 @@ const RenderItemView = memo(function RenderItemView({
             actions={actions.pendingSend}
             item={item}
             screenWidth={actions.screenWidth}
+            viewerDeviceId={actions.viewerDeviceId}
             renderImage={(uri, sourceUri, onError) => uri ? (
               <PendingAttachmentImage key={sourceUri ?? uri}
                 layout={buildMessageContentLayout({ screenWidth: actions.screenWidth })}
@@ -3028,38 +3067,157 @@ const RenderListItemView = memo(function RenderListItemView({
   );
 });
 
+/**
+ * 气泡外的来源标签(任务 / 自动化 / 插件 / 设备共用):有 ID 时长按就地显示 ID(可选中复制),
+ * 读屏在提示里直接读出 ID;脱敏后没有 ID 的来源保持静态展示。对齐桌面悬停给出 ID。
+ * 标签挂在气泡外——气泡本身不能挂 Pressable(会干扰正文横向滚动手势)。
+ */
+function SourceLabelWithId({
+  accessibilityLabel,
+  align,
+  icon,
+  label,
+  idText,
+  onPress,
+  openHint,
+  testID,
+}: {
+  /** 读屏标签;缺省读 label。 */
+  accessibilityLabel?: string;
+  align: 'user' | 'agent';
+  icon?: ReactNode;
+  label: string;
+  idText?: string;
+  onPress?: () => void;
+  openHint?: string;
+  testID: string;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const [idVisible, setIdVisible] = useRecyclingState(false);
+  const hint = [onPress ? openHint : undefined, idText].filter(Boolean).join(' ');
+  return (
+    <View style={[styles.sourceLabelStack, align === 'user' ? styles.sourceLabelStackUser : null]}>
+      <Pressable
+        accessibilityHint={hint || undefined}
+        accessibilityLabel={accessibilityLabel ?? label}
+        accessibilityRole={onPress ? 'button' : 'text'}
+        disabled={!onPress && !idText}
+        hitSlop={8}
+        onLongPress={idText ? () => setIdVisible((visible) => !visible) : undefined}
+        onPress={onPress}
+        style={styles.automationOriginRow}
+        testID={testID}
+      >
+        {icon}
+        <Text numberOfLines={1} style={styles.automationOriginText}>{label}</Text>
+      </Pressable>
+      {idVisible && idText ? (
+        <Text selectable style={styles.automationOriginText} testID={`${testID}Id`}>{idText}</Text>
+      ) : null}
+    </View>
+  );
+}
+
 /** 另一个任务经工具发来的消息:气泡上方的来源标签,点按跳来源任务(对齐桌面 AutomationOriginBadge)。 */
 function SessionOriginLabel({
+  align,
   origin,
   onOpen,
+  sourceMeta,
 }: {
+  align: 'user' | 'agent';
   origin: NonNullable<NormalizedRemoteMessage['sessionOrigin']>;
   onOpen?: (sessionId: string) => void;
+  /** 原始 agentMeta:长按 ID 与桌面悬停、排队行同源(伙伴给伙伴 ID + 任务 ID)。 */
+  sourceMeta?: unknown;
 }) {
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const styles = useThemedStyles(makeStyles);
   const senderSessionId = origin.senderSessionId;
-  const openTarget = onOpen && senderSessionId ? () => onOpen(senderSessionId) : undefined;
-  const label = origin.senderBotName
-    ? t('message.renderer.botOriginNamed', { name: origin.senderBotName })
-    : origin.senderSessionTitle
-      ? t('message.renderer.sessionOriginNamed', { name: origin.senderSessionTitle })
-      : t('message.renderer.sessionOrigin');
   return (
-    <Pressable
-      accessibilityHint={openTarget ? t('message.renderer.openSessionOrigin') : undefined}
-      accessibilityLabel={label}
-      accessibilityRole={openTarget ? 'button' : 'text'}
-      disabled={!openTarget}
-      hitSlop={8}
-      onPress={openTarget}
-      style={styles.automationOriginRow}
+    <SourceLabelWithId
+      align={align}
+      icon={<Send color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />}
+      idText={sourceIdText(sourceMeta)
+        ?? (senderSessionId ? t('message.renderer.sourceSessionId', { id: senderSessionId }) : undefined)}
+      label={sessionOriginLabel(origin)}
+      onPress={onOpen && senderSessionId ? () => onOpen(senderSessionId) : undefined}
+      openHint={t('message.renderer.openSessionOrigin')}
       testID="message.sessionOrigin"
-    >
-      <Send color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />
-      <Text numberOfLines={1} style={styles.automationOriginText}>{label}</Text>
-    </Pressable>
+    />
+  );
+}
+
+/** 自动化注入的消息:气泡上方的来源标签(手机版不跳自动化页);脱敏来源没有 ID,静态展示。 */
+function AutomationOriginLabel({
+  align,
+  origin,
+}: {
+  align: 'user' | 'agent';
+  origin: NonNullable<NormalizedRemoteMessage['automationOrigin']>;
+}) {
+  const { colors } = useTheme();
+  const { t, i18n: i18nInstance } = useTranslation();
+  const label = useMemo(() => automationOriginLabel(origin), [origin, i18nInstance.language]);
+  return (
+    <SourceLabelWithId
+      align={align}
+      icon={<Timer color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />}
+      idText={origin.scheduleId ? t('message.renderer.sourceAutomationId', { id: origin.scheduleId }) : undefined}
+      label={label}
+      testID="message.automationOrigin"
+    />
+  );
+}
+
+/**
+ * 手机或另一台电脑远程操作主机时发来的消息:气泡外的设备标签(样式同其它来源标签)。
+ * 点按打开设备详情;长按就地显示设备 ID。
+ */
+function SourceDeviceLabel({
+  align,
+  device,
+  onOpen,
+}: {
+  align: 'user' | 'agent';
+  device: MessageSourceDevice;
+  onOpen?: (deviceId: string) => void;
+}) {
+  const { colors } = useTheme();
+  const { t, i18n: i18nInstance } = useTranslation();
+  const directory = useRemoteDeviceIdentity();
+  const label = useMemo(
+    () => sourceDeviceLabel(device, directory),
+    // 文案走 i18n.t,语言进依赖。
+    [device, directory, i18nInstance.language],
+  );
+  const Icon = device.platform === 'mobile' ? Smartphone : Monitor;
+  return (
+    <SourceLabelWithId
+      align={align}
+      icon={<Icon color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />}
+      idText={t('message.renderer.sourceDeviceId', { id: device.deviceId })}
+      label={label}
+      onPress={onOpen ? () => onOpen(device.deviceId) : undefined}
+      openHint={t('message.renderer.openSourceDeviceHint', { id: device.deviceId })}
+      testID="message.sourceDevice"
+    />
+  );
+}
+
+/** 插件任务派发的消息:气泡外的来源标签;与气泡内的本轮插件调用头(PluginInvocationHeader)是两回事。 */
+function SourcePluginLabel({ align, plugin }: { align: 'user' | 'agent'; plugin: MessageSourcePlugin }) {
+  const { colors } = useTheme();
+  const { t, i18n: i18nInstance } = useTranslation();
+  const label = useMemo(() => sourcePluginLabel(plugin), [plugin, i18nInstance.language]);
+  return (
+    <SourceLabelWithId
+      align={align}
+      icon={<Ghost color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />}
+      idText={t('message.renderer.sourcePluginId', { id: plugin.pluginId })}
+      label={label}
+      testID="message.sourcePlugin"
+    />
   );
 }
 
@@ -3270,7 +3428,8 @@ function MessageBubble({
     mediaCount: item.message.media?.length ?? 0,
     secondaryBody: item.message.secondaryBody,
   });
-  const isUser = presentation.isUserAligned;
+  // IM 来源卡片(本机 IM 保留 user kind 以挂普通用户操作)与桌面一样左对齐。
+  const isUser = presentation.isUserAligned && !item.message.hookSource;
   const isStreamingAssistant = item.message.kind === 'assistant' && item.message.isStreaming === true;
   const clientId = messageClientId(item);
   useEffect(() => {
@@ -3290,8 +3449,7 @@ function MessageBubble({
   // 操作行只挂在每轮收尾正文、且该行确实是一条发言(判据见
   // mobileMessageShowsActionBar):中间句不再逐条带复制/分叉/时间,系统边界卡整行
   // 不挂。分享态只保留与导出图片一致的消息内容,不显示操作图标、时间或费用。
-  // user 消息、流式「生成中」状态与正文的文本选择(canSelectVisibleText)
-  // 不受影响。
+  // 流式回复不挂操作行或状态占位；任务运行状态由底部状态栏展示。
   const showCompletedActionBar = !shareSelectionActive && mobileMessageShowsActionBar({
     hasSystemCard: !!item.message.systemCardType,
     isStreamingAssistant,
@@ -3533,15 +3691,6 @@ function MessageBubble({
       {turnTokens}
     </Text>
   ) : null;
-  const streamingStatus = isStreamingAssistant ? (
-    <StreamingStatusText
-      accessibilityLabel={t('message.renderer.messageGenerating')}
-      style={styles.streamingStatus}
-      testID="message.streamingStatus"
-    >
-      {t('message.renderer.generating')}
-    </StreamingStatusText>
-  ) : null;
   // 附件条对齐桌面版:渲染在气泡外、文字气泡上方(用户消息右对齐);
   // 纯图片消息(无正文)不再渲染空气泡背景。
   const attachmentStripNode = item.message.attachments?.length ? (
@@ -3576,8 +3725,6 @@ function MessageBubble({
       ]}
       testID={isUser ? 'message.userBubble' : 'message.agentBubble'}
     >
-      {isUser && sharedTaskAuthorName(item.message.source.agentMeta) ?
-        <Text style={styles.hookSourceTitle}>{sharedTaskAuthorName(item.message.source.agentMeta)}</Text> : null}
       {hasPluginInvocations ? (
         <PluginInvocationHeader
           key={clientId}
@@ -3589,9 +3736,11 @@ function MessageBubble({
       ) : null}
       {hookSource ? (
         <View style={styles.hookSourceHeader} testID="message.hookSource">
-          <Send color={colors.textSecondary} size={iconSize.xs} strokeWidth={iconStroke.regular} />
+          {hookSource.im === 'telegram'
+            ? <Send color={colors.textSecondary} size={iconSize.xs} strokeWidth={iconStroke.regular} />
+            : <MessageSquare color={colors.textSecondary} size={iconSize.xs} strokeWidth={iconStroke.regular} />}
           <Text numberOfLines={1} style={styles.hookSourceTitle}>
-            {`Cindy · ${hookSource.im === 'telegram' ? 'Telegram' : hookSource.im === 'x' ? 'X' : 'Slack'}`}
+            {imSourceHeaderTitle(hookSource.im)}
           </Text>
           {hookSource.channelName ? (
             <Text numberOfLines={1} style={styles.hookSourceChannel}>
@@ -3732,20 +3881,53 @@ function MessageBubble({
         isUser ? styles.userMessageItem : styles.agentMessageItem,
       ]}
     >
+      {item.message.kind === 'user' && item.message.sharedAuthorName ? (
+        // 共享任务成员发的消息:作者名放在气泡上方(对齐桌面 UserMessage),不进气泡;
+        // 与其它来源标签一样长按显示成员 ID。
+        <SourceLabelWithId
+          align={isUser ? 'user' : 'agent'}
+          accessibilityLabel={t('message.renderer.sharedAuthor', { name: item.message.sharedAuthorName })}
+          idText={item.message.sharedAuthorMemberId
+            ? t('message.renderer.sourceMemberId', { id: item.message.sharedAuthorMemberId })
+            : undefined}
+          label={item.message.sharedAuthorName}
+          testID="message.sharedAuthor"
+        />
+      ) : null}
+      {item.message.kind === 'assistant' && item.message.sourceGroup ? (
+        <SourceLabelWithId
+          align="agent"
+          label={item.message.sourceGroup.name
+            ? t('message.renderer.groupSentNamed', { name: item.message.sourceGroup.name })
+            : t('message.renderer.groupSent')}
+          idText={t('message.renderer.sourceGroupId', { id: item.message.sourceGroup.groupId })}
+          testID="message.groupSource"
+        />
+      ) : null}
       {automationOrigin ? (
         // 自动化任务注入的消息:气泡上方渲来源标签(对齐桌面;手机版暂不做
-        // 点击跳转自动化页,纯展示)。
-        <View style={styles.automationOriginRow} testID="message.automationOrigin">
-          <Timer color={colors.textTertiary} size={iconSize.xs} strokeWidth={iconStroke.thin} />
-          <Text numberOfLines={1} style={styles.automationOriginText}>
-            {automationOrigin.scheduleName
-              ? t('message.renderer.automationOriginNamed', { name: automationOrigin.scheduleName })
-              : t('message.renderer.automationOrigin')}
-          </Text>
-        </View>
+        // 点击跳转自动化页)。共享任务访客的脱敏来源没有名字与 ID,显示通用文案。
+        <AutomationOriginLabel align={isUser ? 'user' : 'agent'} origin={automationOrigin} />
       ) : null}
-      {item.message.kind === 'user' && item.message.sessionOrigin ? (
-        <SessionOriginLabel origin={item.message.sessionOrigin} onOpen={actions.onOpenOriginSession} />
+      {/* 插件优先(与 messageSourceSenderFromMeta 同序):同时带来源任务 origin 时只显示插件。 */}
+      {item.message.kind === 'user' && item.message.sessionOrigin && !item.message.sourcePlugin ? (
+        <SessionOriginLabel
+          align={isUser ? 'user' : 'agent'}
+          origin={item.message.sessionOrigin}
+          onOpen={actions.onOpenOriginSession}
+          sourceMeta={item.message.source.agentMeta}
+        />
+      ) : null}
+      {item.message.kind === 'user' && item.message.sourcePlugin ? (
+        <SourcePluginLabel align={isUser ? 'user' : 'agent'} plugin={item.message.sourcePlugin} />
+      ) : null}
+      {item.message.kind === 'user'
+        && shouldShowSourceDevice(item.message.sourceDevice, actions.viewerDeviceId) ? (
+        <SourceDeviceLabel
+          align={isUser ? 'user' : 'agent'}
+          device={item.message.sourceDevice}
+          onOpen={actions.onOpenSourceDevice}
+        />
       ) : null}
       {attachmentStripNode}
       {hasBubbleContent || (!attachmentStripNode && messageQuotes.length === 0) ? bubble : null}
@@ -3795,7 +3977,6 @@ function MessageBubble({
           testID="message.actionBar"
         >
           {actionBar.items.map((id) => {
-            if (id === 'streaming') return <View key="streaming">{streamingStatus}</View>;
             if (id === 'time') return timeText;
             if (id === 'cost') return costText;
             if (id === 'more') {
@@ -4549,6 +4730,9 @@ function WorkGroupCard({
   ].filter(Boolean).join(' · ');
   const onToggle = item.deferred?.setVisible ? toggleExpanded : item.deferred?.toggle ?? toggleExpanded;
   const pluginWork = actions.companionPluginWork?.get(item.key);
+  // The Host projects running lines for this view; folded groups render them as they are,
+  // without building the hidden activity tree or reading any work details.
+  const lines = isStreaming && !expanded ? item.deferred?.lines : undefined;
   return (
     <>
     {pluginWork ? <PluginInvocationHeader plugins={pluginWork.plugins} running={pluginWork.running}
@@ -4558,6 +4742,13 @@ function WorkGroupCard({
       chevronPosition={header.chevronPosition}
       chevronSize={header.chevronSize}
       controlledExpanded={expanded}
+      collapsedBody={lines?.length ? (
+        <Rail layout={layout}>
+          <View style={styles.workActivityStack}>
+            {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+          </View>
+        </Rail>
+      ) : undefined}
       onControlledToggle={onToggle}
       title={title}
       subtitle={header.subtitle ?? undefined}
@@ -4613,6 +4804,48 @@ function WorkGroupCard({
     </>
   );
 }
+
+/** One Host-projected running line; pressing it opens the whole work group. */
+const WorkLineRow = memo(function WorkLineRow({
+  line,
+  onPress,
+}: {
+  line: HistoryWorkLine;
+  onPress: () => void;
+}) {
+  const { colors } = useTheme();
+  const { i18n } = useTranslation();
+  const styles = useThemedStyles(makeStyles);
+  const label = useMemo(
+    () => (line.kind === 'tool' ? formatToolRowText(line.descriptor, mobileToolRowWording).label || line.toolName : line.text),
+    [i18n.language, line],
+  );
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [line.kind === 'tool' ? styles.toolRowHeader : styles.workThinkingRow, pressed && styles.pressed]}
+      testID="message.workLine"
+    >
+      {line.kind === 'tool' ? (
+        <>
+          <ToolRowStatusIcon hasError={line.hasError === true} status={line.status} />
+          <Text numberOfLines={1} style={[styles.toolName, styles.toolNameFlex]}>{label}</Text>
+        </>
+      ) : (
+        <>
+          <View style={stylesStatic.workActivityIconSlot}>
+            <Sparkles color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+          </View>
+          <Text numberOfLines={1} style={[styles.workActivityText, styles.italicText, styles.workThinkingText]}>
+            <ThinkingInlineText content={label} />
+          </Text>
+        </>
+      )}
+    </Pressable>
+  );
+});
 
 /** The clock must not re-render an expanded group's entire activity tree. */
 function WorkGroupElapsed({ sinceIso }: { sinceIso: string | undefined }) {
@@ -4792,6 +5025,7 @@ function FoldablePanel({
   title,
   subtitle,
   children,
+  collapsedBody,
   controlledExpanded,
   defaultExpanded = false,
   layout,
@@ -4813,6 +5047,8 @@ function FoldablePanel({
   title: string;
   subtitle?: string;
   children: ReactNode;
+  /** Running work lines shown under a folded header; the full body is still built only when expanded. */
+  collapsedBody?: ReactNode;
   /** Controlled mode used by work groups. */
   controlledExpanded?: boolean;
   /** 仅无 blockId 的本地 state 路径生效;blockId 存在时由共享记忆决定(默认折叠)。 */
@@ -4895,6 +5131,18 @@ function FoldablePanel({
             },
         ]}>
           {children}
+        </View>
+      ) : collapsedBody ? (
+        <View style={[
+          styles.foldBody,
+          variant === 'plain'
+            ? styles.foldBodyPlain
+            : {
+              paddingBottom: layout.foldBodyPaddingBottom,
+              paddingHorizontal: layout.foldBodyPaddingHorizontal,
+            },
+        ]}>
+          {collapsedBody}
         </View>
       ) : null}
     </View>
@@ -5021,7 +5269,9 @@ function MobileAgentSwitchCard({ data }: { data?: Record<string, unknown> }) {
   const toModel = typeof data?.toModel === 'string' ? data.toModel : '';
   const handoff = typeof data?.handoff === 'string' ? data.handoff : '';
   const resumed = data?.resumed === true;
-  const label = t('message.renderer.agentSwitchLabel', { from, to });
+  // 远程 Agent 换了电脑:药丸说位置(「Agent 改到 X 运行」),否则仍是「已从 X 切换到 Y」。
+  const label = formatAgentSwitchLocationLabel(data, (key, options) => t(key, options))
+    ?? t('message.renderer.agentSwitchLabel', { from, to });
 
   return (
     <View style={styles.agentSwitchWrap} testID="message.systemCard.agent-switch">
@@ -5143,7 +5393,22 @@ function MobileAutoResumeActionRow({
     );
   }
 
-  const label = state === 'live'
+  const label = info.groupSwitchPending
+    ? t('message.systemCard.autoResume.groupSwitchPending')
+    : info.agentSwitch
+    ? t(`message.systemCard.autoResume.agentSwitch.${info.agentSwitch.cause}`, {
+        from: info.agentSwitch.from,
+        to: info.agentSwitch.to,
+      })
+    : info.agentReconnect
+    ? info.agentReconnect.computer
+      ? t('message.systemCard.autoResume.agentReconnect.named', { computer: info.agentReconnect.computer })
+      : t('message.systemCard.autoResume.agentReconnect.unnamed')
+    : info.groupSwitch
+    ? t('message.systemCard.autoResume.groupSwitch')
+    : info.usageLimitReset
+    ? t('message.systemCard.autoResume.usageReset')
+    : state === 'live'
     ? hasProgress
       ? t('message.systemCard.autoResume.pendingWithProgress', {
           attempt: info.attempt,
@@ -5926,7 +6191,30 @@ function clickableInlineStyle(
   base: StyleProp<TextStyle>,
   extra?: StyleProp<TextStyle>,
 ): StyleProp<TextStyle> {
-  return [base, onPress ? styles.markdownLink : undefined, extra];
+  return [base, onPress ? underlineDecoration(styles, base, styles.markdownLink) : undefined, extra];
+}
+
+/**
+ * 可点下划线与外层删除线共存:RN 的 textDecorationLine 是单值,后叠的 underline 会盖掉
+ * `~~链接~~` 的 line-through。base 已带删除线时改用合并值,两条线都画。
+ */
+function underlineDecoration(
+  styles: ReturnType<typeof makeStyles>,
+  base: StyleProp<TextStyle>,
+  underline: StyleProp<TextStyle>,
+): StyleProp<TextStyle> {
+  return StyleSheet.flatten(base)?.textDecorationLine === 'line-through'
+    ? [underline, styles.markdownUnderlineStrike]
+    : underline;
+}
+
+function markdownMarkStyle(
+  styles: ReturnType<typeof makeStyles>,
+  mark: MobileMarkdownInlineMark,
+): StyleProp<TextStyle> {
+  if (mark === 'strong') return styles.markdownStrong;
+  if (mark === 'emphasis') return styles.markdownEmphasis;
+  return styles.markdownStrike;
 }
 
 /** 本地路径链接形态的路径 chip 包装:candidate 按 url memo,保证引用稳定——
@@ -5968,8 +6256,8 @@ function LinkPathChipSpan({
       candidate={candidate}
       chipStyle={
         codeStyled
-          ? [baseStyle, styles.markdownInlineCode, styles.markdownPathChip]
-          : [baseStyle, styles.markdownPathChip]
+          ? [baseStyle, styles.markdownInlineCode, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]
+          : [baseStyle, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]
       }
       display={display}
       // 未点亮一律回落正文样式(与桌面一致:未解析的 local-candidate 渲染成纯 span)。
@@ -5998,7 +6286,7 @@ function InlineCodePathSpan({
   return (
     <ChatPathChipSpan
       candidate={candidate}
-      chipStyle={[baseStyle, styles.markdownInlineCode, styles.markdownPathChip]}
+      chipStyle={[baseStyle, styles.markdownInlineCode, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]}
       display={text}
       plainStyle={[baseStyle, styles.markdownInlineCode]}
       SpanText={SpanText}
@@ -6029,6 +6317,13 @@ function renderInline(
     streaming?: boolean;
   } = {},
 ): ReactNode {
+  // 强调里的链接 / 代码等:外层强调样式叠进 baseStyle,其余照常渲染(span 平铺,不嵌套)。
+  if (inline.marks?.length) {
+    return renderInline({ ...inline, marks: undefined }, index, styles, {
+      ...ctx,
+      baseStyle: [ctx.baseStyle, ...inline.marks.map((mark) => markdownMarkStyle(styles, mark))],
+    });
+  }
   const SpanText = ctx.SpanText ?? MessageBodyText;
   const openImage = ctx.onOpenImage ?? (ctx.onOpenPayload
     ? (url: string, alt?: string) => {
@@ -8489,6 +8784,14 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontSize: typeScale.caption,
     lineHeight: lineHeight.caption,
   },
+  sourceLabelStack: {
+    alignItems: 'flex-start',
+    gap: 2,
+    maxWidth: '86%',
+  },
+  sourceLabelStackUser: {
+    alignItems: 'flex-end',
+  },
   modelMismatchRow: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -8752,6 +9055,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   // 与普通强调的区别只在语义,视觉上沿用 italic 已足够。
   markdownMathInline: { fontStyle: 'italic' },
   markdownStrike: { textDecorationLine: 'line-through' },
+  markdownUnderlineStrike: { textDecorationLine: 'underline line-through' },
   // 行内 code:零底色 + 等宽字体 + 文字压暗(参照 Codex 客户端)。
   // 不给底色是平台约束:RN 嵌套在 Text 内的 inline 片段只认 backgroundColor,不认
   // borderRadius(同 sessionLinkChipText 的注释),底色在这里只能是直角方块,成段
@@ -9007,13 +9311,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     color: colors.textTertiary,
     fontSize: typeScale.caption,
     lineHeight: lineHeight.bodyRelaxed,
-  },
-  streamingStatus: {
-    alignSelf: 'center',
-    color: colors.textSecondary,
-    fontSize: typeScale.caption,
-    fontWeight: fontWeight.regular,
-    lineHeight: lineHeight.listTitle,
   },
   foldPlain: { alignSelf: 'stretch' },
   foldCard: {
