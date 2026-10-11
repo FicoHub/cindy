@@ -10863,7 +10863,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           workingDir: meta.workDir,
           model: meta.model,
           resumeSessionId: meta.sdkSessionId,
-          permissionMode: 'bypassPermissions',
+          // 插件派来的活按会话落库的权限档恢复:插件任务的档位由用户在任务设置里给定
+          // (errand 还会再收窄),不能借 lazy-resume 的缺省 bypass 提权;档位不一致
+          // 还会让 errand 复用判定每轮都失败、另开新会话(#5788)。其它 main 侧通路
+          // (Orca 派活、伙伴委派等)保持既有缺省。
+          permissionMode: sourcePlugin ? permissionModeOrAsk(dbRow.permissionMode) : 'bypassPermissions',
           // 发起方回合结束后进程常被释放。漏掉 providerId = 回落到隐式默认路由,
           // 订阅 / 自定义来源的伙伴会以 AGENT_NOT_READY 起不来,委派结果停在外发
           // 队列里,表现就是「对方做完了,发起方没被叫醒」。
