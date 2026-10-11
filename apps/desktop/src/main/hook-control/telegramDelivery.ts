@@ -238,4 +238,18 @@ export function createTelegramDeliveryBridge(deps: {
 /** Leaf registration avoids the maker-host ↔ hook-control IPC import cycle. */
 let bridge: TelegramDeliveryBridge | null = null;
 export function registerTelegramDeliveryBridge(value: TelegramDeliveryBridge | null): void { bridge = value; }
+
+/**
+ * Owner-boundary cleanup of the delivery journals. Only account deletion (`clearPersisted:
+ * true`) removes them: `.sent` journals keep the actual Telegram text and entities. Ordinary
+ * logout / quit pass `false` and keep them for idempotent replay. Returns whether a removal ran.
+ */
+export async function purgeTelegramDeliveryJournals(
+  directory: string | null,
+  clearPersisted: boolean | undefined,
+): Promise<boolean> {
+  if (clearPersisted !== true || !directory) return false;
+  await fs.promises.rm(directory, { recursive: true, force: true });
+  return true;
+}
 export function getTelegramDeliveryBridge(): TelegramDeliveryBridge | null { return bridge; }

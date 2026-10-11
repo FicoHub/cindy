@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createTelegramDeliveryBridge, selectTelegramDeliveryTarget, type TelegramDeliveryInput } from '../telegramDelivery';
+import { createTelegramDeliveryBridge, purgeTelegramDeliveryJournals, selectTelegramDeliveryTarget, type TelegramDeliveryInput } from '../telegramDelivery';
 
 const binding = { bindingId: 'bound', principalId: 'owner', principalName: 'Owner', scopeId: 'bot', scopeName: 'test_bot' };
 const target = selectTelegramDeliveryTarget(binding, ['telegram:dm:bot:owner:g1'])!;
@@ -346,4 +346,29 @@ it('bounds HTML source conservatively before claiming without truncating markup'
   expect(text.length).toBe(4096);
   await expect(h.bridge.send({ ...input, text })).resolves.toMatchObject({ state: 'sent' });
   expect(h.send).toHaveBeenCalledOnce();
+});
+
+// Codex P1: account deletion must not leave the owner's `.sent` journals (actual Telegram text).
+describe('Telegram delivery journal purge at the owner boundary', () => {
+  it('removes the journals only for account deletion and keeps them for logout / quit', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-telegram-delivery-purge-'));
+    try {
+      fs.writeFileSync(path.join(directory, 'op.sent'), JSON.stringify({ sentMessage: { text: 'private text' } }));
+      await expect(purgeTelegramDeliveryJournals(directory, false)).resolves.toBe(false);
+      await expect(purgeTelegramDeliveryJournals(directory, undefined)).resolves.toBe(false);
+      expect(fs.existsSync(path.join(directory, 'op.sent'))).toBe(true);
+      await expect(purgeTelegramDeliveryJournals(null, true)).resolves.toBe(false);
+      await expect(purgeTelegramDeliveryJournals(directory, true)).resolves.toBe(true);
+      expect(fs.existsSync(directory)).toBe(false);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('is wired into the hook-control owner boundary with the bridge directory', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'ipc.ts'), 'utf8');
+    const reset = source.slice(source.indexOf('export function resetHookControlOwnerBoundary'));
+    expect(reset).toContain('purgeTelegramDeliveryJournals(deliveryDirectory, options?.clearPersisted)');
+    expect(source).toContain("telegramDeliveryDirectory = ownerScopedUserDataPath('telegram-delivery-receipts')");
+  });
 });
