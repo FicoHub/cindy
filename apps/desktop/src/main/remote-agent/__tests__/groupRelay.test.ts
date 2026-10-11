@@ -210,14 +210,16 @@ afterEach(async () => {
   // The hosts persist run directories and guest-session state in fire-and-forget promises
   // (mkdir + tmp + rename), so a write can still be landing when a test ends: a one-shot rmdir
   // sees ENOTEMPTY, and a removal that wins the race is undone when the write recreates `root`.
-  // Remove asynchronously so those writes can finish, and only stop once `root` stays gone for a
-  // quiet window; if something keeps recreating it, fail instead of leaking the directory.
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
+  // Remove asynchronously so those writes can finish, and only stop once `root` has stayed gone
+  // across two consecutive quiet windows; a removal that still hits ENOTEMPTY is retried by the
+  // loop rather than failing the hook. If something keeps recreating it, fail instead of leaking.
+  let absentChecks = 0;
+  for (let attempt = 0; attempt < 40 && absentChecks < 2; attempt += 1) {
+    await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 }).catch(() => undefined);
     await delay(50);
-    if (!fs.existsSync(root)) return;
+    absentChecks = fs.existsSync(root) ? 0 : absentChecks + 1;
   }
-  throw new Error(`test directory ${root} kept being recreated after cleanup`);
+  if (absentChecks < 2) throw new Error(`test directory ${root} kept being recreated after cleanup`);
 });
 
 let runSeq = 0;
