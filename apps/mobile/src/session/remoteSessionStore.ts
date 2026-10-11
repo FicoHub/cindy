@@ -1,4 +1,4 @@
-import { readResponseSpeedSnapshot, stopResponseSpeed, retryResponseSpeed, resumeResponseSpeed, mergeResponseSpeedStatus, type ResponseSpeedSnapshot } from '@cindy/maker-shared/usage-format';
+import { readTokenSpeedSnapshot, type TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { normalizeTaskTags, reconcileTaskTags } from '@cindy/maker-shared';
 import {
   createContext,
@@ -149,10 +149,11 @@ export interface RemoteSessionRunStatus {
   status: string;
   tokenUsage: number;
   outputTokens: number;
-  responseSpeed?: ResponseSpeedSnapshot;
   generationDurationMs: number;
   generationActive: boolean;
   generationReliable: boolean;
+  /** 电脑端测得的实时速度（Pi 扩展算法）；旧版电脑不发。 */
+  tokenSpeed?: TokenSpeedSnapshot;
 }
 
 export interface RemoteSessionReconnectAttempt {
@@ -241,6 +242,9 @@ const newMakerWorktreeBranchPreferences = new Map<
   Map<string, Exclude<RemoteNewMakerWorktreeBranchPreference, null>>
 >();
 const messages = new Map<string, RemoteMessage[]>();
+// Rows a never-opened session received from list pushes. While the mirror holds only these,
+// it is not a loaded window: opening the task still merges the disk cache underneath them.
+const listMessageKeys = new Map<string, Set<string>>();
 // The maker event is broadcast before its async DB create/update completes. Keep the latest
 // plan snapshot briefly in the session mirror so a late initial `messages:created` row cannot
 // overwrite a newer live state with the first stale 0/N snapshot.
@@ -688,6 +692,11 @@ const sessionDeviceIndex = new Map<string, string>();
 // 检测到自身 sessionId 被加入时调 load() 触发整窗刷新(含 error 行),避免先清空导致空白帧。
 const pendingRefreshSessions = new Set<string>();
 const reseedHandlers = new Map<string, Set<() => void>>();
+// A whole-list read after app start or a reconnect reseed may follow a gap in live pushes.
+// Listeners read changed tasks ahead; ordinary list refreshes while pushes flow do not fire.
+const sessionListRefreshListeners = new Set<(deviceId: string) => void>();
+const sessionListRefreshArmed = new Set<string>();
+const sessionListRefreshSeen = new Set<string>();
 const subs = new Set<() => void>();
 const homeStatusSubs = new Set<() => void>();
 const sessionMessagePreviewSubs = new Map<string, Set<() => void>>();
@@ -1037,11 +1046,20 @@ function clearSessionMessageCache(sessionId: string, deviceId?: string): void {
   void replaceCachedSessionMessages(resolvedDeviceId, sessionId, []).catch(() => undefined);
 }
 
+/** Track list-only rows within the current window; budget/retention trims drop their keys. */
+function retainListMessageKeys(sessionId: string, added: string): void {
+  const present = new Set((messages.get(sessionId) ?? []).map(messageKey));
+  const keys = new Set([...(listMessageKeys.get(sessionId) ?? []), added].filter((key) => present.has(key)));
+  if (keys.size > 0) listMessageKeys.set(sessionId, keys);
+  else listMessageKeys.delete(sessionId);
+}
+
 function invalidateSessionMessageWindowState(
   sessionId: string,
   requestRefresh: boolean,
 ): boolean {
   let changed = messages.delete(sessionId);
+  listMessageKeys.delete(sessionId);
   changed = livePlanSnapshots.delete(sessionId) || changed;
   changed = sessionTaskUpdates.delete(sessionId) || changed;
   changed = sessionParkedTaskUpdates.delete(sessionId) || changed;
@@ -1134,7 +1152,10 @@ function discardTransportOwnedPendingSessionState(
     ));
     if (nextMessages.length !== existingMessages.length) {
       if (nextMessages.length > 0) messages.set(sessionId, nextMessages);
-      else messages.delete(sessionId);
+      else {
+        messages.delete(sessionId);
+        listMessageKeys.delete(sessionId);
+      }
       changed = true;
     }
   }
@@ -1247,6 +1268,7 @@ function enforceRegularMessageBudget(): boolean {
     // 标志来自消息数组缓存与 pending identity，不再为每次流式文本重复扫描整窗。
     if (candidate.hasProtectedRows) continue;
     if (!messages.delete(candidate.sessionId)) continue;
+    listMessageKeys.delete(candidate.sessionId);
     clearRemoteHistoryViews(undefined, candidate.sessionId);
     pendingMessagePreviewSessionIds.add(candidate.sessionId);
     forgetWindowCoverage(candidate.sessionId);
@@ -3266,6 +3288,11 @@ export const remoteSessionStore = {
   },
 
   setDeviceSessions(deviceId: string, deviceName: string, rawSessions: readonly RemoteSession[]): void {
+    if (!sessionListRefreshSeen.has(deviceId) || sessionListRefreshArmed.has(deviceId)) {
+      sessionListRefreshSeen.add(deviceId);
+      sessionListRefreshArmed.delete(deviceId);
+      for (const listener of sessionListRefreshListeners) listener(deviceId);
+    }
     let nextSessions = rawSessions.map((s) => stamp(s, deviceId, deviceName));
     const existing = shards.get(deviceId);
     if (existing) {
@@ -3494,11 +3521,17 @@ export const remoteSessionStore = {
     if (retentionForSession(sessionId) === 'schedule') return;
     if (!messageWriteAllowed(sessionId, options.authority)) return;
     const textFlushed = flushPendingTextDelta(sessionId);
-    if ((messages.get(sessionId)?.length ?? 0) > 0) {
+    const existing = messages.get(sessionId) ?? [];
+    const listKeys = listMessageKeys.get(sessionId);
+    listMessageKeys.delete(sessionId);
+    const listOnly = existing.length > 0 && !!listKeys
+      && existing.every((message) => listKeys.has(messageKey(message)));
+    if (existing.length > 0 && !listOnly) {
       if (textFlushed) emit();
       return;
     }
-    const next = normalizeMessages(list);
+    const existingKeys = new Set(existing.map(messageKey));
+    const next = normalizeMessages([...list.filter((message) => !existingKeys.has(messageKey(message))), ...existing]);
     if (next.length === 0) {
       if (textFlushed) emit();
       return;
@@ -3878,6 +3911,7 @@ export const remoteSessionStore = {
       applyMessageWriteRetention(sessionId);
       emit();
     }
+    if (options.listMessage) retainListMessageKeys(sessionId, messageKey(message));
   },
 
   /**
@@ -4498,6 +4532,7 @@ export const remoteSessionStore = {
           // session 页面挂载/useSyncExternalStore 检测到 pending 后仍会重新调 load()，
           // 触发同步失效 → metaChanged=true → 整窗替换，error 卡正常浮现。
           messages.delete(sessionId);
+          listMessageKeys.delete(sessionId);
           sessionMessageSyncMarkers.delete(sessionId);
           // 连续性结论随窗口一起失效:rewind 可能删掉中间的行,清空/回收更是整窗重来。
           // 重置为未知,下一次最新窗口同步会重建(见 sessionWindowCoverage)。
@@ -4746,15 +4781,6 @@ export const remoteSessionStore = {
       ? clearSessionReconnectAttempt(sessionId)
       : false;
     const fullMessageWriteAllowed = fromList || messageWriteAllowed(sessionId);
-    const outputData = isRecord(event.data) ? event.data : null;
-    if (((type === 'text' || type === 'thinking') && readString(outputData, 'text')) || type === 'tool_use') {
-      const current = readSessionRunStatus(sessionId);
-      const responseSpeed = resumeResponseSpeed(current.responseSpeed);
-      if (responseSpeed !== current.responseSpeed) {
-        writeSessionRunStatus(sessionId, { ...current, responseSpeed });
-        emit();
-      }
-    }
     if (type === 'text') {
       if (!fullMessageWriteAllowed) {
         if (reconnectCleared) emit();
@@ -4837,20 +4863,11 @@ export const remoteSessionStore = {
           }
         }
       }
-      const terminalData = isRecord(event.data) ? event.data : null;
-      const rawTurn = isRecord(terminalData?.raw) ? terminalData.raw : null;
-      const current = readSessionRunStatus(sessionId);
-      const cancelled = (!current.isRunning && current.responseSpeed?.outcome === 'cancelled') ||
-        terminalData?.cancelled === true || terminalData?.status === 'cancelled' ||
-        terminalData?.reason === 'send_cancelled_before_acceptance' ||
-        terminalData?.reason === 'turn_continuation_cancelled' ||
-        terminalData?.reason === 'user_stop_unconfirmed_wake_tasks';
-      const failed = !cancelled && (isTerminalMakerErrorEvent(event) || rawTurn?.status === 'failed' || terminalData?.status === 'failed');
-      const terminalErrorChanged = writeSessionRunStatus(sessionId, {
-        ...current,
-        ...(cancelled ? { hasTerminalError: false } : failed ? { hasTerminalError: true } : {}),
-        responseSpeed: stopResponseSpeed(current.responseSpeed, cancelled ? 'cancelled' : failed ? 'failed' : undefined),
-      });
+      const terminalErrorChanged = isTerminalMakerErrorEvent(event)
+        && writeSessionRunStatus(sessionId, {
+          ...readSessionRunStatus(sessionId),
+          hasTerminalError: true,
+        });
       this.setSessionRunning(
         sessionId,
         false,
@@ -4877,7 +4894,6 @@ export const remoteSessionStore = {
         ...current,
         isRunning: true,
         reconnectAttempt,
-        responseSpeed: data?.willRetry === true ? retryResponseSpeed(current.responseSpeed) : current.responseSpeed,
         startedAt: current.startedAt ?? Date.now(),
       });
       if (changed || textFlushed) emit();
@@ -5029,6 +5045,10 @@ export const remoteSessionStore = {
       const generationReliable = typeof data?.generationReliable === 'boolean'
         ? data.generationReliable
         : (isTurnStart ? true : current.generationReliable);
+      // 速度属于产生它的那一轮：新一轮清掉，没带字段的帧沿用最近一次（含收尾平均）。
+      // 标记不可靠又不带速度的帧，表示电脑端撤回了速度（休眠／时钟异常）。
+      const tokenSpeed = readTokenSpeedSnapshot(data?.tokenSpeed)
+        ?? (isTurnStart || data?.generationReliable === false ? undefined : current.tokenSpeed);
       // maker turn 边界 false→true 时清掉上一轮残留的 live task updates:它们是 turn 级
       // live 状态,残留到下一轮会被渲染层的孤儿兜底当作"仍在运行的子 agent"追加到消息流
       // 末尾(桌面端靠 idle demote / clear 清,手机 store 是常驻单例,只能在 turn 边界收口)。
@@ -5055,11 +5075,10 @@ export const remoteSessionStore = {
         status: rawStatus ?? current.status,
         tokenUsage,
         outputTokens,
-        responseSpeed: mergeResponseSpeedStatus(current.responseSpeed,
-          readResponseSpeedSnapshot(data?.responseSpeed, Date.now()), isRunning, isTurnStart),
         generationDurationMs,
         generationActive,
         generationReliable,
+        tokenSpeed,
       };
       if (
         writeSessionRunStatus(sessionId, next)
@@ -5181,6 +5200,7 @@ export const remoteSessionStore = {
     newMakerWorktreePreferences.clear();
     newMakerWorktreeBranchPreferences.clear();
     messages.clear();
+    listMessageKeys.clear();
     emptySessionMessageStructureTokens.clear();
     livePlanSnapshots.clear();
     if (pendingInteractions.size > 0) {
@@ -5226,6 +5246,8 @@ export const remoteSessionStore = {
     nextSessionAccessOrder = 0;
     sessionDeviceIndex.clear();
     reseedHandlers.clear();
+    sessionListRefreshArmed.clear();
+    sessionListRefreshSeen.clear();
     pendingTitlePreview.clear();
     mergedSessions = [];
     mergedSessionById.clear();
@@ -5258,7 +5280,14 @@ export const remoteSessionStore = {
   },
 
   requestReseed(deviceId: string): void {
+    sessionListRefreshArmed.add(deviceId);
     reseedHandlers.get(deviceId)?.forEach((handler) => handler());
+  },
+
+  /** Whole-list reads that may follow missed pushes (first read per app run, reconnect reseed). */
+  onSessionListRefreshAfterGap(listener: (deviceId: string) => void): () => void {
+    sessionListRefreshListeners.add(listener);
+    return () => { sessionListRefreshListeners.delete(listener); };
   },
 
   getSessionDeviceId(sessionId: string): string | undefined {
@@ -5638,7 +5667,7 @@ function clearLiveGenerationOnWideRunStart(
   return {
     ...next,
     outputTokens: 0,
-    responseSpeed: undefined,
+    tokenSpeed: undefined,
     generationDurationMs: 0,
     generationActive: false,
     generationReliable: true,
@@ -5659,9 +5688,6 @@ function writeMakerTurnRunning(sessionId: string, running: boolean): boolean {
 
 function writeSessionRunStatus(sessionId: string, next: RemoteSessionRunStatus): boolean {
   const current = readSessionRunStatus(sessionId);
-  if (!next.isRunning && next.responseSpeed?.phase !== 'complete') {
-    next = { ...next, responseSpeed: stopResponseSpeed(next.responseSpeed), generationActive: false };
-  }
   if (next.isRunning && !current.isRunning && current.hasTerminalError) {
     next = { ...next, hasTerminalError: false };
   }

@@ -1,5 +1,3 @@
-import { responseSpeedActivity, responseSpeedHistory } from "@cindy/maker-shared/usage-format";
-import type { ResponseSpeedSnapshot } from "@cindy/maker-shared/usage-format";
 import { modelNeedsReselection } from '@/session/modelReselection';
 import { getCachedDeviceProviders } from '@/device-link/deviceProvidersCache';
 import { MountOnFirstOpen } from '@/session/MountOnFirstOpen';
@@ -20,6 +18,7 @@ import { nativeComposerAvailable } from '@/session/ComposerNativeInput';
 import { getActiveMobileSessionRealm } from '@/config/env';
 import { FailedScheduleNotice } from '@/session/FailedScheduleNotice';
 import { shouldShowFailedScheduleNotice, type FailedScheduleRunSnapshot } from '@cindy/maker-shared/schedule-model';
+import type { TokenSpeedSnapshot } from '@cindy/maker-shared/usage-format';
 import { CompanionHeader } from '@/session/CompanionHeader';
 import { useHiddenHistoryChase } from '@/session/hiddenHistoryChase';
 import { collectCompanionPluginInvocations } from '@/session/pluginInvocations';
@@ -374,6 +373,7 @@ import {
 } from '@/session/sessionAgentSwitch';
 import { formatProviderAccountLabel, resolveSessionUsageAccount } from '@/session/sessionUsageAccount';
 import { useRemoteAgentCatalogs } from '@/session/useRemoteAgentCatalogs';
+import { useSessionProviderGroup } from '@/session/useSessionProviderGroup';
 import {
   drainComposerAnnotationSubmissions,
   drainComposerAttachments,
@@ -2636,6 +2636,22 @@ export default function SessionScreen() {
     keepDeviceIds: remoteAgentKeepDeviceIds,
     keepOnly: !(agentLocationMovable && modelSheetOpen),
   });
+  // 供应商组(provider-groups.md §10):这个任务此刻归哪个组,选择器每次打开问一次被控电脑。归组的任务在组那一项里
+  // 选模型 = 留在此刻运行的那台只换模型(不弹换电脑确认);挂着换电脑的意图时下一条消息就不在原处,不按组显示。
+  const currentProviderId = currentSession?.providerId ?? null;
+  const sessionProviderGroup = useSessionProviderGroup({
+    enabled: agentLocationMovable && modelSheetOpen && !intentChangesAgentLocation(agentSwitchIntent),
+    hostDeviceId: deviceId,
+    sessionId,
+    routeKey: JSON.stringify([currentAgentDeviceId, currentProviderId]),
+  });
+  const remoteProviderGroup = useMemo(
+    () => ({
+      bound: sessionProviderGroup,
+      running: { deviceId: currentAgentDeviceId, providerId: currentProviderId },
+    }),
+    [sessionProviderGroup, currentAgentDeviceId, currentProviderId],
+  );
   // 协同 Worker 的模型选择器:与任务模型列表同一份远程供应商(其他电脑与分享)，Worker 的 Agent
   // 现在选的位置即使掉线也保留。只在 Worker 选择器打开时读。
   const workerAgentKeepDeviceIds = useMemo(
@@ -4449,6 +4465,18 @@ export default function SessionScreen() {
     return () => clearTimeout(timer);
   }, [composerActivitySignal, sessionId]);
   const showComposerActivity = composerActivitySignal || streamingSticky === sessionId;
+  // 自愈 / 供应商组换电脑进行中(错误先不呈现)：输入框上方与消息流里同一个说法，不显示「请求失败」(与桌面一致，
+  // docs/product-rules/provider-groups.md §6.1「换电脑期间不报错」)。
+  const pendingRecoveryStatus = useMemo(() => {
+    const pending = inputProjection.autoResumePending;
+    if (!pending) return null;
+    if (readRecord(pending.groupSwitchPending)) return { label: t('message.systemCard.autoResume.groupSwitchPending') };
+    const attempt = typeof pending.attempt === 'number' ? pending.attempt : 0;
+    const maxAttempts = typeof pending.maxAttempts === 'number' ? pending.maxAttempts : 0;
+    return attempt > 0 && maxAttempts > 0
+      ? { label: t('message.systemCard.autoResume.pendingWithProgress', { attempt, total: maxAttempts }) }
+      : { label: t('message.systemCard.autoResume.pending') };
+  }, [inputProjection.autoResumePending, t]);
   useEffect(() => {
     // 计时起点跟着去抖后的信号走:否则空隙一过 startedAt 被重置,活动条从 0s 重新数。
     setComposerActivityStartedAt(showComposerActivity ? Date.now() : null);
@@ -4709,7 +4737,7 @@ export default function SessionScreen() {
       const historyItems = historyView.snapshot.ready ? buildMobileHistoryRenderItems({
         view: historyView.view, snapshot: historyView.snapshot, messages: projectedMessages,
         streaming: isMessageListStreaming, sessionId, sessionSource: currentSession?.source, taskUpdates,
-        pendingHandoff: handoff.pending, localUserClientIds,
+        pendingHandoff: handoff.pending, staleTail: handoff.tail, localUserClientIds,
       }) : builtWindow.items;
       let items = insertMobileForkOriginItem(
         // 孤儿 agent_task 兜底用 maker status 驱动的权威 turn 边界 gate,与 store 的
@@ -4751,7 +4779,7 @@ export default function SessionScreen() {
         stablePrefixItemCount,
       };
     },
-    [optimisticUsers, currentSession?.source, localUserClientIds, renderMessageStructureToken, historyView.snapshot, historyView.view, handoff.pending, errorTailClientId, forkOrigin, i18nInstance.language, inputProjection.autoResumePending, isMessageListStreaming, makerTurnRunning, messageStructureToken, projectedMessages, projectedMessageStructureChangedIndexes, sessionId, taskUpdates],
+    [optimisticUsers, currentSession?.source, localUserClientIds, renderMessageStructureToken, historyView.snapshot, historyView.view, handoff.pending, handoff.tail, errorTailClientId, forkOrigin, i18nInstance.language, inputProjection.autoResumePending, isMessageListStreaming, makerTurnRunning, messageStructureToken, projectedMessages, projectedMessageStructureChangedIndexes, sessionId, taskUpdates],
   );
   // Search, media and sharing only see durable user rows. Local user boundaries
   // still participate in grouping and in the message list below.
@@ -9695,7 +9723,15 @@ export default function SessionScreen() {
               onSelect: selectUnifiedComposerModel,
               // 远程 Agent:其他电脑上开放了远程调用的供应商接在后面,每个供应商一段、标题带电脑名。
               ...(agentLocationMovable
-                ? { remote: { catalogs: remoteAgentCatalogs, selectedDeviceId: nextAgentDeviceId } }
+                ? {
+                  remote: {
+                    catalogs: remoteAgentCatalogs,
+                    selectedDeviceId: nextAgentDeviceId,
+                    // 供应商组:组里其他电脑收进组那一项;归组的任务在组那一项里选模型留在此刻运行的那台。
+                    hostDeviceId: deviceId,
+                    providerGroup: remoteProviderGroup,
+                  },
+                }
                 : {}),
             }}
             activeModelId={modelSheetSelection.model}
@@ -10243,7 +10279,7 @@ export default function SessionScreen() {
                   例外:新建任务慢发送时这一行要说明卡在哪一步,不能被同步占位藏掉。
                   判据必须带 messageCount:syncingWhileEmpty 只要 loading 就为真,而收口后
                   还会再来几轮 load(实测日志),只看它会让已有消息的会话反复熄灭活动条。 */}
-              {!companionChat && (showComposerActivity || remoteSessionRunStatus.responseSpeed?.phase === 'complete') && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
+              {!companionChat && (showComposerActivity || pendingRecoveryStatus) && (creationSlowPhase !== null || !(syncingWhileEmpty && !hasRenderedMessages)) ? (
                 <View
                   style={[
                     styles.composerActivityFrame,
@@ -10255,15 +10291,16 @@ export default function SessionScreen() {
                     key={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
                     sessionKey={JSON.stringify([auth.accountGeneration, deviceId, sessionId])}
                     reconnectAttempt={remoteSessionRunStatus.reconnectAttempt}
+                    pendingRecovery={pendingRecoveryStatus}
                     sideTaskRunning={remoteSessionRunStatus.sideTaskRunning}
                     startedAt={composerActivityStartedAtMs}
                     rateStartedAt={remoteSessionRunStatus.startedAt}
                     streaming={isSessionStreaming}
                     tokenUsage={composerActivityTokenUsage}
                     outputTokens={remoteSessionRunStatus.outputTokens}
-                    responseSpeed={remoteSessionRunStatus.responseSpeed}
                     generationDurationMs={remoteSessionRunStatus.generationDurationMs}
                     generationReliable={remoteSessionRunStatus.generationReliable}
+                    tokenSpeed={remoteSessionRunStatus.tokenSpeed}
                     generationActive={remoteSessionRunStatus.generationActive}
                     visible={showComposerActivity}
                     slowSendPhase={creationSlowPhase}
@@ -12148,15 +12185,16 @@ function ComposerActivityStatus({
   availableRegion,
   sessionKey,
   reconnectAttempt,
+  pendingRecovery = null,
   sideTaskRunning,
   startedAt,
   rateStartedAt = startedAt,
   streaming = false,
   tokenUsage,
-  responseSpeed,
-  outputTokens,
-  generationDurationMs,
-  generationReliable,
+  outputTokens: reportedOutputTokens,
+  generationDurationMs: reportedGenerationDurationMs,
+  generationReliable: reportedGenerationReliable,
+  tokenSpeed,
   generationActive,
   visible,
   slowSendPhase = null,
@@ -12164,20 +12202,27 @@ function ComposerActivityStatus({
   availableRegion?: LayoutRect;
   sessionKey: string;
   reconnectAttempt: RemoteSessionRunStatus['reconnectAttempt'];
+  /** 自愈 / 供应商组换电脑进行中：只显示这一行状态(与消息流里的进行中行同一个说法)。 */
+  pendingRecovery?: { label: string; attempt?: number; maxAttempts?: number } | null;
   sideTaskRunning: boolean;
   startedAt: number | null;
   rateStartedAt?: number | null;
   streaming?: boolean;
   tokenUsage: number;
-  responseSpeed?: ResponseSpeedSnapshot;
   outputTokens: number;
   generationDurationMs: number;
   generationReliable: boolean;
+  /** Host-measured live tok/s; replaces the usage-counter estimate when present. */
+  tokenSpeed?: TokenSpeedSnapshot;
   generationActive: boolean;
   visible: boolean;
   /** Set once a new task's creation has waited past the slow-send delay. */
   slowSendPhase?: SlowSendPhase | null;
 }) {
+  // Host speed counts and times generation itself; usage counters stay the fallback.
+  const outputTokens = tokenSpeed?.tokens ?? reportedOutputTokens;
+  const generationDurationMs = tokenSpeed?.elapsedMs ?? reportedGenerationDurationMs;
+  const generationReliable = tokenSpeed ? true : reportedGenerationReliable;
   const styles = useThemedStyles(makeStyles);
   const pillStyles = useThemedStyles(makeComposerActivityPillStyles);
   const { colors } = useTheme();
@@ -12200,43 +12245,50 @@ function ComposerActivityStatus({
   // Elapsed uses the local fallback. Sampling keeps the raw remote start so a
   // terminal null is not a new turn, and a local send is not the previous rate.
   const samplerStartedAt = rateStartedAt === undefined ? startedAt : rateStartedAt;
-  const legacyRateHistory = useRunningTokenRateHistory({
+  const rateHistory = useRunningTokenRateHistory({
     sessionKey,
-    generationActive,
     startedAt: samplerStartedAt,
     outputTokens,
     generationDurationMs,
     generationReliable: generationReliable && visible && !reconnectAttempt && !sideTaskRunning,
+    tokenSpeed,
     streaming,
   });
 
-  const rateHistory = responseSpeed ? responseSpeedHistory(responseSpeed)
-    : generationActive === false ? { ...legacyRateHistory, latestRate: null } : legacyRateHistory;
-  const completedSpeed = !visible && responseSpeed?.phase === 'complete';
-  const speedActivity = responseSpeed ? responseSpeedActivity(responseSpeed) : null;
-  if (!visible && !completedSpeed) return null;
+  if (pendingRecovery && !reconnectAttempt) {
+    // 自愈 / 换电脑进行中：只显示这一行状态，不带耗时与速率(这一轮还没有结局)。
+    return (
+      <View
+        pointerEvents="box-none"
+        style={pillStyles.composerActivityStatus}
+        testID="session.composerActivityStatus"
+      >
+        <ComposerActivityPill label={pendingRecovery.label}>
+          {pendingRecovery.attempt !== undefined && pendingRecovery.maxAttempts !== undefined ? (
+            <Text style={[pillStyles.composerActivityStatusText, pillStyles.composerActivityProgressText]}>
+              {pendingRecovery.attempt}/{pendingRecovery.maxAttempts}
+            </Text>
+          ) : null}
+        </ComposerActivityPill>
+      </View>
+    );
+  }
+  if (!visible) return null;
 
-  const elapsedText = completedSpeed
-    ? t(responseSpeed?.outcome === 'failed' ? 'session.screen.responseFailed'
-      : responseSpeed?.outcome === 'cancelled' ? 'session.screen.responseCancelled' : 'session.screen.lastGeneration')
-    : speedActivity === 'retrying' ? t('session.screen.responseRetrying')
-    : responseSpeed?.phase === 'waiting'
-    ? t('session.screen.responseWaiting', { seconds: ((responseSpeed.waitingMs + Math.max(0, Date.now() - responseSpeed.sampledAt)) / 1000).toFixed(1) })
-    : speedActivity === 'quiet' ? t('session.screen.responsePending') : formatComposerActivityElapsed(elapsed);
+  const elapsedText = formatComposerActivityElapsed(elapsed);
   const tokenCount = formatComposerActivityTokenCount(tokenUsage);
   const tokenText = t('session.screen.tokenCount', { tokens: tokenCount });
   const tokenA11yText = t('session.screen.tokenCountFull', { tokens: tokenCount });
   const showElapsedOnly = sideTaskRunning || Boolean(reconnectAttempt);
   const rateValue = formatComposerActivityRateValue(showElapsedOnly ? null : rateHistory.latestRate);
-  const canShowRateDetails = !showElapsedOnly && (Boolean(responseSpeed) || (generationReliable
+  const canShowRateDetails = !showElapsedOnly
+    && generationReliable
     && outputTokens > 0
     && Number.isFinite(outputTokens)
     && Number.isFinite(generationDurationMs)
-    && generationDurationMs > 0));
+    && generationDurationMs > 0;
   const rateText = rateValue
-    ? responseSpeed && (responseSpeed.phase !== 'complete' || responseSpeed.estimated)
-      ? t('session.screen.estimatedTokenRate', { rate: rateValue })
-      : t('session.screen.tokenRate', { rate: rateValue })
+    ? t('session.screen.tokenRate', { rate: rateValue })
     : null;
   const showUsageMeta = !showElapsedOnly && (Boolean(rateText) || tokenUsage > 0);
   const usageMeta = (
@@ -12278,15 +12330,9 @@ function ComposerActivityStatus({
             ? 'session.screen.rateLimitRetrying'
             : 'session.screen.networkReconnecting',
       )
-    // 发送等待超过阈值时,同一行先说明卡在哪一步;创建完成后回到下面的「思考中」等状态。
+    // 发送等待超过阈值时,同一行先说明卡在哪一步;创建完成后回到「思考中」。
     : slowSendPhase ? t(`session.new.slowSend.${slowSendPhase}`)
-    : t(speedActivity === 'failed' ? 'session.screen.responseFailed'
-      : speedActivity === 'cancelled' ? 'session.screen.responseCancelled'
-        : speedActivity === 'retrying' ? 'session.screen.responseRetrying'
-          : speedActivity === 'waiting' || speedActivity === 'quiet' ? 'session.screen.responsePending'
-        : speedActivity === 'tool' ? 'session.screen.toolRunning'
-          : speedActivity === 'paused' ? 'session.screen.generationPaused'
-            : speedActivity === 'generating' ? 'session.screen.responseGenerating' : 'session.screen.thinking');
+    : t('session.screen.thinking');
 
   return (
     <View
@@ -12294,15 +12340,14 @@ function ComposerActivityStatus({
       style={pillStyles.composerActivityStatus}
       testID="session.composerActivityStatus"
     >
-      {visible && <ComposerActivityPill label={activityText} live={Boolean(slowSendPhase) && !reconnectAttempt}>
+      <ComposerActivityPill label={activityText} live={Boolean(slowSendPhase) && !reconnectAttempt}>
         {reconnectAttempt ? (
           <Text style={[pillStyles.composerActivityStatusText, pillStyles.composerActivityProgressText]}>
             {reconnectAttempt.attempt}/{reconnectAttempt.maxAttempts}
           </Text>
         ) : null}
-      </ComposerActivityPill>}
+      </ComposerActivityPill>
       <RunningTokenRatePopover
-        responseSpeed={responseSpeed}
         key={sessionKey}
         enabled={canShowRateDetails}
         availableRegion={availableRegion}
