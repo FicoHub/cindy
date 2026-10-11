@@ -131,7 +131,6 @@ import {
 } from '../shared/auto-review-decision.js';
 import type { ReviewableAction } from '../shared/auto-review.js';
 import { UsageTracker } from '../shared/usage-tracker.js';
-import { calibratedResponseDuration } from '@cindy/maker-shared/usage-format';
 import { attachLiveGeneration, sampleGenerationDuration } from '../shared/live-generation-snapshot.js';
 import { getDefaultImageResizer } from '../shared/image-resizer.js';
 import { formatManagedImageReferences } from '../shared/managed-image-reference.js';
@@ -172,8 +171,8 @@ import {
   classifyCodexError,
   translateErrorNotification,
   translateItemNotification,
-  observeCodexItemTiming,
   beginCodexGenerationTurn,
+  codexGenerationDurationMs,
   finalizeCodexGenerationTurn,
   pauseCodexGeneration,
   resetCodexGenerationTiming,
@@ -1182,6 +1181,13 @@ const TIGHTEN_INTERRUPT_ACK_TIMEOUT_MS = 10_000;
 // bounded so a live-but-unresponsive daemon cannot freeze the queued message or
 // ignore Stop.
 const PROFILE_LIFECYCLE_ACK_TIMEOUT_MS = 10_000;
+// 生命周期请求内层 host.request 在接受期限之外保留的晚到响应窗口(#5772 review): 外层
+// requestProfileLifecycle 到点按「did not acknowledge」收口, 但请求可能已在服务端执行
+// (thread/start 可能已建出新线程)。内层必须严格晚于外层收口, 晚到响应才能到达 resolveOnce
+// 的迟到分支跑 onLateResolve 清理(退订脱线线程 / 退役不确定的 host); 两层同上限会让
+// AppServerClient 到点删除 pending、丢弃晚到响应, 清理永远不会执行。窗口到点后由
+// AppServerClient 显式删除 pending, 作为超时响应的显式清理。
+const PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS = 5 * 60_000;
 
 // The Browser fallback route is resolved before thread/start, so the app-server
 // can only answer its readiness query against the global MCP inventory. Keep
@@ -3702,7 +3708,7 @@ assertRouteCurrent();
     const usageTracker = new UsageTracker();
     const translatorRt: CodexRuntimeState = newCodexRuntimeState();
     const liveUsageSnapshot = () => attachLiveGeneration(usageTracker.snapshot(), {
-      responseSpeed: translatorRt.responseSpeed.snapshot(),
+      tokenSpeed: translatorRt.tokenSpeed.snapshot(),
       outputTokens: usageTracker.getTurnUsage().output,
       durationMs: translatorRt.generationOutputDurationMs,
       openStartedAt: translatorRt.generationStartedAt,
@@ -6422,9 +6428,10 @@ assertRouteCurrent();
 
     function profileLifecycleRpcOptions(): { timeoutMs: number; extendWhileProgress?: RequestProgressDeadline } {
       // Profile refresh/replacement has its own acceptance wrapper. Keep the
-      // historical short bound for local sessions, but make the wrapper follow
-      // the same progress-aware deadline as thread/start on hosted links.
-      if (!hosted?.linkActivity) return { timeoutMs: PROFILE_LIFECYCLE_ACK_TIMEOUT_MS };
+      // historical short bound for local sessions; hosted sessions follow the
+      // same progress-aware deadline as thread/start (old wiring without tunnel
+      // activity records keeps the fixed 60s bound).
+      if (!hosted) return { timeoutMs: PROFILE_LIFECYCLE_ACK_TIMEOUT_MS };
       return criticalThreadRpcOptions();
     }
 
@@ -7295,6 +7302,19 @@ assertRouteCurrent();
         let settled = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
         const rpcOptions = profileLifecycleRpcOptions();
+        // 内层 host.request 的三条边界(基准 / 静默 / 顺延封顶)都比外层接受期限多留一段
+        // 晚到响应窗口, 保证任何收口路径下内层都严格晚于外层(见
+        // PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS)。
+        const lateResponseOptions: { timeoutMs: number; extendWhileProgress?: RequestProgressDeadline } = rpcOptions.extendWhileProgress
+          ? {
+              timeoutMs: rpcOptions.timeoutMs + PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS,
+              extendWhileProgress: {
+                ...rpcOptions.extendWhileProgress,
+                idleMs: rpcOptions.extendWhileProgress.idleMs + PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS,
+                maxMs: rpcOptions.extendWhileProgress.maxMs + PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS,
+              },
+            }
+          : { timeoutMs: rpcOptions.timeoutMs + PROFILE_LIFECYCLE_LATE_RESPONSE_GRACE_MS };
         const startedAt = Date.now();
         let extended = false;
         const cleanup = () => {
@@ -7366,7 +7386,7 @@ assertRouteCurrent();
         timer = setTimeout(expire, rpcOptions.timeoutMs);
         timer.unref?.();
         try {
-          request(rpcOptions).then(
+          request(lateResponseOptions).then(
             resolveOnce,
             (error) => rejectOnce(
               error instanceof Error ? error : new Error(String(error)),
@@ -10804,7 +10824,6 @@ assertRouteCurrent();
         text?: unknown;
       } | null | undefined;
       if (!candidate || candidate.type !== 'plan') return false;
-      translatorRt.responseSpeedHasUnobservedOutput = true;
       if (typeof candidate.text === 'string') proposedPlanText = candidate.text;
       return true;
     }
@@ -10976,16 +10995,8 @@ assertRouteCurrent();
       const realTurnUsage = usageTracker.getTurnUsage();
       const realTurnUsageSegments = usageTracker.getTurnUsageSegments();
       finalizeCodexGenerationTurn(translatorRt, turn.id);
-      const unmeasuredOutputOnly = translatorRt.responseSpeedHasUnobservedOutput
-        && translatorRt.responseSpeed.snapshot().outputTokens === 0;
-      // With no sampled units, retain the real total but expose no rate. Mixed
-      // turns retain only their observed estimates, never a whole-turn scale.
-      translatorRt.responseSpeed.finish(realTurnUsageSegments.length > 0
-        && (!translatorRt.responseSpeedHasUnobservedOutput || unmeasuredOutputOnly)
-        ? realTurnUsage.output : undefined);
-      if (!translatorRt.generationTimingReliable || unmeasuredOutputOnly) translatorRt.responseSpeed.invalidate();
-      const speedSnapshot = translatorRt.responseSpeed.snapshot();
-      const generationDurationMs = calibratedResponseDuration(speedSnapshot, realTurnUsage.output);
+      translatorRt.tokenSpeed.stop(realTurnUsage.output);
+      const generationDurationMs = codexGenerationDurationMs(translatorRt);
       const codexDoneUsage = {
         promptTokens: realTurnUsage.input,
         completionTokens: realTurnUsage.output,
@@ -10996,9 +11007,12 @@ assertRouteCurrent();
         cachedTokens: realTurnUsage.cacheRead,
         cacheCreationTokens: realTurnUsage.cacheCreate,
         segments: realTurnUsageSegments,
-        // Persist TPS timing only when observed stream time pairs with real turn output.
+        // With usage, exclude post-output finalization. Without usage, retain
+        // the measured duration metadata (zero output cannot produce a rate).
         ...(generationDurationMs !== undefined ? {
-          durationMs: generationDurationMs,
+          durationMs: realTurnUsage.output > 0
+            ? translatorRt.generationOutputDurationMs || undefined
+            : generationDurationMs,
         } : {}),
         ...(typeof turn.durationMs === 'number' && Number.isFinite(turn.durationMs)
           ? { turnDurationMs: turn.durationMs }
@@ -11202,7 +11216,7 @@ assertRouteCurrent();
           data: {
             status: 'Done',
             ...attachLiveGeneration(endSnap, {
-              responseSpeed: translatorRt.responseSpeed.snapshot(),
+              tokenSpeed: translatorRt.tokenSpeed.snapshot(),
               outputTokens: realTurnUsage.output,
               durationMs: translatorRt.generationOutputDurationMs,
               openStartedAt: null,
@@ -12397,12 +12411,10 @@ assertRouteCurrent();
           params.turnId,
           'started',
         );
-        observeCodexItemTiming(translatorRt, 'started', translatedParams);
         pushItemStatus(translatedItem);
         translateItemNotification('started', translatedParams, eventQueue, {
           rt: translatorRt,
           log,
-          timingObserved: true,
           onCompactBoundary: handleCompactBoundary,
         });
         // 重放帧后发:translator 刚推的 running 帧不得把已重放出的终态盖回去。
@@ -12537,12 +12549,6 @@ assertRouteCurrent();
           log,
           onCompactBoundary: handleCompactBoundary,
         });
-        // Close the observed response after translating any final text that
-        // was absent from deltas. A later usage/turn terminal calibrates the
-        // counts without charging its delivery lag as model generation.
-        if (!isLateCollabTerminal && translatedItem.type === 'agentMessage') {
-          translatorRt.responseSpeed.pause();
-        }
         // A late V1 spawn completion is the spawn tool closing, not necessarily
         // the child closing. Reassert a running compact state, or an explicit
         // failed/stopped tracker state; a completed replay would only duplicate

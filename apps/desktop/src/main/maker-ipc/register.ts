@@ -36,13 +36,18 @@ import {
   writeProviderGroupBinding,
 } from '../provider-group/bindings.js';
 import { getProviderGroupGuestSwitch } from '../provider-group/guestSwitch.js';
+import { currentProviderPartyUsageStore } from '../usage/providerPartyUsageStore.js';
+import { recordSessionProviderPartyUsage } from './sessionProviderPartyUsage.js';
 import { createProviderGroupLeaseReporter, type ProviderGroupLeaseReporter } from '../provider-group/leaseReporter.js';
+import { ensureProviderGroupUsageReporter, notifyProviderGroupUsage } from '../provider-group/usageReportRuntime.js';
+import { PROVIDER_GROUP_USAGE_ENSURE_INTERVAL_MS, PROVIDER_GROUP_USAGE_STARTUP_DELAY_MS } from '../provider-group/usageReporter.js';
 import {
   getProviderGroupDirectory,
   getProviderGroupRemoteClient,
   getProviderGroupRemoteGroups,
   getProviderGroupRouter,
   setProviderGroupLocalLoad,
+  setProviderGroupSessionGroupReader,
   setProviderGroupTurnProbe,
 } from '../provider-group/runtime.js';
 import { countProviderRunningTurns, type ProviderLocalLoadRoute } from '../provider-group/localLoad.js';
@@ -58,7 +63,7 @@ import {
 } from '../provider-group/service.js';
 import { createProviderGroupHeldTurnErrors } from '../provider-group/heldTurnErrors.js';
 import { createProviderGroupHeldWorkerTerminals } from '../provider-group/heldWorkerTerminals.js';
-import { classifyProviderGroupSwitchCause } from '../provider-group/switchCause.js';
+import { providerGroupSwitchCause } from '../provider-group/failurePolicy.js';
 import { listProviderGroups, readProviderGroup } from '../provider-group/store.js';
 import {
   isRemoteProviderInvocationAllowed,
@@ -476,7 +481,7 @@ import {
   orcaWorkerCreationReservations,
   sessions,
 } from '../localDb/schema.js';
-import { nextBotModelRoute, normalizeBotModelChain } from '../../shared/botModelChain.js';
+import { nextBotModelRoute, normalizeBotModelChain, type BotModelRoute } from '../../shared/botModelChain.js';
 import { createBotModelRouteReconciler } from './botModelRouteReconciler.js';
 import { readEffectiveBotModelChain, readEffectiveBotModelSelection } from '../maker-host/bot-model-chain-settings-store.js';
 import {
@@ -843,6 +848,7 @@ import {
 import {
   installDesktopInteractionHandler,
   installInteractionLifecycleObserver,
+  noteInteractionRouteSteer,
 } from './interactionRouter.js';
 import { createSharedPermission, type SharedPermission } from './sharedPermission';
 import { registerMakerMessageDeleteHandler } from './messageDeleteHandler.js';
@@ -935,6 +941,7 @@ import {
   performSessionAgentSwitch,
   projectPendingAgentSwitchIntent,
   registerMakerSessionAgentSwitchHandler,
+  relocateForFreshStart,
   settleSystemRouteSwitchIntent,
   type MakerSessionAgentSwitchHandlerDeps,
 } from './sessionAgentSwitchHandler.js';
@@ -1215,6 +1222,7 @@ import {
   isDeviceLinkInvoke,
   isMobileControllerInvoke,
   readDeviceLinkInvokeSourceDevice,
+  runOutsideDeviceLinkInvokeContext,
 } from '../device-link/invoke-context.js';
 import { stampSharedTaskInput } from './sharedTaskInput.js';
 import { createSharedTaskContextUsageGuard } from './sharedTaskContextUsage.js';
@@ -1263,6 +1271,7 @@ import {
   publishUiTurnDispatching,
   publishUiTurnUndispatched,
 } from './uiContinuationSignal.js';
+import { channelTurnSourceFor, noteChannelTurnSource } from './channelTurnSignal.js';
 import { readSilentStopAutoResumeSettings } from '../maker-host/silent-stop-auto-resume-store.js';
 import {
   AutoResumeBookkeeping,
@@ -1685,16 +1694,33 @@ const providerGroupHeldWorkerTerminals = createProviderGroupHeldWorkerTerminals<
   log: (message, meta) => log.info(message, meta),
 });
 
-/** 换电脑这一趟有了结局：换成了(续跑已发出)两份暂存都丢掉。 */
+/**
+ * 换成了、续跑已进队但还没派发出去的那次登记(任务 → 登记 id)：协同 Worker 暂存的终态等续跑真正派发出去才丢掉；
+ * 续跑没派出去(打开那台又失败、被丢弃)时把这次异常终止回报给 Lead，Worker 不会一直停在运行中。
+ */
+const providerGroupContinuationHolds = new Map<string, number>();
+
+/** 换电脑这一趟有了结局：换成了(续跑已进队)错误不再落；Worker 的终态等续跑派发出去再丢(见上)。 */
 function discardProviderGroupHeld(sessionId: string, holdId: number): void {
-  providerGroupHeldWorkerTerminals.discard(sessionId, holdId);
   providerGroupHeldErrors.discard(sessionId, holdId);
+  if (providerGroupHeldWorkerTerminals.has(sessionId, holdId)) providerGroupContinuationHolds.set(sessionId, holdId);
 }
 
 /** 不再换了(交回原有处理、用户接手、迟迟没有结局)：放出错误，并把 Worker 的异常终止回报给 Lead。 */
 function releaseProviderGroupHeld(sessionId: string, holdId: number): void {
   providerGroupHeldErrors.release(sessionId, holdId);
+  // 已换成、续跑在路上的那次由续跑的派发结果结算。
+  if (providerGroupContinuationHolds.get(sessionId) === holdId) return;
   providerGroupHeldWorkerTerminals.release(sessionId, holdId);
+}
+
+/** 换电脑后的续跑有了派发结果：派发出去了丢掉 Worker 暂存的终态，没派出去回报给 Lead。 */
+function settleProviderGroupContinuation(sessionId: string, dispatched: boolean): void {
+  const holdId = providerGroupContinuationHolds.get(sessionId);
+  if (holdId === undefined) return;
+  providerGroupContinuationHolds.delete(sessionId);
+  if (dispatched) providerGroupHeldWorkerTerminals.discard(sessionId, holdId);
+  else providerGroupHeldWorkerTerminals.release(sessionId, holdId);
 }
 
 /** 换电脑这一趟久久没有结局(交接卡住等)时不再瞒着：先把错误放出来，换成了照常续跑。 */
@@ -1769,6 +1795,8 @@ function settleUndispatchedInterruptedAutoResume(
   // 额度重置后的自动继续不走中断自愈记账(sessionTotal 刻意为 0),只需恢复原错误与手动重试入口。
   if (item.autoResume === true && item.autoResumeInfo?.reason === USAGE_LIMIT_RESET_AUTO_RESUME_REASON) {
     agentInputCoordinatorHolder?.restoreAutoResumeRecovery(sessionId, item.clientId, null);
+    // 供应商组换电脑后的续跑没派出去：协同 Worker 的这次异常终止回报给 Lead。
+    settleProviderGroupContinuation(sessionId, false);
     return false;
   }
   const attemptToken = autoResumeAttemptToken(item);
@@ -3627,7 +3655,13 @@ export function applyDirectoryGrants(
         return accepted;
       },
       persist: (patch) => persistSessionFields(sessionId, patch),
-      terminate: () => maker.closeSession(sessionId),
+      // 附加目录：远程 Agent 正在跑一轮时不当场关——本机执行器先改、回滚时已回到原来的目录(文件读写由本机执行器
+      // 把关)，库里也还是原来那份，那台只是暂时连不上；这一轮结束后再重建。当场关会把进行中的一轮杀掉，且不是那台
+      // 电脑的问题，供应商组也不会换电脑(docs/product-rules/provider-groups.md §6.1「本机的操作不打断进行中的远程一轮」)。
+      // 可写目录不在此列：本机执行器在对方确认后才改，回滚不到时可能留着更宽的可写目录，照旧当场关。
+      terminate: () => (axis === 'extraDirs' && sess?.agentDeviceId && sess.isTurnRunning()
+        ? maker.closeSessionIfCurrent(sess, 'runtime-refresh', { afterCurrentTurn: true })
+        : maker.closeSession(sessionId)),
     });
     if (result.changed || result.rejectedCount > 0) log.info(label, {
       sessionId,
@@ -3698,6 +3732,14 @@ async function syncLibraryReadonlyExtraDir(
       const remote = await sessionIsRemote(sessionId);
       if (generation !== libraryExtraDirSyncGeneration) return 'superseded';
       const nextRoot = !remote && grantRoot && sessionId === focused ? grantRoot : null;
+      // 没有 Library 槽可撤、这次也不给：什么都不变，不碰运行中的会话。否则每次切换焦点都要把每个开着的任务的附加
+      // 目录重新下发一遍，远程 Agent 那台恰好连不上时回滚失败、会话被关，正在跑的一轮就此中断(2026-10-11 实测)。
+      // 运行时的 Library 槽只会来自已落库的那份(启动从库里读，改动先改运行时再落库，落库失败回滚)，库里没有即运行时没有。
+      if (!nextRoot) {
+        const persisted = await readSessionExtraDirsFromDb(sessionId).catch(() => null);
+        if (generation !== libraryExtraDirSyncGeneration) return 'superseded';
+        if (persisted && !persisted.some(isLibraryExtraDirSlot)) continue;
+      }
       try {
         const applied = await applyLibraryReadonlyExtraDir(sessionId, nextRoot);
         if (nextRoot && applied?.some(isLibraryExtraDirSlot)) granted = true;
@@ -4025,6 +4067,11 @@ export function isSessionInTurn(sessionId: string): boolean {
 export function getSessionInputProvenance(sessionId: string) {
   const input = agentInputCoordinatorHolder?.getAcceptedInputProvenance(sessionId) ?? null;
   return { input, executing: !!input || !!getMakerIfReady()?.getSession(sessionId)?.isTurnRunning() };
+}
+
+/** Owner-authored active input (see AgentInputCoordinator.isActiveInputOwnerAuthored). */
+export function isActiveInputOwnerAuthored(sessionId: string): boolean {
+  return agentInputCoordinatorHolder?.isActiveInputOwnerAuthored(sessionId) ?? false;
 }
 
 /**
@@ -5439,6 +5486,27 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       sessionEventDependencies.onPluginTaskTerminal?.(...args);
     },
   });
+  // 「远程与分享」页按使用方的用量：本机自己的任务记在当前账号的账本里，换了账号之后的迟到事件不记。
+  Object.defineProperty(ownerEventDependencies, 'recordProviderPartyUsage', {
+    value: (target: Session, event: AgentEvent) => {
+      if (!ownerDb || getCurrentDbClientSnapshot() !== ownerDb) return;
+      try {
+        recordSessionProviderPartyUsage({
+          providerOf: getSessionProvider,
+          bindingOf: readProviderGroupBinding,
+          selfDeviceId: getSelfDeviceId,
+          record: (usage) => currentProviderPartyUsageStore().record({ kind: 'local' }, usage),
+          // 经另一台电脑的组、在组里别的电脑上运行：组所在电脑经手不到，记下来报告给它(provider-groups.md §7)。
+          recordForGroup: ({ groupDeviceId, ...usage }) => {
+            const day = currentProviderPartyUsageStore().record({ kind: 'group', deviceId: groupDeviceId }, usage);
+            if (day) notifyProviderGroupUsage(groupDeviceId, day);
+          },
+        }, target, event);
+      } catch (error) {
+        log.warn('record provider party usage failed', { sessionId: target.id, error: String(error) });
+      }
+    },
+  });
   registration.disposers.push(session.onEvent(emitWiredSessionEvent));
   registration.disposers.push(session.onRuntimeRecovery(emitWiredSessionEvent));
   sessionBindings.attachStatusListener(registration);
@@ -5525,6 +5593,21 @@ export interface RegisterMakerIpcOptions {
 }
 
 let disposePiPackagesChangedBroadcast: (() => void) | null = null;
+
+/**
+ * Preselects a route in the local new-task draft, the same push the app-default model
+ * selection uses. The menu bar calls it before opening a new task for one account.
+ */
+export function applyNewMakerDraftRoute(route: BotModelRoute): void {
+  broadcastToAllWindows(MAKER_PUSH.DRAFT_PREF_APPLY, {
+    agent: route.harness === 'claude' ? 'claude-code' : route.harness,
+    providerId: route.providerId ?? '',
+    modelId: route.model,
+    active: true,
+    ...(route.effort ? { effort: route.effort } : {}),
+    ...(route.fastMode ? { fast: true } : {}),
+  });
+}
 
 /**
  * Register before the first BrowserWindow: modelVisibilityPrefs mirrors its initial snapshot as
@@ -7830,6 +7913,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       } catch (error) {
         // 供应商组刚分配的电脑没能启动 Agent(连不上、登录失效等)：换组里下一台再试，
         // 每台最多一次；不该换或没有下一台时照常报错。
+        const failedRoute = { agentDeviceId: o.agentDeviceId ?? null, providerId: o.providerId ?? null };
         const next = providerGroupStart && providerGroupService
           ? await providerGroupService.nextAfterStartFailure(providerGroupStart, error).catch((retryError) => {
               log.warn('provider group: choosing the next computer failed', {
@@ -7839,7 +7923,32 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               return null;
             })
           : null;
-        if (!next) throw error;
+        // 分享来的供应商被分享者建成了组：续接回到原来那台却接不下时，组所在电脑发来「需要换一台」凭证
+        // (provider-groups.md §6.1 分享的人)：同一个分享位置带交接重新打开，打开时带回凭证，由组换一台。
+        const guestRelocation = !next && o.id && o.resumeSessionId && isProviderShareAgentDeviceId(o.agentDeviceId)
+          && providerGroupService?.claimGuestStartSwitch(o.id) === true;
+        if (!next && !guestRelocation) throw error;
+        // 有原生会话要续接：会话在原来那台上，换过去先交接(全量交接 + 全新原生会话 + 分隔条)，这次发送带上交接，
+        // 不拿原来那台的会话 id 去别处打开(那边认不出，会悄悄开一个没有上下文的新会话)。
+        if (o.id && o.resumeSessionId) {
+          const target = next
+            ? next.route
+            : { agentDeviceId: o.agentDeviceId ?? null, providerId: o.providerId ?? null };
+          await relocateForFreshStart(agentSwitchDeps, {
+            sessionId: o.id,
+            agentDeviceId: target.agentDeviceId,
+            providerId: target.providerId,
+            from: failedRoute,
+            ...(guestRelocation ? { sharedRelocation: true } : {}),
+          });
+          o.resumeSessionId = undefined;
+          if (o.vendorOptions) {
+            const fresh = { ...o.vendorOptions };
+            for (const key of ['resumeSessionAt', 'forkSession', 'threadId', 'tailTurnsToDrop']) delete fresh[key];
+            o.vendorOptions = fresh;
+          }
+        }
+        if (!next) continue;
         providerGroupStart = next;
         o.agentDeviceId = next.route.agentDeviceId ?? undefined;
         o.providerId = next.route.providerId;
@@ -9504,6 +9613,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   const agentSwitchDeps: MakerSessionAgentSwitchHandlerDeps = {
+    // 换到供应商组那一项时由组选一台能用的电脑(provider-groups.md §6)。
+    resolveProviderGroupTarget: (sessionId, target) =>
+      providerGroupService ? providerGroupService.resolveSwitchTarget(sessionId, target) : Promise.resolve(null),
     withSessionLock: withSendToSessionLock,
     // 停用轴边界裁决:目标路由被停用 → 抛错;隐式默认落点被停用 → 返回启用替代来源。
     // Agent 在另一台电脑运行的任务：目标模型属于那台的目录，由那台的 Agent 启动时裁决(选择时另
@@ -9686,7 +9798,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const assertCurrent = () => {
         if (isCurrent && !isCurrent()) throw new Error(PROVIDER_GROUP_SUPERSEDED_ERROR);
       };
-      const run = async () => {
+      // 换电脑是本机的决定：即使这次发送来自手机或另一台电脑，也不继承它的 device-link 来源，否则换不过去的
+      // 原因(那台连不上等)会被降级成 PRECONDITION_FAILED，判定认不出是那台的问题，就不再试下一台。
+      const run = () => runOutsideDeviceLinkInvokeContext(async () => {
         assertCurrent();
         const result = await performSessionAgentSwitch(agentSwitchDeps, {
           sessionId,
@@ -9706,7 +9820,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         });
         // 同引擎同位置等情况会按 no-op 返回：没有真正换过去，按交接失败处理。
         if (!result.switched) throw new Error('provider group: the agent switch did not apply');
-      };
+        // 运行中换电脑：换过去的那台没能把 Agent 启动起来时按换不过去处理，由调用方按同一个判定换下一台，不把续跑
+        // 交给一台起不来的电脑(续跑会再失败，协同 Worker 还会一直停在运行中)。发送前换电脑随后照常 lazy-create。
+        if (!switchOptions?.beforeSend && !result.engineReady) {
+          throw new Error(result.bootstrapError || '[REMOTE_AGENT_UNAVAILABLE] the agent did not start on that computer');
+        }
+      });
       // 发送前换电脑已在发送事务里；运行中失败后的换电脑是异步触发的，与其他内部调用一样在发送锁内交接，
       // 不与用户同时发来的消息交错。
       if (switchOptions?.beforeSend) {
@@ -9737,6 +9856,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     log,
   });
   setProviderGroupTurnProbe((sessionId) => maker.getSession(sessionId)?.isTurnRunning() ?? false);
+  // 模型列表把归组的任务显示在组那一项下(provider-groups.md §10)。
+  const sessionGroupService = providerGroupService;
+  setProviderGroupSessionGroupReader((sessionId) => sessionGroupService.sessionGroup(sessionId));
   // 这台电脑上每个供应商正在运行一轮的任务数：组里「本机」这台显示它，同账号电脑读目录时也带上(§5)。
   setProviderGroupLocalLoad(() => countProviderRunningTurns({
     listTurnRunningSessions: () => maker.listActiveSessions().filter((s) => s.isTurnRunning()).map((s) => s.id),
@@ -9755,6 +9877,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
   const leaseReporter = providerGroupLeaseReporter;
   sessionTurnActivityTracker.setSessionTurnChangeListener((sessionId) => leaseReporter.notify(sessionId));
+  // 经另一台电脑的组用掉的用量：启动后(账号确定之后)与之后换了账号时，把当前账号还没送到的整份报一次。
+  const usageReportTimer = setInterval(() => ensureProviderGroupUsageReporter(), PROVIDER_GROUP_USAGE_ENSURE_INTERVAL_MS);
+  (usageReportTimer as { unref?: () => void }).unref?.();
+  setTimeout(() => ensureProviderGroupUsageReporter(), PROVIDER_GROUP_USAGE_STARTUP_DELAY_MS).unref?.();
   registerMakerMessageDeleteHandler(makerSessionRegistry, {
     getSessionRow: async (sessionId) => {
       const [row] = await getDbClient()
@@ -10011,6 +10137,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const outgoingMessage: UserMessage = sourceNote
         ? (prependNoteToWireUserMessage(withHandoff as HandoffWireMessage, sourceNote) as UserMessage)
         : withHandoff;
+      // Idle direct sends never carry internal coordination (that is force-queued).
+      const releaseTurnSource = noteChannelTurnSource(session.id, channelTurnSourceFor(source?.origin, false));
       try {
         const sendResult = await session.send(outgoingMessage, {
           ...opts,
@@ -10050,6 +10178,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           gitSnapshotCoordinator?.onTurnAbort(session.id);
         }
         throw err;
+      } finally {
+        releaseTurnSource();
       }
     };
     return session.remoteHostId
@@ -10185,6 +10315,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     forceQueue?: boolean;
     /** 插件任务派发的来源(只用于标签与 `[消息来源]`,不是权限判据,也不是 origin)。 */
     sourcePlugin?: AgentInputQueuedMessage['sourcePlugin'];
+    /**
+     * Host 持有的恢复策略:目标会话不在运行、需要 lazy-resume 时,按会话落库的权限档
+     * 启动,而不是 main 侧通路的缺省 bypass。插件任务的档位来自用户的任务设置,只能由
+     * 宿主的插件派发入口显式要求,不从来源字段推断(#5788)。
+     */
+    resumeWithStoredPermissionMode?: boolean;
   }): Promise<SendToSessionInternalResult> {
     const {
       targetSessionId,
@@ -10831,7 +10967,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           workingDir: meta.workDir,
           model: meta.model,
           resumeSessionId: meta.sdkSessionId,
-          permissionMode: 'bypassPermissions',
+          // 插件任务的档位由用户在任务设置里给定(errand 还会再收窄),不能借 lazy-resume
+          // 的缺省 bypass 提权;档位不一致还会让 errand 复用判定每轮都失败、另开新会话
+          // (#5788)。由宿主的插件派发入口显式要求,其它 main 侧通路(Orca 派活、伙伴
+          // 委派等)保持既有缺省。
+          permissionMode: params.resumeWithStoredPermissionMode
+            ? permissionModeOrAsk(dbRow.permissionMode)
+            : 'bypassPermissions',
           // 发起方回合结束后进程常被释放。漏掉 providerId = 回落到隐式默认路由,
           // 订阅 / 自定义来源的伙伴会以 AGENT_NOT_READY 起不来,委派结果停在外发
           // 队列里,表现就是「对方做完了,发起方没被叫醒」。
@@ -12363,6 +12505,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           targetSessionId,
           message,
           sourcePlugin: { pluginId: ghostId, ...(errandPluginName ? { name: errandPluginName } : {}) },
+          // errand 会话按任务设置的权限档落库;冷启动必须沿用,不能退回 bypass(#5788)。
+          resumeWithStoredPermissionMode: true,
         });
         if (!r.ok) return { ok: false, errorCode: r.errorCode, message: r.message };
         return { ok: true, wakeKind: r.wakeKind };
@@ -16021,6 +16165,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       // 同轮插话也属于新输入。必须在 vendor await 前通知，旧轮可能先于 steer ack 结束。
       // 共用入口同时覆盖 INPUT_STEER、队列提升和旧 STEER IPC。
       publishUiSessionIntervention(sessionId);
+      // A channel route vouches only for its triggering sender; steered input ends that.
+      noteInteractionRouteSteer(sess);
       await sess.steer(steerPayload as never, {
         logTitle: meta?.title,
         messageUuid: so.messageUuid,
@@ -16724,7 +16870,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 纯判定：供应商组会先试着换电脑时，这次错误先不呈现(provider-groups.md §6.1)。
     providerGroupSwitchCandidate: (sessionId, signals) =>
       providerGroupService?.mayHandleTurnError(sessionId, signals)
-        ? classifyProviderGroupSwitchCause(signals)
+        ? providerGroupSwitchCause(signals, 'run')
         : null,
     onUsageLimitedTurnError: (sessionId, signals, _item, candidateToken) => {
       // 供应商组分配的任务先试自动换电脑，不换时由它交回额度重置后自动继续。
@@ -16741,10 +16887,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // 不让等的时间吃掉换电脑的时间(到点放出会把协同 Worker 的异常终止回报给 Lead)。
         const armHoldTimer = () => {
           clearTimeout(holdTimer);
-          holdTimer = setTimeout(
-            () => releaseProviderGroupHeld(sessionId, holdId),
-            PROVIDER_GROUP_SWITCH_HOLD_MAX_MS,
-          );
+          holdTimer = setTimeout(() => {
+            // 协同 Worker：到点把这次异常终止回报给 Lead 之后，这一趟换电脑就此停下——Lead 已据此重新安排，
+            // 再换过去续跑会让它收到两份互相矛盾的结果。普通任务照旧：错误先放出来，换成了照常续跑。
+            const worker = providerGroupHeldWorkerTerminals.has(sessionId, holdId);
+            releaseProviderGroupHeld(sessionId, holdId);
+            if (worker) providerGroupService?.noteUserAction(sessionId);
+          }, PROVIDER_GROUP_SWITCH_HOLD_MAX_MS);
         };
         // 协同 Worker 的终态与 error 行按同一次登记结算：换成了不回报这次异常终止，没换成才回报给 Lead。
         hooks = {
@@ -16759,6 +16908,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             armHoldTimer();
             inputCoordinator.setProviderGroupSwitchHoldProgress(sessionId, holdId, null);
           },
+          // 续跑马上交出去：不再计「久久没有结局」，免得续跑途中把错误放出来(协同 Worker 会因此回报两次)。
+          continuing: () => clearTimeout(holdTimer),
         };
         armHoldTimer();
       }
@@ -17076,6 +17227,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       settleQueuedAttachmentPersistenceFailure(sessionId, item.clientId, opts.retainForRetry);
     },
     onDispatchedUserTurn: async (sessionId, item, preVendorDispatchAt): Promise<void> => {
+      // 供应商组换电脑后的续跑派发出去了：协同 Worker 暂存的那次终态不再回报(续跑那一轮结束时照常回报结果)。
+      if (item.autoResume === true && item.autoResumeInfo?.reason === USAGE_LIMIT_RESET_AUTO_RESUME_REASON) {
+        settleProviderGroupContinuation(sessionId, true);
+      }
       await settleTodoDispatch(sessionId, item.clientId, true);
       botDelegationServiceHolder?.confirmQueuedSessionInputDispatched(sessionId, item.clientId);
       welcomeDispatchReceipts.settle(sessionId, item.clientId, true);
@@ -17164,8 +17319,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         { source: 'enqueue', clientId: item.clientId },
       );
     },
-    onAutomaticEnqueue: (sessionId) => {
+    onAutomaticEnqueue: (sessionId, item) => {
       contextOverflowRolloverHolder?.cancelRecovery(sessionId);
+      // 协同消息(Lead 给 Worker 派活、Worker 的回报到达 Lead)：供应商组按「有人接手」处理——这一趟换电脑停下，
+      // 那条消息开始新的一轮(provider-groups.md §6.1「协同任务」)。不重置中断自愈的预算。
+      if (item?.origin?.kind === 'orca') providerGroupService?.noteUserAction(sessionId);
       // Orca 等自动输入会推进同一会话，必须撤销旧 retry owner，避免它消费这轮事件；
       // 但预算充值仍只发生在真人消息的持久化路径，自动输入不会重置 episode。
       autoResumeBookkeeping.supersedeUnclaimedErrorForUserIntervention(sessionId);
@@ -21005,7 +21163,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               effort as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra',
             );
           },
-          terminateSession: () => maker.closeSession(sessionId),
+          // 远程 Agent 正在跑一轮、那台只是回得慢：不当场关(会把这一轮杀掉，且不是那台电脑的问题，供应商组也
+          // 不会换电脑)，这一轮结束后再按已落库的档位重建(provider-groups.md §6.1「本机的操作不打断进行中的远程一轮」)。
+          terminateSession: async () => {
+            if (sess.agentDeviceId && sess.isTurnRunning()) {
+              await maker.closeSessionIfCurrent(sess, 'runtime-refresh', { afterCurrentTurn: true });
+              return;
+            }
+            await maker.closeSession(sessionId);
+          },
         });
         if (result === 'session-terminated') {
           log.warn('set-effort: timed-out runtime session terminated for lazy rebuild', {

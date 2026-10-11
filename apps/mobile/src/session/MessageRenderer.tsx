@@ -219,6 +219,7 @@ import {
   type MobileMarkdownBlock,
   type MobileMarkdownBlockGroup,
   type MobileMarkdownInline,
+  type MobileMarkdownInlineMark,
   type MobileMarkdownTextRunGroupingOptions,
 } from '@/session/messageMarkdown';
 import { MarkdownBlockContent } from '@/session/MarkdownBlockContent';
@@ -228,14 +229,8 @@ import {
   parseProjectDeepLinkUrl,
   parseSessionDeepLinkUrl,
   projectDisplayName,
-  shortSessionId,
   type SessionDeepLinkTarget,
 } from '@/session/sessionLinks';
-import {
-  formatMobileSessionReferenceMetadata,
-  mobileSessionReferenceMetadataKey,
-  type MobilePersistedSessionReferenceMetadata,
-} from '@/session/sessionReferences';
 import {
   canOpenChatPathChip,
   chatPathLabelReadsAsFileReference,
@@ -273,8 +268,8 @@ import {
   sourcePluginLabel,
 } from '@/session/messageSourceLabels';
 import {
-  compactSessionMessageLabel,
   mobileSessionMessageDisplayText,
+  sentSessionMessageChipLabel,
 } from '@/session/sessionMessageText';
 import { buildMobileMarkdownTableColumnWidths } from '@/session/messageTableLayout';
 import { buildPayloadHeaderLayout, buildPayloadModalSafeArea } from '@/session/payloadHeaderLayout';
@@ -316,6 +311,7 @@ import {
 } from '@cindy/maker-shared/agent-task';
 import {
   buildMessageActionBarPresentation,
+  formatToolRowText,
   summarizeMessageBubblePresentation,
   summarizeTodoCardPresentation,
   summarizeToolGroupPresentation,
@@ -417,6 +413,7 @@ import { i18n } from '@/i18n';
 import { formatLocalizedDuration } from '@/session/sessionDurationFormat';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
 import { mobileToolRowWording } from '@/i18n/toolWording';
+import type { HistoryWorkLine } from '@cindy/maker-shared/message-window';
 
 const MESSAGE_CONTROL_HIT_SLOP = { bottom: 10, left: 10, right: 10, top: 10 };
 const MESSAGE_CONTROL_TOUCH_SIZE = 44;
@@ -3716,7 +3713,6 @@ function MessageBubble({
         presentation.density === 'compact' && styles.bubbleCompact,
         presentation.density === 'rich' && styles.bubbleRich,
         isUser ? styles.userBubble : styles.agentBubble,
-        actions.companion && isUser && styles.companionUserBubble,
         actions.companion && !isUser && !item.message.systemCardType && styles.companionAnswer,
         hookSource && styles.hookSourceBubble,
       ]}
@@ -3795,7 +3791,6 @@ function MessageBubble({
                   onOpenSessionLink={actions.onOpenSessionLink}
                   pinContentWidth={!isUser}
                   selectable={canSelectVisibleText}
-                  sessionReferences={item.message.sessionReferences}
                   streaming={false}
                   text={text}
                 />
@@ -3811,7 +3806,6 @@ function MessageBubble({
             onOpenPayload={actions.onOpenPayload}
             onOpenSessionLink={actions.onOpenSessionLink}
             pinContentWidth={!isUser}
-            sessionReferences={item.message.sessionReferences}
             selectable={canSelectVisibleText}
             streaming={isStreamingAssistant}
             text={bubbleBody}
@@ -4727,6 +4721,9 @@ function WorkGroupCard({
   ].filter(Boolean).join(' · ');
   const onToggle = item.deferred?.setVisible ? toggleExpanded : item.deferred?.toggle ?? toggleExpanded;
   const pluginWork = actions.companionPluginWork?.get(item.key);
+  // The Host projects running lines for this view; folded groups render them as they are,
+  // without building the hidden activity tree or reading any work details.
+  const lines = isStreaming && !expanded ? item.deferred?.lines : undefined;
   return (
     <>
     {pluginWork ? <PluginInvocationHeader plugins={pluginWork.plugins} running={pluginWork.running}
@@ -4736,6 +4733,13 @@ function WorkGroupCard({
       chevronPosition={header.chevronPosition}
       chevronSize={header.chevronSize}
       controlledExpanded={expanded}
+      collapsedBody={lines?.length ? (
+        <Rail layout={layout}>
+          <View style={styles.workActivityStack}>
+            {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+          </View>
+        </Rail>
+      ) : undefined}
       onControlledToggle={onToggle}
       title={title}
       subtitle={header.subtitle ?? undefined}
@@ -4791,6 +4795,48 @@ function WorkGroupCard({
     </>
   );
 }
+
+/** One Host-projected running line; pressing it opens the whole work group. */
+const WorkLineRow = memo(function WorkLineRow({
+  line,
+  onPress,
+}: {
+  line: HistoryWorkLine;
+  onPress: () => void;
+}) {
+  const { colors } = useTheme();
+  const { i18n } = useTranslation();
+  const styles = useThemedStyles(makeStyles);
+  const label = useMemo(
+    () => (line.kind === 'tool' ? formatToolRowText(line.descriptor, mobileToolRowWording).label || line.toolName : line.text),
+    [i18n.language, line],
+  );
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [line.kind === 'tool' ? styles.toolRowHeader : styles.workThinkingRow, pressed && styles.pressed]}
+      testID="message.workLine"
+    >
+      {line.kind === 'tool' ? (
+        <>
+          <ToolRowStatusIcon hasError={line.hasError === true} status={line.status} />
+          <Text numberOfLines={1} style={[styles.toolName, styles.toolNameFlex]}>{label}</Text>
+        </>
+      ) : (
+        <>
+          <View style={stylesStatic.workActivityIconSlot}>
+            <Sparkles color={colors.textTertiary} size={iconSize.sm} strokeWidth={iconStroke.regular} />
+          </View>
+          <Text numberOfLines={1} style={[styles.workActivityText, styles.italicText, styles.workThinkingText]}>
+            <ThinkingInlineText content={label} />
+          </Text>
+        </>
+      )}
+    </Pressable>
+  );
+});
 
 /** The clock must not re-render an expanded group's entire activity tree. */
 function WorkGroupElapsed({ sinceIso }: { sinceIso: string | undefined }) {
@@ -4970,6 +5016,7 @@ function FoldablePanel({
   title,
   subtitle,
   children,
+  collapsedBody,
   controlledExpanded,
   defaultExpanded = false,
   layout,
@@ -4991,6 +5038,8 @@ function FoldablePanel({
   title: string;
   subtitle?: string;
   children: ReactNode;
+  /** Running work lines shown under a folded header; the full body is still built only when expanded. */
+  collapsedBody?: ReactNode;
   /** Controlled mode used by work groups. */
   controlledExpanded?: boolean;
   /** 仅无 blockId 的本地 state 路径生效;blockId 存在时由共享记忆决定(默认折叠)。 */
@@ -5073,6 +5122,18 @@ function FoldablePanel({
             },
         ]}>
           {children}
+        </View>
+      ) : collapsedBody ? (
+        <View style={[
+          styles.foldBody,
+          variant === 'plain'
+            ? styles.foldBodyPlain
+            : {
+              paddingBottom: layout.foldBodyPaddingBottom,
+              paddingHorizontal: layout.foldBodyPaddingHorizontal,
+            },
+        ]}>
+          {collapsedBody}
         </View>
       ) : null}
     </View>
@@ -5527,7 +5588,6 @@ function MarkdownBody({
   onOpenPayload,
   onOpenSessionLink,
   pinContentWidth = false,
-  sessionReferences,
   selectable,
   streaming,
   text,
@@ -5545,8 +5605,6 @@ function MarkdownBody({
    * 气泡(长代码围栏横向裁切 + 纵向巨高空白)。
    */
   pinContentWidth?: boolean;
-  /** 当前落库消息里的展示安全引用摘要，按 sessionId + anchor 精确匹配链接。 */
-  sessionReferences?: readonly MobilePersistedSessionReferenceMetadata[];
   /** 完成态消息为 true:各块 Text 开原生选中(含内嵌图片 View 的块除外,Android 上有风险)。 */
   selectable?: boolean;
   /** 消息流式中:文件 chip 层跳过远端验证。 */
@@ -5662,15 +5720,6 @@ function MarkdownBody({
   // changes; referenced task title changes still refresh every affected chip.
   const remoteSessions = useRemoteSessions();
   const sessionLinkTitles = useMarkdownSessionLinkTitles(text, remoteSessions);
-  const sessionReferenceDetails = useMemo(() => {
-    if (!sessionReferences?.length) return undefined;
-    const details: Record<string, string> = {};
-    for (const metadata of sessionReferences) {
-      details[mobileSessionReferenceMetadataKey(metadata.sessionId, metadata.messageClientId)] =
-        formatMobileSessionReferenceMetadata(metadata);
-    }
-    return details;
-  }, [sessionReferences]);
   const renderInlines = useCallback(
     (
       inlines: readonly MobileMarkdownInline[],
@@ -5685,7 +5734,6 @@ function MarkdownBody({
         renderManagedImage,
         onOpenMedia: openMarkdownMedia,
         onOpenSessionLink,
-        sessionReferenceDetails,
         sessionLinkTitles,
         SpanText,
         streaming,
@@ -5693,7 +5741,7 @@ function MarkdownBody({
     ),
     // renderInline also reads translated fallback labels. Invalidate completed
     // memoized text blocks when useTranslation refreshes its bound translator.
-    [onOpenSessionLink, openMarkdownImage, openMarkdownMedia, renderManagedImage, sessionLinkTitles, sessionReferenceDetails, streaming, styles, t],
+    [onOpenSessionLink, openMarkdownImage, openMarkdownMedia, renderManagedImage, sessionLinkTitles, streaming, styles, t],
   );
   const textRunGroupingOptions = useMemo(() => ({
     ...(Platform.OS === 'android' ? ANDROID_SELECTABLE_TEXT_RUN_GROUPING_OPTIONS : {}),
@@ -6121,7 +6169,30 @@ function clickableInlineStyle(
   base: StyleProp<TextStyle>,
   extra?: StyleProp<TextStyle>,
 ): StyleProp<TextStyle> {
-  return [base, onPress ? styles.markdownLink : undefined, extra];
+  return [base, onPress ? underlineDecoration(styles, base, styles.markdownLink) : undefined, extra];
+}
+
+/**
+ * 可点下划线与外层删除线共存:RN 的 textDecorationLine 是单值,后叠的 underline 会盖掉
+ * `~~链接~~` 的 line-through。base 已带删除线时改用合并值,两条线都画。
+ */
+function underlineDecoration(
+  styles: ReturnType<typeof makeStyles>,
+  base: StyleProp<TextStyle>,
+  underline: StyleProp<TextStyle>,
+): StyleProp<TextStyle> {
+  return StyleSheet.flatten(base)?.textDecorationLine === 'line-through'
+    ? [underline, styles.markdownUnderlineStrike]
+    : underline;
+}
+
+function markdownMarkStyle(
+  styles: ReturnType<typeof makeStyles>,
+  mark: MobileMarkdownInlineMark,
+): StyleProp<TextStyle> {
+  if (mark === 'strong') return styles.markdownStrong;
+  if (mark === 'emphasis') return styles.markdownEmphasis;
+  return styles.markdownStrike;
 }
 
 /** 本地路径链接形态的路径 chip 包装:candidate 按 url memo,保证引用稳定——
@@ -6163,8 +6234,8 @@ function LinkPathChipSpan({
       candidate={candidate}
       chipStyle={
         codeStyled
-          ? [baseStyle, styles.markdownInlineCode, styles.markdownPathChip]
-          : [baseStyle, styles.markdownPathChip]
+          ? [baseStyle, styles.markdownInlineCode, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]
+          : [baseStyle, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]
       }
       display={display}
       // 未点亮一律回落正文样式(与桌面一致:未解析的 local-candidate 渲染成纯 span)。
@@ -6193,7 +6264,7 @@ function InlineCodePathSpan({
   return (
     <ChatPathChipSpan
       candidate={candidate}
-      chipStyle={[baseStyle, styles.markdownInlineCode, styles.markdownPathChip]}
+      chipStyle={[baseStyle, styles.markdownInlineCode, underlineDecoration(styles, baseStyle, styles.markdownPathChip)]}
       display={text}
       plainStyle={[baseStyle, styles.markdownInlineCode]}
       SpanText={SpanText}
@@ -6216,7 +6287,6 @@ function renderInline(
     onOpenMedia?: (url: string, title: string, kind: 'video') => void;
     onOpenPayload?: (payload: MessagePayload) => void;
     onOpenSessionLink?: (url: string) => void;
-    sessionReferenceDetails?: Readonly<Record<string, string>>;
     sessionLinkTitles?: Readonly<Record<string, string>>;
     /** 块可选中且 iOS 时为 MarkdownSelectableSpan(嵌套进 UITextView 原生树);缺省 RN Text。 */
     SpanText?: typeof Text;
@@ -6224,6 +6294,13 @@ function renderInline(
     streaming?: boolean;
   } = {},
 ): ReactNode {
+  // 强调里的链接 / 代码等:外层强调样式叠进 baseStyle,其余照常渲染(span 平铺,不嵌套)。
+  if (inline.marks?.length) {
+    return renderInline({ ...inline, marks: undefined }, index, styles, {
+      ...ctx,
+      baseStyle: [ctx.baseStyle, ...inline.marks.map((mark) => markdownMarkStyle(styles, mark))],
+    });
+  }
   const SpanText = ctx.SpanText ?? MessageBodyText;
   const openImage = ctx.onOpenImage ?? (ctx.onOpenPayload
     ? (url: string, alt?: string) => {
@@ -6263,7 +6340,6 @@ function renderInline(
             key={spanKey(`session-link:${index}:${inline.url}`)}
             onOpenSessionLink={ctx.onOpenSessionLink}
             session={session}
-            sessionReferenceDetails={ctx.sessionReferenceDetails}
             sessionLinkTitles={ctx.sessionLinkTitles}
             SpanText={SpanText}
             styles={styles}
@@ -6401,7 +6477,6 @@ function MarkdownSessionLinkSpan({
   inline,
   onOpenSessionLink,
   session,
-  sessionReferenceDetails,
   sessionLinkTitles,
   SpanText,
   styles,
@@ -6410,7 +6485,6 @@ function MarkdownSessionLinkSpan({
   inline: Extract<MobileMarkdownInline, { type: 'link' }>;
   onOpenSessionLink?: (url: string) => void;
   session: SessionDeepLinkTarget;
-  sessionReferenceDetails?: Readonly<Record<string, string>>;
   sessionLinkTitles?: Readonly<Record<string, string>>;
   SpanText: typeof Text;
   styles: ReturnType<typeof makeStyles>;
@@ -6423,24 +6497,26 @@ function MarkdownSessionLinkSpan({
         message.clientId === session.messageClientId || message.id === session.messageClientId
       ))
     : null;
-  const messageLabel = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+  // 消息数组更新(流式 / 列表重渲)时,目标消息没变就不重算摘要。
+  const messageLabel = useMemo(() => {
+    const messageText = targetMessage ? mobileSessionMessageDisplayText(targetMessage) : null;
+    return messageText ? sentSessionMessageChipLabel(messageText) : '';
+  }, [targetMessage]);
   const title = session.messageClientId
-    ? compactSessionMessageLabel(messageLabel ?? shortSessionId(session.messageClientId))
+    ? messageLabel || i18n.t('message.renderer.messageChipFallback')
     : explicit
       ?? sessionLinkTitles?.[session.sessionId]
-      ?? i18n.t('message.renderer.sessionChipFallback', { id: shortSessionId(session.sessionId) });
-  const detail = sessionReferenceDetails?.[
-    mobileSessionReferenceMetadataKey(session.sessionId, session.messageClientId)
-  ];
+      ?? i18n.t('message.renderer.sessionChipFallback');
   // handler 由上层可选注入 → 缺席时 chip 不可点,下划线也必须跟着不加
   // (clickableInlineStyle 保证两者同源)。
   const openSessionLink = onOpenSessionLink ? () => onOpenSessionLink(inline.url) : undefined;
+  // 发给模型的上下文范围(条数 / 是否截断)不在气泡里展示:用户无从理解也无从操作。
   return (
     <SpanText
       onPress={openSessionLink}
       style={clickableInlineStyle(styles, openSessionLink, baseStyle, styles.sessionLinkChipText)}
     >
-      {`${session.messageClientId ? '❝' : '↳'} ${title}${detail ? ` · ${detail}` : ''}`}
+      {`${session.messageClientId ? '❝' : '↳'} ${title}`}
     </SpanText>
   );
 }
@@ -8628,11 +8704,10 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     marginTop: spacing.sm,
     textAlign: 'center',
   },
-  companionUserBubble: { borderColor: colors.border },
   userBubble: {
     alignSelf: 'flex-end',
     backgroundColor: colors.surfaceElevated,
-    borderColor: colors.borderStrong,
+    borderColor: colors.border,
     maxWidth: '86%',
     minWidth: 0,
     overflow: 'hidden',
@@ -8955,6 +9030,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   // 与普通强调的区别只在语义,视觉上沿用 italic 已足够。
   markdownMathInline: { fontStyle: 'italic' },
   markdownStrike: { textDecorationLine: 'line-through' },
+  markdownUnderlineStrike: { textDecorationLine: 'underline line-through' },
   // 行内 code:零底色 + 等宽字体 + 文字压暗(参照 Codex 客户端)。
   // 不给底色是平台约束:RN 嵌套在 Text 内的 inline 片段只认 backgroundColor,不认
   // borderRadius(同 sessionLinkChipText 的注释),底色在这里只能是直角方块,成段
