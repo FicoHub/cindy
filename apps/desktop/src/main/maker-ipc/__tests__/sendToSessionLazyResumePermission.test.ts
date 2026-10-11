@@ -1,7 +1,10 @@
 /**
- * #5788:插件派来的活走 sendToSessionInternal 的 lazy-resume 时,必须按会话落库的权限档
- * 恢复,不能落到 main 侧通路的缺省 bypass。否则插件任务被提权,errand 复用判定也会因
- * 活跃会话的档位(bypass)≠ 任务设置的档位而每轮失败、另开新会话。
+ * #5788:插件 errand 派活走 sendToSessionInternal 的 lazy-resume 时,必须按会话落库的
+ * 权限档恢复,不能落到 main 侧通路的缺省 bypass。否则插件任务被提权,errand 复用判定也会
+ * 因活跃会话的档位(bypass)≠ 任务设置的档位而每轮失败、另开新会话。
+ *
+ * 这项决定由宿主显式传入的策略参数承载;`sourcePlugin` 只是来源标签,不能当权限判据
+ * (docs/product-rules/message-source.md)。
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -24,21 +27,29 @@ function lazyResumeCreateOpts(): string {
 }
 
 describe('sendToSessionInternal lazy-resume permission mode', () => {
-  it('restores the stored permission mode for plugin-sourced input', () => {
+  it('restores the stored permission mode when the host asks for it', () => {
     expect(lazyResumeCreateOpts()).toContain(
-      "permissionMode: sourcePlugin ? permissionModeOrAsk(dbRow.permissionMode) : 'bypassPermissions',",
+      `permissionMode: params.resumeWithStoredPermissionMode
+            ? permissionModeOrAsk(dbRow.permissionMode)
+            : 'bypassPermissions',`,
     );
   });
 
-  it('never hard-codes bypass for every lazy resume', () => {
-    expect(lazyResumeCreateOpts()).not.toMatch(/^\s*permissionMode: 'bypassPermissions',$/m);
+  it('does not derive the permission decision from the source label', () => {
+    const opts = lazyResumeCreateOpts();
+    expect(opts).not.toMatch(/^\s*permissionMode: 'bypassPermissions',$/m);
+    expect(opts).not.toMatch(/permissionMode:[^\n]*sourcePlugin/);
   });
 
-  it('binds sourcePlugin from the call params before the lazy-resume branch', () => {
-    const start = registerSource.indexOf('async function sendToSessionInternal(params: {');
-    const binding = registerSource.indexOf('const sourcePlugin = params.sourcePlugin;', start);
-    expect(binding).toBeGreaterThan(start);
-    expect(binding).toBeLessThan(registerSource.indexOf("lockStage = 'lazy-resume-bootstrap';", start));
+  it('has the Ghost errand dispatch request the stored permission mode', () => {
+    const runner = registerSource.indexOf('createGhostErrandRunner({');
+    const dispatch = registerSource.indexOf('dispatch: async ({ targetSessionId, message, ghostId }) => {', runner);
+    const call = registerSource.indexOf('const r = await sendToSessionInternal({', dispatch);
+    const close = registerSource.indexOf('});', call);
+    expect(runner).toBeGreaterThanOrEqual(0);
+    expect(dispatch).toBeGreaterThan(runner);
+    expect(call).toBeGreaterThan(dispatch);
+    expect(registerSource.slice(call, close)).toContain('resumeWithStoredPermissionMode: true,');
   });
 
   it('reads the persisted permission mode in the row snapshot used by lazy resume', () => {
