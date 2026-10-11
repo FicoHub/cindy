@@ -25,8 +25,7 @@ import {
   DropdownMenuSubContent,
 } from '@/components/ui/dropdown-menu';
 
-const menuClass = 'rounded-xl border-[var(--border-default)] bg-[var(--surface-elevated)] p-2';
-const rowClass = 'rounded-lg text-13 text-[var(--text-primary)] focus:bg-[var(--surface-hover)]';
+const menuClass = 'p-2';
 const fieldClass = 'block space-y-2';
 const fieldLabelClass = 'block text-[var(--text-secondary)]';
 
@@ -199,6 +198,7 @@ export function BotRoutines({
       value && !inFlight.current ? { ...value, triggers: [...value.triggers, trigger] } : value,
     );
   const triggerSummary = (trigger: RoutineTrigger) => {
+    if (trigger.kind === 'once') return new Date(trigger.at).toLocaleString(i18n.language);
     if (trigger.kind === 'interval')
       return t('routines.everyMinutes', { count: trigger.intervalMs / 60_000 });
     if (trigger.kind === 'cron')
@@ -213,7 +213,7 @@ export function BotRoutines({
       className={
         embedded
           ? 'py-3 text-13 text-[var(--text-primary)]'
-          : 'h-full overflow-y-auto bg-[var(--surface)] p-4 text-13 text-[var(--text-primary)]'
+          : 'app-wallpaper-surface h-full overflow-y-auto bg-[var(--surface)] p-4 text-13 text-[var(--text-primary)]'
       }
     >
       {!draft || !backRef ? (
@@ -392,17 +392,13 @@ export function BotRoutines({
                     {t('routines.addTrigger')}
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  className={menuClass}
-                  align="start"
-                  style={{ boxShadow: 'none' }}
-                >
+                <DropdownMenuContent className={menuClass} align="start">
                   <DropdownMenuSub>
-                    <DropdownMenuSubTrigger className={rowClass}>
+                    <DropdownMenuSubTrigger>
                       <Clock3 size={15} className="mr-2" />
                       {t('routines.schedule')}
                     </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className={menuClass} style={{ boxShadow: 'none' }}>
+                    <DropdownMenuSubContent className={menuClass}>
                       {(
                         [
                           'hourly',
@@ -416,7 +412,6 @@ export function BotRoutines({
                       ).map((preset) => (
                         <DropdownMenuItem
                           key={preset}
-                          className={rowClass}
                           onSelect={() => {
                             const id = crypto.randomUUID();
                             if (preset === 'interval')
@@ -444,14 +439,13 @@ export function BotRoutines({
                   </DropdownMenuSub>
                   {sources.map((source) => (
                     <DropdownMenuSub key={source.id}>
-                      <DropdownMenuSubTrigger className={rowClass}>
+                      <DropdownMenuSubTrigger>
                         {source.name}
                       </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent className={menuClass} style={{ boxShadow: 'none' }}>
+                      <DropdownMenuSubContent className={menuClass}>
                         {source.events.map((event) => (
                           <DropdownMenuItem
                             key={event.type}
-                            className={rowClass}
                             onSelect={() =>
                               add({
                                 id: crypto.randomUUID(),
@@ -594,6 +588,7 @@ function TriggerFields({
         />
       </label>
     );
+  if (trigger.kind === 'once') return <time dateTime={new Date(trigger.at).toISOString()}>{new Date(trigger.at).toLocaleString()}</time>;
   if (trigger.kind === 'cron') return <CronFields trigger={trigger} onChange={onChange} />;
   const source = sources.find((item) => item.id === trigger.sourceId);
   const fields = [

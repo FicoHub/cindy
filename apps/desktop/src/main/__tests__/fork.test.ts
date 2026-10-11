@@ -124,6 +124,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (vi.isMockFunction(os.homedir)) vi.mocked(os.homedir).mockRestore();
   if (originalClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
   if (originalXdtUserDataDir === undefined) delete process.env.XDT_USER_DATA_DIR;
@@ -987,6 +988,25 @@ describe('forkSessionAtMessage', () => {
       ['old-asst-uuid', 'new-asst-uuid'],
     ]);
     expect(txArgs.newMessageIds).toHaveLength(2);
+  });
+
+  it('refuses to fork a task whose agent runs on another computer (its agent record is there)', async () => {
+    selectQueue.push([makeSourceRow({ agentDeviceId: 'device-b' })]);
+
+    await expect(forkSessionAtMessage('src-session', 'any-msg')).rejects.toMatchObject({
+      code: 'REMOTE_NOT_SUPPORTED',
+    });
+    expect(forkSdkSessionMock).not.toHaveBeenCalled();
+    expect(txCalls).toHaveLength(0);
+  });
+
+  it('refuses the encrypted-content fork for a Codex task whose agent runs on another computer', async () => {
+    selectQueue.push([makeSourceRow({ agentKind: 'codex', agentDeviceId: 'device-b' })]);
+
+    await expect(forkSessionStripEncrypted('src-session')).rejects.toMatchObject({
+      code: 'REMOTE_NOT_SUPPORTED',
+    });
+    expect(forkSdkSessionMock).not.toHaveBeenCalled();
   });
 
   it('throws SOURCE_NEVER_RAN when source.sdkSessionId is null; maker not invoked', async () => {
@@ -1908,9 +1928,12 @@ describe('forkSessionAtMessage', () => {
     });
   });
 
-  it('claude path: locates JSONL under XDT_USER_DATA_DIR claude-home when main env has no CLAUDE_CONFIG_DIR', async () => {
+  it('claude path: falls back to the legacy dev XDT_USER_DATA_DIR/claude-home when ~/.claude lacks the JSONL', async () => {
     const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xdt-user-data-'));
     tempDirs.push(userDataDir);
+    const emptyHome = await fs.mkdtemp(path.join(os.tmpdir(), 'xdt-empty-home-'));
+    tempDirs.push(emptyHome);
+    vi.spyOn(os, 'homedir').mockReturnValue(emptyHome);
     delete process.env.CLAUDE_CONFIG_DIR;
     process.env.XDT_USER_DATA_DIR = userDataDir;
     await writeClaudeJsonlInConfigDir(

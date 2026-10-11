@@ -6,7 +6,9 @@ export type MobileDebugScope =
   | "performance"
   | "scroll"
   | "keyboard"
-  | "files";
+  | "files"
+  | "voice"
+  | "new-session";
 export type MobileDebugLevel = "debug" | "info" | "warn" | "error";
 type Sink = (
   level: MobileDebugLevel,

@@ -8,7 +8,7 @@ import { createMobileMakerTransport } from '@/device-link/mobileMakerTransport';
 import { resolveMobileRemoteMedia, type MobileRemoteMediaPresignResult } from '@/session/remoteMedia';
 import { DEVICE_LINK_API_BASE_URL } from '@/config/env';
 import { useTheme } from '@/theme';
-import { radius, typeScale } from '@/theme/tokens';
+import { lineHeight, radius, typeScale } from '@/theme/tokens';
 
 const presets: Record<string, number> = {
   'cindy://avatar/preset/cindy': require('../../assets/bot-presets/cindy.png'),
@@ -17,18 +17,18 @@ const presets: Record<string, number> = {
 };
 
 /** `framed` draws its own circle for callers without an avatar container (inline rows and status lines). */
-export function RemoteCompanionAvatar({ avatar, deviceId, name, online, size = 40, framed = false }: { avatar?: RemoteResourceAvatar; deviceId: string; name: string; online: boolean; size?: number; framed?: boolean }) {
+export function RemoteCompanionAvatar({ avatar, imageUrl, deviceId, name, online, size = 40, framed = false }: { avatar?: RemoteResourceAvatar; imageUrl?: string | null; deviceId: string; name: string; online: boolean; size?: number; framed?: boolean }) {
   const { colors } = useTheme();
   const auth = useAuth();
   const { invoke } = useDeviceLink();
   const value = avatar?.value || '';
-  const binding = `${auth.accountGeneration}:${deviceId}:${value}`;
+  const binding = `${auth.accountGeneration}:${deviceId}:${value}:${imageUrl ?? ''}`;
   const [image, setImage] = useState<{ binding: string; uri: string } | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setFailed(false);
-    if (avatar?.kind !== 'media' || !online) return;
+    if (imageUrl || avatar?.kind !== 'media' || !online) return;
     const maker = createMobileMakerTransport({ deviceId, invoke });
     void resolveMobileRemoteMedia({ kind: 'image', url: value }, {
       fetchRemoteMedia: maker.fetchRemoteMedia,
@@ -37,11 +37,11 @@ export function RemoteCompanionAvatar({ avatar, deviceId, name, online, size = 4
       if (!cancelled && result.previewable && result.mimeType.startsWith('image/')) setImage({ binding, uri: result.url });
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [auth.apiFetch, avatar?.kind, binding, deviceId, invoke, online, value]);
-  const source = presets[value] || (image?.binding === binding ? { uri: image.uri } : null);
+  }, [auth.apiFetch, avatar?.kind, binding, deviceId, imageUrl, invoke, online, value]);
+  const source = imageUrl ? { uri: imageUrl } : presets[value] || (image?.binding === binding ? { uri: image.uri } : null);
   if (source && !failed) return <Image source={source} onError={() => setFailed(true)} style={[styles.image, { width: size, height: size }]} />;
   const glyph = avatar?.kind === 'emoji' ? value : avatar?.fallbackText || Array.from(name)[0];
-  if (!framed) return <Text style={{ color: colors.textPrimary, fontSize: typeScale.body }}>{glyph}</Text>;
+  if (!framed) return <Text style={{ color: colors.textPrimary, fontSize: typeScale.body, lineHeight: lineHeight.body }}>{glyph}</Text>;
   return <View style={[styles.frame, { width: size, height: size, backgroundColor: colors.surfaceChip }]}>
     <Text style={{ color: colors.textPrimary, fontSize: Math.round(size / 2), lineHeight: Math.round(size * 0.7) }}>{glyph}</Text>
   </View>;

@@ -130,10 +130,15 @@ describe('mobile message actions desktop-first surface', () => {
     expect(workGroupSource).toContain('chevronSize={header.chevronSize}');
     expect(workGroupSource).toContain('title={title}');
     expect(workGroupSource).toContain('subtitle={header.subtitle ?? undefined}');
-    // Work group 受控展开；折叠态只保留卡头，不提前构造任何隐藏活动行。
+    // Work group 受控展开；折叠态不提前构造任何隐藏活动行。运行中只渲染电脑端已投影好的
+    // 单行活动（deferred.lines），既不读工作明细，也不在本机重新解析工具输入。
     expect(workGroupSource).not.toContain('defaultExpanded');
     expect(workGroupSource).toContain('controlledExpanded={expanded}');
-    expect(workGroupSource).not.toContain('collapsedBody=');
+    expect(workGroupSource).toContain('const lines = isStreaming && !expanded ? item.deferred?.lines : undefined;');
+    expect(workGroupSource).toContain('collapsedBody={lines?.length ? (');
+    expect(workGroupSource).toContain('<WorkLineRow key={line.key} line={line} onPress={onToggle} />');
+    expect(workGroupSource).toContain('formatToolRowText(line.descriptor, mobileToolRowWording)');
+    expect(workGroupSource).not.toContain('summarizeToolUseText');
     expect(workGroupSource).toContain('onControlledToggle={onToggle}');
     expect(workGroupSource).not.toContain('live-preview-dismissed');
     expect(workGroupSource).toContain('? <CompactActivityIndicator color={colors.textTertiary}');
@@ -177,9 +182,9 @@ describe('mobile message actions desktop-first surface', () => {
     const plainTitleEnd = source.indexOf('foldSubtitle:', plainTitleStart);
     const plainTitleStyle = source.slice(plainTitleStart, plainTitleEnd);
     expect(plainTitleStyle).toContain('color: colors.textSecondary');
-    expect(plainTitleStyle).toContain('fontSize: typeScale.listBody');
+    expect(plainTitleStyle).toContain('fontSize: typeScale.bodySmall');
     expect(plainTitleStyle).toContain('fontWeight: fontWeight.regular');
-    expect(plainTitleStyle).toContain('lineHeight: lineHeight.listBody');
+    expect(plainTitleStyle).toContain('lineHeight: lineHeight.bodySmall');
     expect(foldableSource).toContain("variant === 'plain'");
     expect(foldableSource).toContain('? styles.foldBodyPlain');
   });
