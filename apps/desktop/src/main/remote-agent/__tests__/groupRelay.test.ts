@@ -206,7 +206,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(root, { recursive: true, force: true });
+  // The hosts persist run directories and guest-session state asynchronously (tmp + rename);
+  // a write that is still landing when the test ends makes rmdir see ENOTEMPTY. Retry the
+  // cleanup instead of failing an otherwise passing test (Node retries ENOTEMPTY/EBUSY/EPERM).
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 let runSeq = 0;
