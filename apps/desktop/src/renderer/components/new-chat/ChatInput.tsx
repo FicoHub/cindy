@@ -3262,6 +3262,9 @@ export function ChatInput({
     return registerComposerCaptureLock(storageKey);
   }, [storageKey, composerMutationLocked]);
   const captureComposerIdRef = useRef(Symbol('capture-composer'));
+  // Shortcut captures close this composer's open suggestion panel first (assigned below,
+  // once the panel state is known); the registry holds a stable trampoline.
+  const capturePanelCloseRef = useRef<() => boolean>(() => false);
   useEffect(() => {
     if (!editor || !storageKey) return;
     const owner = editorDataOwnerRef.current;
@@ -3275,7 +3278,7 @@ export function ChatInput({
         editor.off('focus', listener);
         editor.off('blur', listener);
       };
-    });
+    }, { owner, prepareCapture: () => capturePanelCloseRef.current() });
   }, [editor, storageKey]);
   const composerTypingLocked =
     disabled || (sendDispatchInFlight && !allowTypeDuringSend) || voiceBusyOnCurrentComposer;
@@ -4837,6 +4840,18 @@ export function ChatInput({
       setSyntheticAtAnchor(null);
     }
   }, [effectiveAt, setSyntheticAtAnchor]);
+  capturePanelCloseRef.current = () => {
+    let closed = false;
+    if (atOpen) {
+      closeAtPanel();
+      closed = true;
+    }
+    if (slashOpen && trigger.kind === 'slash') {
+      setSuppressedSlashAt(trigger.from);
+      closed = true;
+    }
+    return closed;
+  };
 
   useEffect(() => {
     if (!slashOpen) return;

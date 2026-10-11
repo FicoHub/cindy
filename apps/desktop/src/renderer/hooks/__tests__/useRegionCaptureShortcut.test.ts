@@ -17,6 +17,7 @@ import {
   requestRegionCapture,
   requestRegionCaptureAfterPaint,
   resolveRegionCaptureTargetFromPath,
+  runShortcutRegionCapture,
 } from '../useRegionCaptureShortcut';
 
 describe('composer capture lock registry', () => {
@@ -307,4 +308,42 @@ it.each([true, false])('warns only when a failed cache produces a valid fallback
     if (valid) expect(getDraft(key)?.attachments[0]?.base64).toBe('AQ==');
     else expect(getDraft(key)).toBeUndefined();
   } finally { release(); vi.unstubAllGlobals(); }
+});
+
+
+// Codex P1: an old account's ChatInput stays mounted while the owner boundary moves on.
+it('never resolves a composer whose data owner is no longer current', () => {
+  setDataOwnerGeneration('account-a', 1);
+  const target = { sessionId: 'owner-scope', draftKey: 'owner-scope-draft' };
+  const release = registerComposerCaptureDraftFlusher(target.draftKey, () => {}, () => true);
+  try {
+    expect(resolveRegionCaptureComposer(target)).toBeDefined();
+    setDataOwnerGeneration('account-b', 2);
+    expect(resolveRegionCaptureComposer(target)).toBeUndefined();
+  } finally { release(); ownerTesting.reset(); }
+});
+
+// Codex P2: the shortcut path closes the target composer's open suggestion panel and waits two
+// paints before capturing; with nothing open it captures immediately.
+it('closes an open suggestion panel and defers the shortcut capture by two frames', () => {
+  const target = { sessionId: 'panel', draftKey: 'panel-draft' };
+  let panelOpen = true;
+  const prepareCapture = vi.fn(() => { const was = panelOpen; panelOpen = false; return was; });
+  const release = registerComposerCaptureDraftFlusher(target.draftKey, () => {}, () => true, Symbol('panel'), undefined, { prepareCapture });
+  const frames: Array<() => void> = [];
+  const frame = (callback: () => void) => frames.push(callback);
+  const run = vi.fn(() => true);
+  try {
+    expect(runShortcutRegionCapture(target, run, { frame })).toBe(true);
+    expect(prepareCapture).toHaveBeenCalledOnce();
+    expect(run).not.toHaveBeenCalled();
+    frames.shift()!();
+    expect(run).not.toHaveBeenCalled();
+    frames.shift()!();
+    expect(run).toHaveBeenCalledWith(target);
+    run.mockClear();
+    expect(runShortcutRegionCapture(target, run, { frame })).toBe(true);
+    expect(run).toHaveBeenCalledWith(target);
+    expect(frames).toHaveLength(0);
+  } finally { release(); }
 });

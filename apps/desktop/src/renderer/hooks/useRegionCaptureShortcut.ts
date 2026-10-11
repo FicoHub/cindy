@@ -53,6 +53,10 @@ interface CaptureDraftFlusher {
   instanceId: symbol;
   flush: () => void;
   isFocused: () => boolean;
+  /** Data owner the composer was mounted under; a stale owner is never a capture target. */
+  owner: ReturnType<typeof getDataOwnerGeneration>;
+  /** Close transient composer UI (suggestion panels) before capture; true when something closed. */
+  prepareCapture?: () => boolean;
 }
 const composerCaptureDraftFlushers = new Map<string, Set<CaptureDraftFlusher>>();
 
@@ -62,8 +66,18 @@ export function registerComposerCaptureDraftFlusher(
   isFocused: () => boolean,
   instanceId: symbol = Symbol('capture-composer'),
   subscribeFocus?: (listener: () => void) => () => void,
+  extras: {
+    owner?: ReturnType<typeof getDataOwnerGeneration>;
+    prepareCapture?: () => boolean;
+  } = {},
 ): () => void {
-  const entry = { instanceId, flush, isFocused };
+  const entry: CaptureDraftFlusher = {
+    instanceId,
+    flush,
+    isFocused,
+    owner: extras.owner ?? getDataOwnerGeneration(),
+    ...(extras.prepareCapture ? { prepareCapture: extras.prepareCapture } : {}),
+  };
   const flushers = composerCaptureDraftFlushers.get(draftKey) ?? new Set<CaptureDraftFlusher>();
   const unsubscribeFocus = subscribeFocus?.(notifyCaptureLockChange);
   flushers.add(entry);
@@ -78,7 +92,11 @@ export function registerComposerCaptureDraftFlusher(
 }
 
 export function resolveRegionCaptureComposer(target: RegionCaptureTarget): CaptureDraftFlusher | undefined {
-  const candidates = [...(composerCaptureDraftFlushers.get(target.draftKey) ?? [])];
+  // During an account switch the old account's ChatInput stays mounted while the boundary has
+  // already moved on: never pick (and later write into) a composer whose owner is not current.
+  const candidates = [...(composerCaptureDraftFlushers.get(target.draftKey) ?? [])].filter((entry) =>
+    isDataOwnerIdCurrent(entry.owner),
+  );
   return target.composerId
     ? candidates.find((entry) => entry.instanceId === target.composerId)
     : candidates.find((entry) => entry.isFocused()) ?? (candidates.length === 1 ? candidates[0] : undefined);
@@ -145,6 +163,24 @@ export function requestRegionCapture(explicitTarget?: RegionCaptureTarget): bool
  * 关闭前截屏, 把刚点的菜单冻进画面并挡住可框选区域(review P2)。
  * 目标在点击时已绑定, 延迟期间不重新解析。
  */
+/**
+ * Shortcut path: the key is consumed by the window-level listener, so the target composer's
+ * open suggestion panel (`+` / `@` / slash) would otherwise be frozen into the capture on
+ * Windows/Linux. Ask the composer to close it and start the capture after two paints, the
+ * same as the menu path; with nothing to close, capture immediately.
+ */
+export function runShortcutRegionCapture(
+  target: RegionCaptureTarget,
+  run: (target: RegionCaptureTarget) => boolean,
+  deps: { frame?: (callback: () => void) => unknown } = {},
+): boolean {
+  const composer = resolveRegionCaptureComposer(target);
+  if (!composer?.prepareCapture?.()) return run(target);
+  const frame = deps.frame ?? ((callback: () => void) => window.requestAnimationFrame(callback));
+  frame(() => frame(() => { run(target); }));
+  return true;
+}
+
 export function requestRegionCaptureAfterPaint(
   explicitTarget: RegionCaptureTarget,
   deps: { frame?: (callback: () => void) => unknown; request?: (target: RegionCaptureTarget) => boolean } = {},
@@ -449,7 +485,7 @@ export function useRegionCaptureShortcut(): () => boolean {
   const trigger = useCallback((): boolean => {
     const target = resolveRegionCaptureTargetFromPath(pathnameRef.current);
     if (!target) return false;
-    return runCapture(target);
+    return runShortcutRegionCapture(target, runCapture);
   }, [runCapture]);
 
   useAppShortcut('capture-region', trigger);
