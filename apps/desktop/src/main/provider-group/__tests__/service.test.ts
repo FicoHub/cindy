@@ -574,8 +574,8 @@ describe('onTurnError (automatic switch)', () => {
     const h = harness();
     h.bindings.set('s1', { providerId: 'anthropic', memberKey: 'local', at: 1 });
     h.deps.switchAgentLocation.mockRejectedValueOnce(new Error('[REMOTE_AGENT_DEVICE_UNREACHABLE] unreachable'));
-    // 第一次交接失败后，那次错误已被新 turn / 中断自愈接管。
-    h.deps.isLeaseCurrent.mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false);
+    // 第一次交接失败后，那次错误已被新 turn / 中断自愈接管(开始换电脑前先复核一次，之后选电脑前后各一次)。
+    h.deps.isLeaseCurrent.mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false);
     h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
     await flush();
     expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
@@ -1217,6 +1217,23 @@ describe('onTurnError for a shared user (the sharer’s group picks the computer
     expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
     expect(h.deps.continueSession).toHaveBeenCalledTimes(1);
     expect(h.deps.fallback).not.toHaveBeenCalled();
+  });
+
+  it('drops the claimed token when the error stopped being current while the task record was read', async () => {
+    const h = guestHarness();
+    h.guestSwitch.offer('s1', 'token-aaaaaaaaaaaaaaaa');
+    // 读任务记录期间那次错误已被新的一轮接管(句柄已不是当前状态)。
+    h.deps.readSessionRow.mockImplementation(async () => {
+      h.deps.isLeaseCurrent.mockReturnValue(false);
+      return h.row;
+    });
+    h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 7);
+    await flush();
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    expect(h.deps.continueSession).not.toHaveBeenCalled();
+    expect(h.deps.fallback).not.toHaveBeenCalled();
+    // 下一次打开不带凭证：组所在电脑不会替它换电脑。
+    expect(h.guestSwitch.takeForOpen('s1')).toBeUndefined();
   });
 
   it('leaves the error to the existing handling without a token from the group computer', async () => {

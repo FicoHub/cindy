@@ -297,17 +297,23 @@ function setup(options: { bComesBack?: boolean } = {}) {
   service = createProviderGroupService(deps);
 
   /** 在 B 上开始一轮，B 离线：终态错误进入协调器(随后交给供应商组)。 */
-  async function failOnB() {
+  async function failOnB(failure: { message: string; signals: Record<string, unknown> } = {
+    message: B_LOST.message,
+    signals: { reason: B_LOST.reason },
+  }) {
     coordinator.enqueue(SID, item('q-1', 'long running task'));
     await flush();
     expect(sendToAgent).toHaveBeenCalledTimes(1);
     running = false;
-    coordinator.onTurnEvent(SID, 'error', B_LOST.message, { reason: B_LOST.reason });
+    coordinator.onTurnEvent(SID, 'error', failure.message, failure.signals);
   }
 
+  const markTried = vi.spyOn(router, 'markTried');
   return {
     coordinator,
     service,
+    router,
+    markTried,
     deps,
     hooks,
     row,
@@ -430,5 +436,54 @@ describe('provider group failover vs. the terminal-error drain close (#5880)', (
     // 只有用户自己那条新消息被发出，没有替旧错误续跑。
     expect(h.sendToAgent).toHaveBeenCalledTimes(2);
     expect(h.sendToAgent.mock.calls[1]?.[1]).not.toEqual({ type: 'user', content: CONTINUE_AFTER_ERROR_PROMPT });
+  });
+
+  // 用户亲自接手发生在取得句柄之后、换电脑开始之前(读组设置、资格检查、读任务记录的 await 期间)：
+  // 后续每一步都停下，不冷却、不记为试过、不换电脑(provider-groups.md §6.1)。
+  const B_LIMITED = { message: "You've hit your session limit", signals: { sdkError: 'rate_limit' } };
+  function expectNothingDoneFor(h: ReturnType<typeof setup>) {
+    expect(h.router.coolingUntil('anthropic', MAC_B.key)).toBeNull();
+    expect(h.markTried).not.toHaveBeenCalled();
+    expect(h.deps.directory.invalidate).not.toHaveBeenCalled();
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    expect(h.deps.continueSession).not.toHaveBeenCalled();
+    expect(h.deps.fallback).not.toHaveBeenCalled();
+  }
+
+  it('control: a usage limit on B cools B, marks it tried and switches to this computer', async () => {
+    const h = setup();
+    await h.failOnB(B_LIMITED);
+    await h.releaseAndSettle();
+    expect(h.router.coolingUntil('anthropic', MAC_B.key)).not.toBeNull();
+    expect(h.markTried).toHaveBeenCalledWith(SID, MAC_B.key);
+    expectSwitchedToLocalAndContinued(h);
+  });
+
+  it('a new message sent while the checks are pending stops before cooling or marking B tried', async () => {
+    const h = setup();
+    h.pauseNextReadSessionRow();
+    await h.failOnB(B_LIMITED);
+    await flush();
+    // 与 register 发送入口相同：先作废换电脑这一趟，再进队。
+    h.service.noteUserAction(SID);
+    h.coordinator.enqueue(SID, item('q-2', 'something else'));
+    await flush();
+    await h.releaseAndSettle();
+    expectNothingDoneFor(h);
+    expect(h.sendToAgent).toHaveBeenCalledTimes(2);
+    expect(h.sendToAgent.mock.calls[1]?.[1]).not.toEqual({ type: 'user', content: CONTINUE_AFTER_ERROR_PROMPT });
+  });
+
+  it('changing the model while the checks are pending stops the switch even though the error is still shown', async () => {
+    const h = setup();
+    h.pauseNextReadSessionRow();
+    await h.failOnB(B_LIMITED);
+    await flush();
+    // 与 register 换模型入口相同：作废换电脑这一趟、撤销额度等待；错误与重试入口仍在(句柄本身还有效)。
+    h.service.noteUserAction(SID);
+    h.coordinator.cancelUsageLimitWait(SID);
+    await h.releaseAndSettle();
+    expectNothingDoneFor(h);
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
   });
 });
