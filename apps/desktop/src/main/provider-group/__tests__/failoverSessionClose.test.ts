@@ -263,6 +263,7 @@ function setup(options: { bComesBack?: boolean } = {}) {
   });
   let readRowGate: { opened: Promise<void>; open: () => void } | null = null;
   let probeGate: { opened: Promise<void>; open: () => void } | null = null;
+  let writeBindingGate: { opened: Promise<void>; open: () => void } | null = null;
   let held: (() => void) | null = null;
   const leaseResults: Array<object | null> = [];
   const deps = {
@@ -271,6 +272,9 @@ function setup(options: { bComesBack?: boolean } = {}) {
     readGroup: (id: string) => (id === 'anthropic' ? config : null),
     readBinding: (id: string) => bindings.get(id) ?? null,
     writeBinding: vi.fn(async (id: string, binding: { providerId: string; memberKey: string } | null) => {
+      const pending = writeBindingGate;
+      writeBindingGate = null;
+      if (pending) await pending.opened;
       if (binding) bindings.set(id, { ...binding, at: 2 });
       else bindings.delete(id);
     }),
@@ -379,9 +383,19 @@ function setup(options: { bComesBack?: boolean } = {}) {
       readRowGate = gate();
       held = readRowGate.open;
     },
+    /** 暂停下一次写绑定(换电脑已选好目标、正要交接)。 */
+    pauseNextWriteBinding: () => {
+      writeBindingGate = gate();
+      held = writeBindingGate.open;
+    },
     pauseNextProbe: () => {
       probeGate = gate();
       held = probeGate.open;
+    },
+    /** 只放行暂停的那一步(不等终态错误的处理)。 */
+    release() {
+      held?.();
+      held = null;
     },
     /** 放行暂停的那一步，等这次错误处理走完。 */
     async releaseAndSettle() {
@@ -579,5 +593,51 @@ describe('provider group failover vs. the terminal-error drain close (#5880)', (
     const end = REGISTER_SOURCE.indexOf('\n}\n', start);
     expect(start).toBeGreaterThan(0);
     expect(REGISTER_SOURCE.slice(start, end)).not.toContain('providerGroupService');
+  });
+
+  // 发送前换电脑(beforeSend)：已选好目标、正在写绑定 / 交接时用户停止，交接在改动之前停下，任务留在原电脑
+  // (provider-groups.md §6.1 发送前：「用户停止这次发送时立刻停下：不再等、不再换」)。
+  async function relocateBeforeSend(h: ReturnType<typeof setup>, signal?: AbortSignal) {
+    const moving = h.service.beforeSend(SID, signal ? { signal } : undefined);
+    await flush();
+    return moving;
+  }
+
+  it('control: before sending, a task on an offline B moves to this computer', async () => {
+    const h = setup();
+    await relocateBeforeSend(h);
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.row.agentDeviceId).toBeNull();
+    expect(h.bindings.get(SID)?.memberKey).toBe(LOCAL.key);
+  });
+
+  it('stop all while the task is being moved before sending keeps it on B', async () => {
+    const h = setup();
+    h.pauseNextWriteBinding();
+    const moving = relocateBeforeSend(h);
+    await flush();
+    expect(h.deps.writeBinding).toHaveBeenCalledTimes(1);
+    await h.stopAll();
+    h.release();
+    await moving;
+    await flush();
+    expect(h.row.agentDeviceId).toBe(MAC_B.agentDeviceId);
+    expect(h.bindings.get(SID)?.memberKey).toBe(MAC_B.key);
+    expect(h.markTried.mock.calls.map(([, key]) => key)).toEqual([MAC_B.key]);
+  });
+
+  it('stopping the send while the task is being moved before sending keeps it on B', async () => {
+    const h = setup();
+    const controller = new AbortController();
+    h.pauseNextWriteBinding();
+    const moving = relocateBeforeSend(h, controller.signal);
+    await flush();
+    expect(h.deps.writeBinding).toHaveBeenCalledTimes(1);
+    controller.abort();
+    h.release();
+    await moving;
+    await flush();
+    expect(h.row.agentDeviceId).toBe(MAC_B.agentDeviceId);
+    expect(h.bindings.get(SID)?.memberKey).toBe(MAC_B.key);
   });
 });
