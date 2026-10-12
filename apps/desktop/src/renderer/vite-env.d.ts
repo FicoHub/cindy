@@ -3143,6 +3143,11 @@ interface ElectronAPI {
     params: import('../shared/pngClipboard').CopyPngToClipboardParams,
   ) => Promise<void>;
 
+  /** Copy text to the local clipboard; rejects unless it reads back intact. */
+  copyTextToClipboard: (
+    params: import('../shared/textClipboard').CopyTextToClipboardParams,
+  ) => Promise<void>;
+
   /**
    * Copy an image or video (resolved from `xdt-image://` / `xdt-video://`
    * URL, or absolute path) into the system clipboard as a FILE REFERENCE.
@@ -4870,8 +4875,8 @@ interface ElectronAPI {
             }
           | { ok: false; errorCode: string; message: string }
         >;
-        /** 每个在用的本机伙伴接手的项目目录(侧栏「在跟进」标记用)。 */
-        followScopes: () => Promise<Array<{ botId: string; directories: string[] }>>;
+        /** 每个在用本机伙伴的逐任务责任 ID；旧宿主缺字段时不推断。 */
+        followScopes: () => Promise<Array<{ botId: string; sessionIds?: string[] }>>;
       };
       listSkills: (botId: string) => Promise<import('../shared/botSkill').BotSkillSummary[]>;
       memory: {
