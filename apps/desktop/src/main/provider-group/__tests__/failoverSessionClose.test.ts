@@ -6,6 +6,8 @@
  */
 import type { SessionStatus } from '@cindy/maker-core';
 import type { ProviderView } from '@cindy/model-providers';
+import { readFileSync } from 'node:fs';
+import { ScriptTarget, transpileModule } from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CONTINUE_AFTER_ERROR_PROMPT } from '../../../shared/interruptedTurn';
@@ -14,6 +16,8 @@ import type { ProviderGroupConfig, ProviderGroupMember } from '../../../shared/p
 import { AgentInputCoordinator, type AgentInputCoordinatorDeps } from '../../maker-ipc/agent-input-coordinator';
 import { shouldPreserveWaitingContinuationOnlyAutoResume } from '../../maker-ipc/interruptedTurnAutoResume';
 import { createSessionBindingLifecycle, runSessionCloseCleanup } from '../../maker-ipc/sessionBindingLifecycle';
+import type { IpcHandler } from '../../maker-ipc/ipcHandlerRegistry';
+import { registerStopSessionBackgroundTasksHandler } from '../../maker-ipc/stopSessionBackgroundTasksHandler';
 import type { ProviderGroupBinding } from '../bindings';
 import type { ProviderGroupDirectory, ResolvedMemberState, ResolvedProviderGroupMember } from '../directory';
 import { createProviderGroupRouter } from '../router';
@@ -78,6 +82,32 @@ function item(clientId: string, text: string): AgentInputQueuedMessage {
   } as AgentInputQueuedMessage;
 }
 
+/** register.ts 里「全部停止」注册处的 noteSessionReset(生产接线原文)。 */
+const REGISTER_SOURCE = readFileSync(new URL('../../maker-ipc/register.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+function stopAllRegistration(): string {
+  const start = REGISTER_SOURCE.indexOf('registerStopSessionBackgroundTasksHandler(createElectronIpcHandlerRegistry(), {');
+  const end = REGISTER_SOURCE.indexOf('\n  });', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return REGISTER_SOURCE.slice(start, end);
+}
+function productionStopAllNoteSessionReset(bindings: {
+  resetAutomaticRecoveryForExplicitStop: (sessionId: string) => void;
+  providerGroupService: { noteUserAction(sessionId: string): void } | null;
+}): (sessionId: string) => void {
+  const registration = stopAllRegistration();
+  const start = registration.indexOf('    noteSessionReset:');
+  const end = registration.indexOf('\n    notifyGoalStop:', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const expression = registration.slice(start + '    noteSessionReset:'.length, end).trim().replace(/,$/, '');
+  const compiled = transpileModule(`return (${expression});`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
+  return new Function('resetAutomaticRecoveryForExplicitStop', 'providerGroupService', compiled)(
+    bindings.resetAutomaticRecoveryForExplicitStop,
+    bindings.providerGroupService,
+  ) as (sessionId: string) => void;
+}
+
 async function flush() {
   for (let i = 0; i < 200; i++) await Promise.resolve();
 }
@@ -90,7 +120,7 @@ function gate() {
 
 interface FakeSession {
   id: string;
-  closeReason: 'unexpected' | 'agent-switch';
+  closeReason: 'unexpected' | 'agent-switch' | 'requested';
   listeners: Set<(status: SessionStatus) => void>;
   onStatusChange(listener: (status: SessionStatus) => void): () => void;
   setInteractionListener(listener: unknown): void;
@@ -309,11 +339,27 @@ function setup(options: { bComesBack?: boolean } = {}) {
   }
 
   const markTried = vi.spyOn(router, 'markTried');
+  // 「全部停止」的真实 IPC handler 与 register 里的 noteSessionReset 接线原文；resetAutomaticRecoveryForExplicitStop
+  // (撤中断自愈 / silent-stop / 退避簿记，不碰输入协调器与供应商组)用 spy 代替，closeSession 接 maker.closeSession(requested)。
+  const noteSessionReset = vi.fn((_sessionId: string) => {});
+  let stopAllHandler: IpcHandler | null = null;
+  registerStopSessionBackgroundTasksHandler({ handle: (_channel, handler) => { stopAllHandler = handler; } }, {
+    closeSession: async () => closeSession(live, 'requested'),
+    clearBackgroundActivity: () => {},
+    noteSessionReset: productionStopAllNoteSessionReset({
+      resetAutomaticRecoveryForExplicitStop: noteSessionReset,
+      providerGroupService: service,
+    }),
+    notifyGoalStop: () => {},
+  });
   return {
     coordinator,
     service,
     router,
     markTried,
+    noteSessionReset,
+    /** 用户点「全部停止」。 */
+    stopAll: () => stopAllHandler!({}, SID),
     deps,
     hooks,
     row,
@@ -485,5 +531,48 @@ describe('provider group failover vs. the terminal-error drain close (#5880)', (
     await h.releaseAndSettle();
     expectNothingDoneFor(h);
     expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  // 「全部停止」(stopSessionBackgroundTasksHandler) 只关闭会话、撤自动续跑簿记，不走协调器的 Stop：
+  // 换电脑这一趟也必须停下，不换、不续跑、不交回(provider-groups.md §6.1「用户停止」)。
+  function expectStoppedByStopAll(h: ReturnType<typeof setup>) {
+    expect(h.noteSessionReset).toHaveBeenCalledWith(SID);
+    expect(h.closeContexts.at(-1)).toEqual({ closeReason: 'requested', preserveAutoResumeIntent: false });
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    expect(h.deps.continueSession).not.toHaveBeenCalled();
+    expect(h.deps.fallback).not.toHaveBeenCalled();
+    expect(h.sendToAgent).toHaveBeenCalledTimes(1);
+  }
+
+  it('stop all while the checks are pending stops the switch', async () => {
+    const h = setup();
+    h.pauseNextReadSessionRow();
+    await h.failOnB();
+    await flush();
+    await h.stopAll();
+    await h.releaseAndSettle();
+    expectStoppedByStopAll(h);
+  });
+
+  it('stop all while waiting for B to come back stops the switch', async () => {
+    const h = setup();
+    h.pauseNextProbe();
+    await h.failOnB();
+    await flush();
+    expect(h.leaseResults).toEqual([expect.any(Object)]);
+    await h.stopAll();
+    await h.releaseAndSettle();
+    expectStoppedByStopAll(h);
+  });
+
+  it('register wires stop all to the provider group without changing the shared explicit-stop reset', () => {
+    const registration = stopAllRegistration();
+    expect(registration).toContain('resetAutomaticRecoveryForExplicitStop(sessionId);');
+    expect(registration).toContain('providerGroupService?.noteUserAction(sessionId);');
+    // 只接在「全部停止」：其他停止入口共用的 resetAutomaticRecoveryForExplicitStop 本身不碰供应商组。
+    const start = REGISTER_SOURCE.indexOf('function resetAutomaticRecoveryForExplicitStop(');
+    const end = REGISTER_SOURCE.indexOf('\n}\n', start);
+    expect(start).toBeGreaterThan(0);
+    expect(REGISTER_SOURCE.slice(start, end)).not.toContain('providerGroupService');
   });
 });
