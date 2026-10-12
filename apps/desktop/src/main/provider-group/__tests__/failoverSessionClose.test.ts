@@ -7,7 +7,6 @@
 import type { SessionStatus } from '@cindy/maker-core';
 import type { ProviderView } from '@cindy/model-providers';
 import { readFileSync } from 'node:fs';
-import { ScriptTarget, transpileModule } from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CONTINUE_AFTER_ERROR_PROMPT } from '../../../shared/interruptedTurn';
@@ -82,8 +81,17 @@ function item(clientId: string, text: string): AgentInputQueuedMessage {
   } as AgentInputQueuedMessage;
 }
 
-/** register.ts 里「全部停止」注册处的 noteSessionReset(生产接线原文)。 */
+/**
+ * register.ts 里「全部停止」注册处的 noteSessionReset：逐行(去掉缩进与注释)与这份期望原文完全一致，
+ * 下面的「全部停止」用例按同一份原文接线(resetAutomaticRecoveryForExplicitStop 用 spy 代替)。
+ */
 const REGISTER_SOURCE = readFileSync(new URL('../../maker-ipc/register.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const STOP_ALL_NOTE_SESSION_RESET = [
+  'noteSessionReset: (sessionId) => {',
+  'resetAutomaticRecoveryForExplicitStop(sessionId);',
+  'providerGroupService?.noteUserAction(sessionId);',
+  '},',
+];
 function stopAllRegistration(): string {
   const start = REGISTER_SOURCE.indexOf('registerStopSessionBackgroundTasksHandler(createElectronIpcHandlerRegistry(), {');
   const end = REGISTER_SOURCE.indexOf('\n  });', start);
@@ -91,21 +99,17 @@ function stopAllRegistration(): string {
   expect(end).toBeGreaterThan(start);
   return REGISTER_SOURCE.slice(start, end);
 }
-function productionStopAllNoteSessionReset(bindings: {
-  resetAutomaticRecoveryForExplicitStop: (sessionId: string) => void;
-  providerGroupService: { noteUserAction(sessionId: string): void } | null;
-}): (sessionId: string) => void {
+function stopAllNoteSessionResetLines(): string[] {
   const registration = stopAllRegistration();
   const start = registration.indexOf('    noteSessionReset:');
   const end = registration.indexOf('\n    notifyGoalStop:', start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
-  const expression = registration.slice(start + '    noteSessionReset:'.length, end).trim().replace(/,$/, '');
-  const compiled = transpileModule(`return (${expression});`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
-  return new Function('resetAutomaticRecoveryForExplicitStop', 'providerGroupService', compiled)(
-    bindings.resetAutomaticRecoveryForExplicitStop,
-    bindings.providerGroupService,
-  ) as (sessionId: string) => void;
+  return registration
+    .slice(start, end)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('//'));
 }
 
 async function flush() {
@@ -339,17 +343,20 @@ function setup(options: { bComesBack?: boolean } = {}) {
   }
 
   const markTried = vi.spyOn(router, 'markTried');
-  // 「全部停止」的真实 IPC handler 与 register 里的 noteSessionReset 接线原文；resetAutomaticRecoveryForExplicitStop
-  // (撤中断自愈 / silent-stop / 退避簿记，不碰输入协调器与供应商组)用 spy 代替，closeSession 接 maker.closeSession(requested)。
+  // 「全部停止」的真实 IPC handler；noteSessionReset 按 register 里的原文接线(STOP_ALL_NOTE_SESSION_RESET，
+  // 由下面的接线用例逐行核对)，resetAutomaticRecoveryForExplicitStop(撤中断自愈 / silent-stop / 退避簿记，
+  // 不碰输入协调器与供应商组)用 spy 代替；closeSession 接 maker.closeSession(requested)。
   const noteSessionReset = vi.fn((_sessionId: string) => {});
+  const resetAutomaticRecoveryForExplicitStop = noteSessionReset;
+  const providerGroupService: { noteUserAction(sessionId: string): void } | null = service;
   let stopAllHandler: IpcHandler | null = null;
   registerStopSessionBackgroundTasksHandler({ handle: (_channel, handler) => { stopAllHandler = handler; } }, {
     closeSession: async () => closeSession(live, 'requested'),
     clearBackgroundActivity: () => {},
-    noteSessionReset: productionStopAllNoteSessionReset({
-      resetAutomaticRecoveryForExplicitStop: noteSessionReset,
-      providerGroupService: service,
-    }),
+    noteSessionReset: (sessionId) => {
+      resetAutomaticRecoveryForExplicitStop(sessionId);
+      providerGroupService?.noteUserAction(sessionId);
+    },
     notifyGoalStop: () => {},
   });
   return {
@@ -566,9 +573,7 @@ describe('provider group failover vs. the terminal-error drain close (#5880)', (
   });
 
   it('register wires stop all to the provider group without changing the shared explicit-stop reset', () => {
-    const registration = stopAllRegistration();
-    expect(registration).toContain('resetAutomaticRecoveryForExplicitStop(sessionId);');
-    expect(registration).toContain('providerGroupService?.noteUserAction(sessionId);');
+    expect(stopAllNoteSessionResetLines()).toEqual(STOP_ALL_NOTE_SESSION_RESET);
     // 只接在「全部停止」：其他停止入口共用的 resetAutomaticRecoveryForExplicitStop 本身不碰供应商组。
     const start = REGISTER_SOURCE.indexOf('function resetAutomaticRecoveryForExplicitStop(');
     const end = REGISTER_SOURCE.indexOf('\n}\n', start);
