@@ -241,13 +241,11 @@
         "collapseAria": "收起 {{name}} 的模型用量",
         "empty": "还没有分享给任何人。生成分享链接发给对方，对方申请、你同意后会出现在这里。",
         "table": {
-          "model": "模型",
           "turns": "消息",
           "input": "输入",
           "output": "输出",
           "amount": "估算金额"
         },
-        "noUsage": "这段时间没有用量",
         "estimateNote": "金额按本地单价估算，不代表供应商实际账单。"
       },
       "removeConfirm": {
@@ -422,7 +420,7 @@
       "expandAria": "展开 {{name}} 的用量明细",
       "collapseAria": "收起 {{name}} 的用量明细",
       "table": {
-        "member": "组内电脑 / 模型"
+        "member": "电脑 / 模型"
       }
     },
     "section": {
@@ -3456,7 +3454,10 @@
       "connection": {
         "modelCount": "已配置 {{count}} 个模型",
         "modelsAutomatic": "模型资料自动获取。单个模型的设置在模型列表中调整。",
-        "manualModel": "模型 ID（无法自动获取时填写）"
+        "manualModel": "模型 ID（无法自动获取时填写）",
+        "modelTypeAutomatic": "自动识别",
+        "manualModelTypeHint": "同一 ID 可更新类型；自动识别会恢复目录中的类型。",
+        "mediaOnlyTestHint": "此连接仅含非对话模型。可获取模型列表检查目录访问，此处不验证模型调用。"
       },
       "byok": {
         "managed": "由企业管理连接与模型",
@@ -6039,7 +6040,7 @@
         "installed": "已安装",
         "replace": "替换",
         "replaceAria": "使用此市场版本替换 {{name}}",
-        "replaceDescription": "已安装相同标识的插件；继续安装会用此市场版本替换，并保留插件数据。",
+        "replaceDescription": "已安装相同标识的插件；继续安装会切换来源。原来源的数据将隔离保留，新来源不会继承原账号和密钥，需要重新连接。",
         "unavailable": "插件市场暂时不可用；已安装插件仍可正常管理和使用。",
         "customSourcesUnavailable": "以下自定义市场暂时不可用：{{names}}。其他市场不受影响。",
         "authenticationRequired": "登录 Cindy 后才能查看插件市场。",
@@ -9765,6 +9766,8 @@
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "正在读取那台电脑的模型…",
         "favoritesGroup": "收藏",
+        "favoritesSaveFailed": "未能保存收藏更改",
+        "favoritesCleanupFailed": "未能清理已失效的分享模型收藏",
         "favoritesEmpty": "还没有收藏——把鼠标停到模型行上，点 ☆ 存到这里",
         "addFavorite": "存为收藏",
         "customize": "自定义",
@@ -10115,7 +10118,7 @@
       "saveEdit": "保存文本"
     },
     "sharedProviderCredential": {
-      "description": "这个任务用的是分享来的供应商，Agent 读到的内容会经过分享者的电脑。这一步涉及凭证类文件（如密钥、.env），需要你确认后才继续。"
+      "description": "这个任务用的是分享来的供应商，Agent 读到的内容会经过分享者或其安排的电脑。这一步可能涉及凭证（如密钥、.env），需要你确认后才继续。选择「本任务总是允许」后，本任务后续凭证操作不再额外确认；重新打开任务或切换权限档后需再次确认。"
     },
     "mediaDownload": {
       "title": "允许下载生成的媒体？",
@@ -10952,6 +10955,7 @@
         },
         "directory": "目录：",
         "baseline": "基线分支：",
+        "additionalDirectories": "另含：",
         "unverifiedResult": "以下结论已生成，但未能验证是否仍然有效。"
       }
     },
@@ -11410,6 +11414,7 @@
       },
       "dialogueLabel": "对话",
       "backToAutomations": "返回 Automations",
+      "backToReviewSource": "返回来源任务",
       "waitForReply": "等待你在文档区回复…",
       "modelSwitchedFastModeOff": "已切换模型，Fast Mode 已关闭"
     },
@@ -14102,6 +14107,18 @@
       "current": "审查当前目录",
       "choose": "选择其他目录",
       "open": "审查"
+    },
+    "inputSummary": {
+      "title": "独立审查（只读，无开发记忆）",
+      "directory": "目录：{{dir}}",
+      "baseline": "对比 {{base}}",
+      "uncommitted": "包含未提交修改",
+      "additionalDirectories": "另含：{{dirs}}",
+      "uncovered": "未覆盖：{{dirs}}",
+      "uncheckedDirs": "另有 {{count}} 个任务目录未检查",
+      "artifacts": "成果：{{count}} 项",
+      "focus": "关注：{{focus}}",
+      "task": "按任务目标审查当前成果"
     }
   },
   "learn": {

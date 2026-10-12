@@ -241,13 +241,11 @@
         "collapseAria": "{{name}} のモデル別使用量を折りたたむ",
         "empty": "まだ誰とも共有していません。共有リンクを作成して相手に送ってください。相手が申請し、あなたが承認するとここに表示されます。",
         "table": {
-          "model": "モデル",
           "turns": "メッセージ",
           "input": "入力",
           "output": "出力",
           "amount": "推定金額"
         },
-        "noUsage": "この期間の使用量はありません",
         "estimateNote": "金額はローカルの単価に基づく推定で、プロバイダーの実際の請求額ではありません。"
       },
       "removeConfirm": {
@@ -3456,7 +3454,10 @@
       "connection": {
         "modelCount": "{{count}} 個のモデルを設定済み",
         "modelsAutomatic": "モデル情報は自動取得されます。個別の設定はモデル一覧から変更できます。",
-        "manualModel": "モデル ID（自動取得できない場合）"
+        "manualModel": "モデル ID（自動取得できない場合）",
+        "modelTypeAutomatic": "自動判別",
+        "manualModelTypeHint": "同じ ID で種類を更新できます。自動判別を選ぶと、カタログの種類に戻ります。",
+        "mediaOnlyTestHint": "この接続にはチャット以外のモデルのみが含まれています。モデル一覧の取得でカタログへのアクセスを確認できます。ここではモデルの実行はテストしません。"
       },
       "byok": {
         "managed": "組織が接続とモデルを管理",
@@ -6039,7 +6040,7 @@
         "installed": "インストール済み",
         "replace": "置き換え",
         "replaceAria": "{{name}} をこのマーケット版で置き換える",
-        "replaceDescription": "同じ ID のプラグインがすでにインストールされています。続行するとこのマーケット版で置き換え、プラグインのデータは保持されます。",
+        "replaceDescription": "同じ ID のプラグインがすでにインストールされています。続行すると提供元が切り替わります。元のデータは別に保持されますが、アカウントやシークレットは引き継がれず、再接続が必要です。",
         "unavailable": "プラグインマーケットを一時的に利用できません。インストール済みプラグインは引き続き利用できます。",
         "customSourcesUnavailable": "次のカスタムマーケットは一時的に利用できません：{{names}}。他のマーケットには影響しません。",
         "authenticationRequired": "プラグインマーケットを表示するには Cindy にログインしてください。",
@@ -9765,6 +9766,8 @@
         "railRemoteProvider": "{{provider}} · {{device}}",
         "remoteLoading": "そのパソコンのモデルを読み込み中…",
         "favoritesGroup": "お気に入り",
+        "favoritesSaveFailed": "お気に入りの変更を保存できませんでした",
+        "favoritesCleanupFailed": "共有が解除されたモデルのお気に入りを削除できませんでした",
         "favoritesEmpty": "お気に入りはまだありません——モデルの行にカーソルを合わせて ☆ で保存できます",
         "addFavorite": "お気に入りに保存",
         "customize": "カスタマイズ",
@@ -10115,7 +10118,7 @@
       "saveEdit": "テキストを保存"
     },
     "sharedProviderCredential": {
-      "description": "このタスクは共有されたプロバイダーを使っているため、Agent が読み取った内容は共有元のパソコンを経由します。この操作は認証情報のファイル（鍵や .env など）に関わるため、確認してから続行します。"
+      "description": "このタスクは共有されたプロバイダーを使うため、Agent が読み取った内容は共有元または共有元が手配したパソコンを経由します。この操作は認証情報（鍵や .env など）に関わる可能性があり、確認が必要です。「このセッションで常に許可」を選ぶと、このタスクで共有に伴う認証情報の確認を繰り返しません。タスクを開き直すか権限モードを変更すると、再度確認します。"
     },
     "mediaDownload": {
       "title": "生成されたメディアをダウンロードしますか？",
@@ -10952,6 +10955,7 @@
         },
         "directory": "フォルダー：",
         "baseline": "基準ブランチ：",
+        "additionalDirectories": "ほかに：",
         "unverifiedResult": "以下の指摘は生成されましたが、現在も有効か確認できませんでした。"
       }
     },
@@ -11410,6 +11414,7 @@
       },
       "dialogueLabel": "対話",
       "backToAutomations": "Automations に戻る",
+      "backToReviewSource": "元のタスクに戻る",
       "waitForReply": "ドキュメント領域での返信を待っています…",
       "modelSwitchedFastModeOff": "モデルを切り替えました。Fast Mode は無効になりました"
     },
@@ -14102,6 +14107,18 @@
       "current": "このフォルダーを確認",
       "choose": "別のフォルダーを選択",
       "open": "レビュー"
+    },
+    "inputSummary": {
+      "title": "独立レビュー（読み取り専用・開発メモリなし）",
+      "directory": "ディレクトリ：{{dir}}",
+      "baseline": "{{base}} と比較",
+      "uncommitted": "未コミットの変更を含む",
+      "additionalDirectories": "ほかに：{{dirs}}",
+      "uncovered": "対象外：{{dirs}}",
+      "uncheckedDirs": "ほかに {{count}} 個のタスクディレクトリは未確認",
+      "artifacts": "成果物：{{count}} 件",
+      "focus": "重点：{{focus}}",
+      "task": "タスクの目標に照らして現在の成果をレビュー"
     }
   },
   "learn": {
