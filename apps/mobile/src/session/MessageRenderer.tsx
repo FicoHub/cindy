@@ -410,6 +410,8 @@ import { latexToUnicodeApproximation } from '@cindy/maker-shared/math-markdown';
 import type { RemoteTextFilePreviewResult } from '@/device-link/mobileMakerTransport';
 import { fontWeight, lineHeight, radius, spacing, typeScale } from '@/theme/tokens';
 import { iconSize, iconStroke, monoFont, useTheme, useThemedStyles, type ThemeColors } from '@/theme';
+import { useUserBubbleAppearance } from '@/theme/userBubblePreference';
+import { isOwnUserBubble } from './userBubbleOwnership';
 import { i18n } from '@/i18n';
 import { formatLocalizedDuration } from '@/session/sessionDurationFormat';
 import { mobilePresentationLocalizer } from '@/i18n/presentationLocalizer';
@@ -1677,6 +1679,7 @@ export function MessageRenderer({
           chatFilePathContext?.workdir,
           chatFilePathContext?.remoteHostId,
           chatFilePathContext?.sessionId,
+          getSentImagePreview,
         )
       : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sentThumbsVersion 是 collect 内部读的全局 store 的失效信号
@@ -1684,6 +1687,7 @@ export function MessageRenderer({
       chatFilePathContext?.remoteHostId,
       chatFilePathContext?.sessionId,
       chatFilePathContext?.workdir,
+      getSentImagePreview,
       imageLightboxOpen,
       listData,
       sentThumbsVersion,
@@ -1702,7 +1706,8 @@ export function MessageRenderer({
       return p.key === n.key
         && p.url === n.url
         && p.payload.media.url === n.payload.media.url
-        && p.payload.media.previewable === n.payload.media.previewable;
+        && p.payload.media.previewable === n.payload.media.previewable
+        && p.previewUri === n.previewUri;
     })) {
       return prev;
     }
@@ -3369,6 +3374,8 @@ function MessageBubble({
   item: MobileMessageItem;
   actions: MessageActions & { firstUserMessageClientId?: string };
 }) {
+  const { colors: userBubbleColors } = useUserBubbleAppearance();
+  const { user: viewer } = useAuth();
   const styles = useThemedStyles(makeStyles);
   const { colors, mode } = useTheme();
   const { t, i18n: i18nInstance } = useTranslation();
@@ -3509,11 +3516,11 @@ function MessageBubble({
     && item.message.kind === 'user'
     && !isFirstUserMessage
   );
+  // 对齐桌面:任务运行中也保留删除入口,点了由页面提示等回复结束,不让菜单项时有时无。
   const canDelete = !!(
     showCompletedActionBar
     && clientId
     && actions.onDeleteMessage
-    && actions.isSessionStreaming !== true
     && (item.message.kind === 'user' || item.message.kind === 'assistant')
   );
   const canCopyLink = !!(showCompletedActionBar && clientId && actions.onCopyMessageLink);
@@ -3750,6 +3757,9 @@ function MessageBubble({
         isUser ? styles.userBubble : styles.agentBubble,
         actions.companion && !isUser && !item.message.systemCardType && styles.companionAnswer,
         hookSource && styles.hookSourceBubble,
+        isUser && !item.message.systemCardType && userBubbleColors
+          && isOwnUserBubble(item.message, { accountId: viewer?.id, remoteDeviceId: actions.remoteDeviceId })
+          && { backgroundColor: userBubbleColors.background, borderColor: userBubbleColors.border },
       ]}
       testID={isUser ? 'message.userBubble' : 'message.agentBubble'}
     >
@@ -4758,7 +4768,14 @@ function WorkGroupCard({
   const pluginWork = actions.companionPluginWork?.get(item.key);
   // The Host projects running lines for this view; folded groups render them as they are,
   // without building the hidden activity tree or reading any work details.
-  const lines = isStreaming && !expanded ? item.deferred?.lines : undefined;
+  const lines = isStreaming ? item.deferred?.lines : undefined;
+  // Expanding keeps these lines on screen until the detail read has rows to replace them.
+  const holdLines = expanded && item.deferred?.awaitingDetails === true && !!lines?.length;
+  const lineRows = lines?.length ? (
+    <View style={styles.workActivityStack}>
+      {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
+    </View>
+  ) : null;
   return (
     <>
     {pluginWork ? <PluginInvocationHeader plugins={pluginWork.plugins} running={pluginWork.running}
@@ -4768,13 +4785,7 @@ function WorkGroupCard({
       chevronPosition={header.chevronPosition}
       chevronSize={header.chevronSize}
       controlledExpanded={expanded}
-      collapsedBody={lines?.length ? (
-        <Rail layout={layout}>
-          <View style={styles.workActivityStack}>
-            {lines.map((line) => <WorkLineRow key={line.key} line={line} onPress={onToggle} />)}
-          </View>
-        </Rail>
-      ) : undefined}
+      collapsedBody={lineRows ? <Rail layout={layout}>{lineRows}</Rail> : undefined}
       onControlledToggle={onToggle}
       title={title}
       subtitle={header.subtitle ?? undefined}
@@ -4791,6 +4802,7 @@ function WorkGroupCard({
       {expanded ? (
         <Rail layout={layout}>
           <View style={styles.workGroupStack}>
+            {holdLines && lineRows}
             {item.deferred?.loading && <CompactActivityIndicator color={colors.textTertiary} size={header.iconSize} />}
             {item.deferred?.failed && (
               <MessageListActionButton
@@ -4803,7 +4815,7 @@ function WorkGroupCard({
                 <Text style={styles.payloadOpenButtonText}>{t('message.renderer.retryPreview')}</Text>
               </MessageListActionButton>
             )}
-            {item.children.map((child) => {
+            {!holdLines && item.children.map((child) => {
               if (child.type === 'thinking') {
                 return <ExpandedWorkThinkingRow key={child.key} item={child} />;
               }
