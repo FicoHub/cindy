@@ -427,7 +427,9 @@ describe('onTurnError (automatic switch)', () => {
       h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 1);
       await flush();
       expect(h.deps.fallback).toHaveBeenCalledTimes(1);
-      expect(h.deps.leaseRecovery).not.toHaveBeenCalled();
+      // 句柄在第一次 await 之前就取得(只读，#5880)；不归组的任务不会凭它重新挂上等待或换电脑。
+      expect(h.deps.rearmContinue).not.toHaveBeenCalled();
+      expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
       expect(h.bindings.size).toBe(0);
     }
   });
@@ -1200,6 +1202,21 @@ describe('onTurnError for a shared user (the sharer’s group picks the computer
     expect(h.deps.fallback).not.toHaveBeenCalled();
     // 分享来的电脑不在本机的任何组里：不冷却、不写绑定。
     expect(h.bindings.size).toBe(0);
+  });
+
+  it('keeps the retry entry when the session closes while the task record is read (#5880)', async () => {
+    const h = guestHarness();
+    h.guestSwitch.offer('s1', 'token-aaaaaaaaaaaaaaaa');
+    // 读任务记录期间会话关闭：关闭撤销了限额等待候选，之后再取句柄会落空。
+    h.deps.readSessionRow.mockImplementation(async () => {
+      h.deps.leaseRecovery.mockReturnValue(null);
+      return h.row;
+    });
+    h.service.onTurnError('s1', { sdkError: 'rate_limit' }, 7);
+    await flush();
+    expect(h.deps.switchAgentLocation).toHaveBeenCalledTimes(1);
+    expect(h.deps.continueSession).toHaveBeenCalledTimes(1);
+    expect(h.deps.fallback).not.toHaveBeenCalled();
   });
 
   it('leaves the error to the existing handling without a token from the group computer', async () => {

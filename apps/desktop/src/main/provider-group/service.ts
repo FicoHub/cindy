@@ -998,11 +998,14 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     const decision = decide(sessionId, signals, 'run');
     if (decision.action !== 'switch') return false;
     const { cause } = decision;
+    // 交接会关闭旧会话(关闭撤销限额等待)：先取得这次错误的重试入口。终态错误后会话也可能在下面的检查期间自己关闭
+    // (drain 宽限到点关闭重建)，所以在第一次 await 之前取得；用户接手、新一轮仍按句柄失效(isLeaseCurrent)。
+    const lease = deps.leaseRecovery(sessionId, token);
     if (!deps.readBinding(sessionId) && !(await adoptOnFailure(sessionId))) {
-      return guestFailover(sessionId, signals, token, cause, hooks);
+      return guestFailover(sessionId, signals, token, lease, cause, hooks);
     }
     const bound = await loadBound(sessionId);
-    if (!bound) return decision.connection ? reconnectWithoutGroup(sessionId, signals, token, decision, hooks) : false;
+    if (!bound) return decision.connection ? reconnectWithoutGroup(sessionId, signals, token, lease, decision, hooks) : false;
     const { binding, source, config } = bound;
     if (!config) {
       await releaseDeletedGroup(sessionId, groupOf(source, binding.providerId));
@@ -1014,8 +1017,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     if (!row?.model || row.remoteHostId) return false;
     const current = await verifyBinding(sessionId, source, binding, config, row);
     if (!current) return false;
-    // 交接会关闭旧会话(关闭撤销限额等待)：先取得这次错误的重试入口。用户已接手时什么都不做。
-    const lease = deps.leaseRecovery(sessionId, token);
+    // 用户已接手时什么都不做。
     if (!lease) return true;
     const boundRow = { ...row, model: row.model };
     await withSwitchRun(sessionId, signals, token, lease, hooks, async (isCurrent, handBack) => {
@@ -1078,6 +1080,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     sessionId: string,
     signals: InterruptedTurnErrorSignals,
     token: number,
+    lease: object | null,
     decision: ProviderGroupFailureDecision & { action: 'switch' },
     hooks: ProviderGroupTurnErrorHooks | undefined,
   ): Promise<boolean> {
@@ -1087,7 +1090,6 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     const row = await deps.readSessionRow(sessionId);
     if (!row?.model || row.remoteHostId || !row.agentDeviceId || !row.providerId) return false;
     const route = { agentDeviceId: row.agentDeviceId, providerId: row.providerId };
-    const lease = deps.leaseRecovery(sessionId, token);
     if (!lease) return true;
     await withSwitchRun(sessionId, signals, token, lease, hooks, async (isCurrent, handBack) => {
       const outcome = await awaitReturn(sessionId, route, binding.memberKey, isCurrent, (attempt) => {
@@ -1163,6 +1165,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     sessionId: string,
     signals: InterruptedTurnErrorSignals,
     token: number,
+    lease: object | null,
     cause: ProviderGroupFailureCause,
     hooks: ProviderGroupTurnErrorHooks | undefined,
   ): Promise<boolean> {
@@ -1173,7 +1176,6 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     if (!row?.model || row.remoteHostId || !shareRoute || !isProviderShareAgentDeviceId(shareRoute)) return false;
     if (!(await deps.isFailoverEligible(sessionId))) return false;
     if (!guestSwitch.claim(sessionId)) return false;
-    const lease = deps.leaseRecovery(sessionId, token);
     if (!lease) {
       guestSwitch.release(sessionId);
       return true;
