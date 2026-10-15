@@ -1,0 +1,326 @@
+[
+  {
+    "layout": "rows",
+    "theme": "light",
+    "key": "Enter",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "light",
+    "key": "Control+Enter",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "light",
+    "key": "Escape",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "dark",
+    "key": "Enter",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "dark",
+    "key": "Control+Enter",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "dark",
+    "key": "Escape",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "light",
+    "key": "Enter",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "light",
+    "key": "Control+Enter",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "light",
+    "key": "Escape",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "dark",
+    "key": "Enter",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "dark",
+    "key": "Control+Enter",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "dark",
+    "key": "Escape",
+    "route": "/cc-agent/A",
+    "responses": [],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "A"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  }
+]

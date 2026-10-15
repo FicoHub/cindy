@@ -1,0 +1,486 @@
+[
+  {
+    "layout": "rows",
+    "theme": "light",
+    "key": "Enter",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "allow"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "light",
+    "key": "Control+Enter",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "allow",
+          "updatedPermissions": [
+            {
+              "type": "addRules",
+              "rules": [
+                {
+                  "toolName": "Bash",
+                  "ruleContent": "echo:*"
+                }
+              ],
+              "behavior": "allow",
+              "destination": "session"
+            }
+          ],
+          "decisionClassification": "user_permanent"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "light",
+    "key": "Escape",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "dark",
+    "key": "Enter",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "allow"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "dark",
+    "key": "Control+Enter",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "allow",
+          "updatedPermissions": [
+            {
+              "type": "addRules",
+              "rules": [
+                {
+                  "toolName": "Bash",
+                  "ruleContent": "echo:*"
+                }
+              ],
+              "behavior": "allow",
+              "destination": "session"
+            }
+          ],
+          "decisionClassification": "user_permanent"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "rows",
+    "theme": "dark",
+    "key": "Escape",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "light",
+    "key": "Enter",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "allow"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "light",
+    "key": "Control+Enter",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "allow",
+          "updatedPermissions": [
+            {
+              "type": "addRules",
+              "rules": [
+                {
+                  "toolName": "Bash",
+                  "ruleContent": "echo:*"
+                }
+              ],
+              "behavior": "allow",
+              "destination": "session"
+            }
+          ],
+          "decisionClassification": "user_permanent"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "light",
+    "key": "Escape",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "dark",
+    "key": "Enter",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "allow"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "dark",
+    "key": "Control+Enter",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "allow",
+          "updatedPermissions": [
+            {
+              "type": "addRules",
+              "rules": [
+                {
+                  "toolName": "Bash",
+                  "ruleContent": "echo:*"
+                }
+              ],
+              "behavior": "allow",
+              "destination": "session"
+            }
+          ],
+          "decisionClassification": "user_permanent"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "layout": "one",
+    "theme": "dark",
+    "key": "Escape",
+    "route": "/cc-agent/A",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "decision": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "A",
+        "request": "request-A",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  }
+]
