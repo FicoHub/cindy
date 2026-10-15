@@ -61,7 +61,7 @@ describe('formatRemoteAuthFailure (#4201)', () => {
     const t = i18n.getFixedT('en');
     const text = formatRemoteAuthFailure(t, detail('agent-pinned', { identities: [], cause: undefined }));
     expect(text).toBe(
-      "Authentication failed for deploy@10.0.0.5 with the configured identity set. Verify that identity's public key is installed on the remote, re-add this host with the right identity, or load the matching key with `ssh-add` if it is not in the agent.",
+      'Authentication failed for deploy@10.0.0.5 with the configured identity set. Verify that identity’s public key is installed on the remote, re-add this host with the right identity, or load the matching key with `ssh-add` if it is not in the agent.',
     );
     expect(text).not.toContain('IdentityFile');
     expect(text).not.toContain('(ssh:');
