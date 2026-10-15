@@ -1,18 +1,33 @@
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { snapshotContent, type ContentGit } from '../sourceContent';
 import { runSourceGit } from '../sourceGit';
 
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, copyFile: vi.fn(actual.copyFile) };
+});
+
+afterEach(() => {
+  vi.mocked(copyFile).mockReset();
+  vi.restoreAllMocks();
+});
+
 // The second fixture also catches Stats.mtime rounding up into the next second.
 // The third models clock rollback: copied index < cached file < original index.
+// The remaining fixtures model Windows CopyFileW preserving the index mtime,
+// with a clock at the end of a second, crossing forward, or rolling backward.
 const futureTick = Math.floor(Date.now() / 1000) + 3600;
-it.each([
+it.each<[number, number, { before: number; after: number }?]>([
   [1_700_000_000, 1_700_000_000],
   [1_700_000_000.9999, 1_700_000_000.9999],
   [futureTick, futureTick + 3600],
-])('snapshots a racily clean edit without changing the real index (%s, %s)', async (tick, indexTick) => {
+  [1_700_000_000.9999, 1_700_003_600, { before: 1_700_000_000_999, after: 1_700_000_000_999 }],
+  [1_700_000_000.9999, 1_700_003_600, { before: 1_700_000_000_999, after: 1_700_000_001_000 }],
+  [1_700_000_000.9999, 1_700_003_600, { before: 1_700_000_001_000, after: 1_700_000_000_999 }],
+])('snapshots a racily clean edit without changing the real index (%s, %s, %j)', async (tick, indexTick, clock) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-content-racy-'));
   const env = {
     PATH: process.env.PATH,
@@ -45,6 +60,17 @@ it.each([
     const restored = await git(['hash-object', 'feature.txt'], root);
     expect(restored).not.toBe(staged);
 
+    if (clock) {
+      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      let now = clock.before;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      vi.mocked(copyFile).mockImplementationOnce(async (...args) => {
+        await actual.copyFile(...args);
+        await utimes(args[1], indexTick, indexTick);
+        expect((await stat(args[1])).mtimeMs).toBe(beforeStat.mtimeMs);
+        now = clock.after;
+      });
+    }
     const tree = await snapshotContent(git, root);
     expect(await git(['rev-parse', `${tree}:feature.txt`], root)).toBe(restored);
     expect(await readFile(file, 'utf8')).toBe('acquire()\nrelease()\n');

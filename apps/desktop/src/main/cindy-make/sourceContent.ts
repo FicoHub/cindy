@@ -45,14 +45,17 @@ export async function snapshotContent(git: ContentGit, cwd: string, ref?: string
     ).trim();
     // A later index mtime can hide equal-size edits from Git's racy-clean check.
     // Read the original before copying so a concurrent replacement cannot lend
-    // old bytes a newer timestamp. Keep the earlier time: clock rollback can put
-    // the original index in the future. Round down to seconds since Stats.mtime
-    // can round up across a second boundary, hiding the edit again.
+    // old bytes a newer timestamp. Windows copyFile preserves mtime, so also cap
+    // it with clock samples before/after copying. Taking both handles crossing
+    // a second boundary or clock rollback during the copy. Round down to seconds
+    // since Stats.mtime can round up across a second boundary, hiding the edit.
+    const copyStartedAt = Math.floor(Date.now() / 1000);
     const originalStat = await stat(original, { bigint: true });
     await copyFile(original, index);
     const copiedStat = await stat(index, { bigint: true });
     const mtimeNs = originalStat.mtimeNs < copiedStat.mtimeNs ? originalStat.mtimeNs : copiedStat.mtimeNs;
-    await utimes(index, originalStat.atime, Number(mtimeNs / 1_000_000_000n));
+    const mtime = Math.min(Number(mtimeNs / 1_000_000_000n), copyStartedAt, Math.floor(Date.now() / 1000));
+    await utimes(index, originalStat.atime, mtime);
     await git(['add', '--all', '--', '.'], cwd, index);
     const tree = (await git(['write-tree'], cwd, index)).trim();
     if (!HASH.test(tree)) throw new Error('Invalid content snapshot');
