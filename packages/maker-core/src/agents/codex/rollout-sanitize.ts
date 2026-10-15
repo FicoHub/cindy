@@ -450,7 +450,14 @@ export async function assertCodexRolloutRewriteSupported(filePath: string): Prom
     }
     if (isRecord(record) && (
       Object.hasOwn(record, 'ordinal') ||
-      (isRecord(record.payload) && Object.hasOwn(record.payload, 'history_base'))
+      (isRecord(record.payload) && (
+        Object.hasOwn(record.payload, 'history_base') ||
+        // Legacy sanitization cannot preserve the meaning of encrypted agent messages.
+        // Explicit recovery must use Cindy's readable transcript instead.
+        (record.type === 'response_item' && record.payload.type === 'agent_message' &&
+          Array.isArray(record.payload.content) && record.payload.content.some((part) =>
+            isRecord(part) && part.type === 'encrypted_content'))
+      ))
     )) {
       throw new CodexHistoryRecoveryRequiredError();
     }
@@ -472,6 +479,22 @@ function parseForkSessionMeta(line: string): ForkSessionMeta | null {
   } catch {
     return null;
   }
+}
+
+/** Read native identity without loading or rewriting the account's history. */
+export async function readCodexRolloutModelProvider(filePath: string, threadId: string): Promise<string | undefined> {
+  for await (const line of iterateRolloutLines(filePath)) {
+    const meta = parseForkSessionMeta(line);
+    if (!meta || meta.payload.id !== threadId) {
+      throw new Error('Codex rollout metadata does not match the requested thread');
+    }
+    const provider = meta.payload.model_provider;
+    if (provider != null && typeof provider !== 'string') {
+      throw new Error('Invalid Codex rollout model provider');
+    }
+    return provider ?? undefined;
+  }
+  throw new Error('Codex rollout metadata is missing');
 }
 
 function detachForkLineage(meta: ForkSessionMeta): string {

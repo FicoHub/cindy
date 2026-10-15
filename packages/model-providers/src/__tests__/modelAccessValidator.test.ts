@@ -369,11 +369,11 @@ describe("model access catalog contract", () => {
     }
   });
 
-  it("v4/v5 允许 provider-level embedding 模型使用空 agents 且省略 contextWindow", () => {
+  it.each(["embedding", "audio_generation", "audio_speech", "audio_transcription", "realtime"])("v4/v5 允许 provider-level %s 模型使用空 agents 且省略 contextWindow", (mode) => {
     const embeddingModel = {
       id: "voyage/voyage-4",
       name: "Voyage 4",
-      mode: "embedding",
+      mode,
       currency: "CNY",
       agents: [],
     } as const;
@@ -401,6 +401,14 @@ describe("model access catalog contract", () => {
       {
         schemaVersion: MODEL_ACCESS_CATALOG_SCHEMA_VERSION,
         models: [{ ...embeddingModel, agents: ["codex"] }],
+      },
+      "response.models[0].agents must be empty",
+    );
+    expectReject(
+      {
+        schemaVersion: MODEL_ACCESS_CATALOG_V5_SCHEMA_VERSION,
+        accountTier: "paid",
+        models: [{ ...embeddingModel, agents: ["codex"], availability: "available" }],
       },
       "response.models[0].agents must be empty",
     );
@@ -1158,5 +1166,52 @@ describe("public model registry contract", () => {
         "referencePrices[1] overlaps referencePrices[0]",
       );
     }
+  });
+});
+
+
+describe('V5 display pricing extension', () => {
+  const displayPricing = { items: [{ label: 'Generated video', tier: 'HD', price: 0.5, unit: 'second', quantity: 1, priceType: 'estimated' as const }], notes: ['Billed by output duration.'] };
+  it('accepts display-only media without inventing token prices', () => {
+    const value = { schemaVersion: 5, accountTier: 'paid', models: [{
+      id: 'example-video', name: 'Example Video', mode: 'video_generation', agents: [],
+      availability: 'available', currency: 'USD', displayPricing,
+    }] };
+    expect(parseListModelsResponse(value)).toEqual({ ok: true, value });
+  });
+  it.each([
+    undefined,
+    null,
+    {},
+    { items: [] },
+    { items: [{ ...displayPricing.items[0], priceType: 'future_type' }] },
+    { items: [{ ...displayPricing.items[0], price: '0.5' }] },
+    { ...displayPricing, notes: { text: 'Future notes shape' } },
+  ])('omits absent or unsupported presentation data without rejecting models: %j', (quote) => {
+    const model = VALID_V5_RESPONSE.models[0];
+    const other = { ...model, id: 'another-model', displayPricing };
+    const result = parseListModelsResponse({
+      ...VALID_V5_RESPONSE,
+      models: [{ ...model, displayPricing: quote }, other],
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: { ...VALID_V5_RESPONSE, models: [model, other] },
+    });
+  });
+  it('ignores added fields within quotes and preserves unfamiliar units', () => {
+    const row = { ...displayPricing.items[0], unit: 'future_unit' };
+    const model = VALID_V5_RESPONSE.models[0];
+    expect(parseListModelsResponse({
+      ...VALID_V5_RESPONSE,
+      models: [{ ...model, displayPricing: { items: [{ ...row, future: true }], extra: {} } }],
+    })).toEqual({
+      ok: true,
+      value: { ...VALID_V5_RESPONSE, models: [{ ...model, displayPricing: { items: [row] } }] },
+    });
+  });
+  it('still validates supplied model currency and preserves strict legacy shapes', () => {
+    expect(parseListModelsResponse({ ...VALID_V5_RESPONSE, models: [{ ...VALID_V5_RESPONSE.models[0], displayPricing, currency: 'INVALID' }] }).ok).toBe(false);
+    expect(parseListModelsResponse({ ...VALID_V4_RESPONSE, models: [{ ...VALID_V4_RESPONSE.models[0], displayPricing }] }).ok).toBe(false);
   });
 });

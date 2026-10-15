@@ -1,3 +1,4 @@
+import { MANAGEMENT_KIND_ORDER, groupModelsForManagement } from '@/components/settings/modelManagementPresentation';
 // @vitest-environment jsdom
 
 /**
@@ -9,6 +10,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   buildUnionRows,
+  canWriteModelVisibility,
+  managementKindOfRow,
+  managementKindsOfRow,
   hasPaymentRequiredDisabledRow,
   isCapabilityRow,
   isRowDisabled,
@@ -19,6 +23,7 @@ import {
 import { __resetForTest, setModelVisibilityOwner } from '@/state/modelVisibilityPrefs';
 
 import type { CatalogModel, ProviderView } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildUserProvider, mergeDiscoveredRuntimeModels, parseModelsListResponse } from '@cindy/model-providers';
 
 function model(id: string, contextWindow = 100_000): CatalogModel {
   return { id, name: id, contextWindow, efforts: [], defaultEffort: null } as CatalogModel;
@@ -64,6 +69,38 @@ afterEach(() => {
 });
 
 describe('buildUnionRows', () => {
+  it('classifies ElevenLabs capability declarations as TTS or other in model management', () => {
+    const projected = buildUserProvider({ id: 'elevenlabs-byok', name: 'Speech', runtimes: { codex: {
+      baseUrl: 'https://api.elevenlabs.io/v1', models: mergeDiscoveredRuntimeModels([], parseModelsListResponse([
+        { model_id: 'eleven_multilingual_v2', can_do_text_to_speech: true },
+        { model_id: 'voice-conversion', can_do_text_to_speech: false },
+      ])!),
+    } } }, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+    const rows = buildUnionRows({ ...projected, connected: true } as ProviderView);
+    expect(rows).toHaveLength(2);
+    expect(managementKindsOfRow(rows.find(row => row.id === 'eleven_multilingual_v2')!, true)).toEqual(['tts']);
+    expect(managementKindsOfRow(rows.find(row => row.id === 'voice-conversion')!, true)).toEqual(['other']);
+  });
+
+  it('groups discovered BYOK speech models as TTS and keeps the normal disabled management state', () => {
+    const projected = buildUserProvider({ id: 'speech-byok', name: 'Speech', runtimes: { codex: {
+      baseUrl: 'https://speech.example.test/v1', models: mergeDiscoveredRuntimeModels([], parseModelsListResponse({ data: [
+        { id: 'chat-model', mode: 'chat' },
+        { id: 'speech-model', mode: 'audio_speech', native_api: 'openai-audio-speech' },
+      ] })!),
+    } } }, { modelRegistry: BUNDLED_CATALOG.modelRegistry });
+    const view = { ...projected, connected: true } as ProviderView;
+    const rows = buildUnionRows(view);
+    expect(rows).toHaveLength(2);
+    const speech = rows.find(row => row.id === 'speech-model')!;
+    expect(managementKindsOfRow(speech, true)).toEqual(['tts']);
+    expect(isCapabilityRow(speech, true)).toBe(true);
+    expect(isRowDisabled(speech)).toBe(false);
+    view.models.codex![1].disabled = true;
+    view.audioModels![0].disabled = true;
+    expect(isRowDisabled(buildUnionRows(view).find(row => row.id === 'speech-model')!)).toBe(true);
+  });
+
   it('同 id 跨 agent 合并;行序 = 首 agent 目录序 + 后续 agent 独占追加', () => {
     const rows = buildUnionRows(provider);
     expect(rows.map((r) => r.id)).toEqual(['shared', 'cc-only', 'codex-only']);
@@ -172,8 +209,15 @@ describe('停用轴(isRowDisabled / isCapabilityRow)', () => {
         { id: 'shared', name: '与 agent 清单撞 id(应被去重)' },
       ],
       videoModels: [{ id: 'seedance-fast', name: 'Seedance 快速' }],
+      audioModels: [{ id: 'speech', name: 'Speech', mode: 'audio_speech', disabled: true }, { id: 'asr', name: 'ASR', mode: 'audio_transcription' }, { id: 'realtime', name: 'Realtime', mode: 'realtime' }],
     } as ProviderView;
     const rows = buildUnionRows(withMedia);
+    for (const [id, mode] of [['speech', 'audio_speech'], ['asr', 'audio_transcription'], ['realtime', 'realtime']]) {
+      const row = rows.find((r) => r.id === id)!;
+      expect(row.byAgent['claude-code']?.mode).toBe(mode);
+      expect(isCapabilityRow(row, false)).toBe(true);
+    }
+    expect(isRowDisabled(rows.find((r) => r.id === 'speech')!)).toBe(true);
     const image = rows.find((r) => r.id === 'gpt-image-2')!;
     expect(isCapabilityRow(image, false)).toBe(true);
     expect(image.byAgent['claude-code']?.mode).toBe('image_generation');
@@ -184,6 +228,12 @@ describe('停用轴(isRowDisabled / isCapabilityRow)', () => {
     expect(isRowDisabled(image)).toBe(true);
     expect(isRowPaymentRequired(image)).toBe(true);
     expect(rows.find((r) => r.id === 'seedance-fast')).toBeTruthy();
+    expect(
+      modelVisibilityTargets(withMedia, image, true),
+    ).toEqual([{ agent: 'claude-code', modelId: 'gpt-image-2' }]);
+    expect(
+      modelVisibilityTargets(withMedia, rows.find((r) => r.id === 'seedance-fast')!, false),
+    ).toEqual([{ agent: 'claude-code', modelId: 'seedance-fast' }]);
     // 同 id 去重:'shared' 只保留 agent 清单那行(可见性开关照常)。
     expect(rows.filter((r) => r.id === 'shared')).toHaveLength(1);
     expect(
@@ -302,4 +352,74 @@ it('ordinary toggles preserve opt-in compatibility and can still enable hidden n
   expect(modelVisibilityTargets({ ...provider, id: 'openai' }, mutableRow, true)).toEqual([
     { agent: 'codex', modelId: 'gpt-6' },
   ]);
+});
+
+it('keeps generic audio in its own management category and filter order', () => {
+  const audioProvider = {
+    ...provider, models: {}, audioModels: [{ id: 'sound', name: 'Sound', mode: 'audio_generation' }],
+  } as ProviderView;
+  const rows = buildUnionRows(audioProvider);
+  expect(rows).toHaveLength(1);
+  expect(managementKindOfRow(rows[0]!, true)).toBe('audio');
+  expect(MANAGEMENT_KIND_ORDER.filter((kind) => kind === managementKindOfRow(rows[0]!, true))).toEqual(['audio']);
+  expect(groupModelsForManagement(rows, 'model', (row) => managementKindOfRow(row, true)).map((group) => group.key)).toEqual(['audio']);
+});
+
+it.each([false, true])('aggregates mixed runtime types independent of order (%s)', (reverse) => {
+  const mixed = { ...provider, agents: reverse ? ['codex', 'claude-code'] : ['claude-code', 'codex'], models: {
+    'claude-code': [{ ...model('shared'), group: 'custom:p1', mode: 'chat' }],
+    codex: [{ ...model('shared'), group: 'custom:p1', mode: 'image_generation' }],
+  } } as ProviderView;
+  const [row] = buildUnionRows(mixed);
+  expect(managementKindsOfRow(row!, true)).toEqual(['chat', 'image']);
+  expect(isCapabilityRow(row!, true)).toBe(false);
+  expect(modelVisibilityTargets(mixed, row!, true)).toEqual([{ agent: 'claude-code', modelId: 'shared' }]);
+  expect(modelVisibilityTargets(mixed, row!, false)).toEqual([{ agent: 'claude-code', modelId: 'shared' }]);
+});
+
+describe('canWriteModelVisibility', () => {
+  it('lets image switches write when only the Images API key is ready', () => {
+    expect(
+      canWriteModelVisibility({
+        connected: false,
+        mediaRow: true,
+        mediaReady: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('still requires chat connection for conversation model switches', () => {
+    expect(
+      canWriteModelVisibility({
+        connected: false,
+        mediaRow: false,
+        mediaReady: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+
+it('enables both native Claude and Pi while leaving Codex compatibility opt-in', () => {
+  const entry = { ...model('anthropic/claude-test'), api: 'anthropic-messages' as const,
+    nativeApi: 'anthropic-messages' as const, defaultEnabled: false };
+  const p = { ...provider, agents: ['claude-code', 'codex', 'pi'] as ProviderView['agents'], models: { 'claude-code': [entry], codex: [entry], pi: [entry] } };
+  const row = buildUnionRows(p)[0]!;
+  expect(modelVisibilityTargets(p, row, true)).toEqual([
+    { agent: 'claude-code', modelId: entry.id },
+    { agent: 'pi', modelId: entry.id },
+  ]);
+  expect(modelVisibilityTargets(p, row, false)).toHaveLength(3);
+});
+
+it('enabling an imported Gemini row only enables Pi even when the supplier exposes three APIs', () => {
+  const entry = { ...model('google/gemini-3.8-flash'), nativeApi: 'google-generative-ai' as const, defaultEnabled: false };
+  const p = { ...provider, agents: ['claude-code', 'codex', 'pi'] as ProviderView['agents'], models: {
+    'claude-code': [{ ...entry, api: 'anthropic-messages' as const }],
+    codex: [{ ...entry, api: 'openai-responses' as const }],
+    pi: [{ ...entry, api: 'openai-completions' as const }],
+  } };
+  const row = buildUnionRows(p)[0]!;
+  expect(modelVisibilityTargets(p, row, true)).toEqual([{ agent: 'pi', modelId: entry.id }]);
+  expect(modelVisibilityTargets(p, row, false)).toHaveLength(3);
 });

@@ -33,6 +33,7 @@ import {
   globalSafeDirectoryLockPath,
   safeDirectorySpellings,
 } from './gitExec';
+import { gitPathOutput } from './gitPathOutput';
 import { withCrossProcessLock } from '../device-link/crossProcessLock';
 import { applyWorktreeIncludeFile, listChangedWorktreeIncludeFiles } from './includePatternsEngine';
 import { hasKeepSentinel, isManagedWorktreePath } from './safety';
@@ -43,9 +44,15 @@ import {
 import { hasLiveSessionReference, loadLiveSessionPathKeys } from './liveSessionRefs';
 import { withWorktreeRestoreMutation } from './restoreLock';
 import { recycleManagedWorktree } from './managedRecycle';
-import { withWorktreeResourceLock } from './resourceLock';
-import { acquireWorktreeRuntimeLease, releaseWorktreeRuntimeLease } from './runtimeLeases';
+import { physicalWorktreeKey, withWorktreeResourceLock } from './resourceLock';
+import {
+  acquireWorktreeRuntimeLease,
+  recordWorktreeRuntimeLeaseChild,
+  reclaimOrphanedWorktreeRuntimeLeases,
+  releaseWorktreeRuntimeLease,
+} from './runtimeLeases';
 import * as store from './worktreeStore';
+import { assertPrecreatedSessionNotCancelled, sealPrecreatedSessionCancellation, withPrecreatedSessionOperationLock } from './precreatedCancellation';
 import { createLogger } from '../logger';
 import { getDbClient } from '../localDb/client/current';
 import {
@@ -384,7 +391,7 @@ async function withPrecreatedWorktreeOperationQueue<T>(
 
   await previous.catch(() => {});
   try {
-    return await fn();
+    return await withPrecreatedSessionOperationLock(sessionId, fn);
   } finally {
     releaseCurrent();
     if (precreatedWorktreeOperationQueues.get(sessionId) === queued) {
@@ -413,15 +420,15 @@ async function detectCwdOnce(cwd: string): Promise<DetectCwdResp> {
       cwd,
       CWD_PROBE_GIT_OPTS,
     );
-    const lines = stdout.trim().split(/\r?\n/);
+    const lines = gitPathOutput(stdout).split(process.platform === 'win32' ? /\r?\n/ : /\n/);
     if (lines.length === 4 && lines.every((line) => line.trim().length > 0)) {
       const [root, branch, gitDir, commonDir] = lines;
       return {
         isGitRepo: true,
-        isInsideWorktree: path.resolve(cwd, gitDir.trim()) !== path.resolve(cwd, commonDir.trim()),
+        isInsideWorktree: path.resolve(cwd, gitDir) !== path.resolve(cwd, commonDir),
         gitInstalled: true,
         supportsRecoveryKeyDiscard: true,
-        repoRoot: path.resolve(root.trim()),
+        repoRoot: path.resolve(root),
         ...(branch !== 'HEAD' ? { currentBranch: branch.trim() } : {}),
       };
     }
@@ -452,7 +459,7 @@ async function detectCwdOnce(cwd: string): Promise<DetectCwdResp> {
   // 2. rev-parse --show-toplevel: 拿 repo 根
   try {
     const { stdout } = await gitExec(['rev-parse', '--show-toplevel'], cwd, CWD_PROBE_GIT_OPTS);
-    const toplevel = stdout.trim();
+    const toplevel = gitPathOutput(stdout);
     if (toplevel) {
       out.isGitRepo = true;
       out.repoRoot = path.resolve(toplevel);
@@ -495,8 +502,8 @@ async function detectCwdOnce(cwd: string): Promise<DetectCwdResp> {
     if (commonDirResult.status === 'rejected') throw commonDirResult.reason;
     const gitDirRaw = gitDirResult.value.stdout;
     const gitCommonDirRaw = commonDirResult.value.stdout;
-    const gitDir = path.resolve(cwd, gitDirRaw.trim());
-    const gitCommonDir = path.resolve(cwd, gitCommonDirRaw.trim());
+    const gitDir = path.resolve(cwd, gitPathOutput(gitDirRaw));
+    const gitCommonDir = path.resolve(cwd, gitPathOutput(gitCommonDirRaw));
     if (gitDir && gitCommonDir && gitDir !== gitCommonDir) {
       out.isInsideWorktree = true;
     }
@@ -616,6 +623,102 @@ export function getForSession(sessionId: string): WorktreeMeta | null {
   return store.get(sessionId);
 }
 
+/** Caller holds the session/resource locks. Unknown DB outcomes retain the intent. */
+async function reconcileSessionTransferLocked(meta: WorktreeMeta, beforeMutation?: () => Promise<void>): Promise<void> {
+  const transfer = meta.pendingSessionTransfer;
+  if (!transfer) return;
+  if (!transfer.sessionId || transfer.sessionId === meta.sessionId
+    || !transfer.delegationId || !transfer.requestingBotId) {
+    throw new Error('Invalid worktree transfer intent preserved');
+  }
+  const row = await getDbClient().queryOne<{
+    childSessionId: string; requestingBotId: string; worktreePath: string | null; persistedSessionId: string | null;
+    targetExists: number;
+  }>(`SELECT d.child_session_id AS childSessionId, d.requesting_bot_id AS requestingBotId,
+      s.worktree_path AS worktreePath, s.id AS persistedSessionId,
+      EXISTS(SELECT 1 FROM sessions WHERE id = ?) AS targetExists
+    FROM bot_delegations d LEFT JOIN sessions s ON s.id = d.child_session_id WHERE d.id = ?`,
+  [transfer.sessionId, transfer.delegationId]);
+  if (!row || !row.persistedSessionId || row.requestingBotId !== transfer.requestingBotId
+    // The previous registry is authoritative if its historical display snapshot
+    // is absent. A committed target must have the snapshot from the same DB tx.
+    || (row.childSessionId === transfer.sessionId && !row.worktreePath)
+    || (row.worktreePath && await physicalWorktreeKey(row.worktreePath) !== await physicalWorktreeKey(meta.path))
+    || (row.childSessionId !== transfer.sessionId
+      && (row.childSessionId !== meta.sessionId || row.targetExists))) {
+    throw new Error('Worktree ownership changed; pending transfer preserved for reconciliation');
+  }
+  const key = await physicalWorktreeKey(meta.path);
+  for (const other of store.getAll()) {
+    if (other.sessionId !== meta.sessionId && await physicalWorktreeKey(other.path) === key) {
+      throw new Error('Worktree ownership changed; another session owns this resource');
+    }
+  }
+  const next = { ...meta, sessionId: row.childSessionId };
+  delete next.pendingSessionTransfer;
+  await store.replace(meta.sessionId, next.sessionId, next, meta, beforeMutation);
+}
+
+/** Startup/dispatch/retry reconciliation, scoped to the affected execution only. */
+export async function reconcileSessionTransfer(sessionId: string, beforeMutation?: () => Promise<void>): Promise<void> {
+  const pending = store.getAll().find(meta => meta.pendingSessionTransfer
+    && (meta.sessionId === sessionId || meta.pendingSessionTransfer.sessionId === sessionId));
+  if (!pending?.pendingSessionTransfer) return;
+  if (pending.pendingSessionTransfer.sessionId === pending.sessionId) throw new Error('Invalid worktree transfer intent preserved');
+  await withWorktreeRestoreMutation(pending.sessionId, () =>
+    withWorktreeRestoreMutation(pending.pendingSessionTransfer!.sessionId, () =>
+      withWorktreeResourceLock(pending.path, async () => {
+        const current = store.get(pending.sessionId);
+        if (current?.pendingSessionTransfer) await reconcileSessionTransferLocked(current, beforeMutation);
+      })));
+}
+
+/** Journal before the DB transaction; move registration only after authoritative readback. */
+export async function withTransferredSession<T extends { reopened: boolean }>(
+  previousSessionId: string,
+  sessionId: string,
+  worktreePath: string,
+  commit: () => Promise<T>,
+  identity: { delegationId: string; requestingBotId: string },
+): Promise<T> {
+  if (previousSessionId === sessionId) throw new Error('Worktree transfer requires a new session');
+  return withWorktreeRestoreMutation(previousSessionId, () =>
+    withWorktreeRestoreMutation(sessionId, () =>
+      withWorktreeResourceLock(worktreePath, async () => {
+        const previous = store.get(previousSessionId);
+        if (!previous || previous.pendingSessionTransfer || path.resolve(previous.path) !== path.resolve(worktreePath)
+          || store.get(sessionId)) {
+          throw new Error('Worktree ownership changed; restore the previous task before continuing');
+        }
+        const key = await physicalWorktreeKey(worktreePath);
+        for (const other of store.getAll()) {
+          if (other.sessionId !== previousSessionId && await physicalWorktreeKey(other.path) === key) {
+            throw new Error('Worktree ownership changed; another session owns this resource');
+          }
+        }
+        const pending = { ...previous, pendingSessionTransfer: { ...identity, sessionId } };
+        await store.replace(previousSessionId, previousSessionId, pending, previous);
+        try {
+          const result = await commit();
+          await reconcileSessionTransferLocked(pending);
+          return result;
+        } catch (error) {
+          // A rejected worker receipt is not proof of rollback. Never reverse a
+          // committed transfer; failed readback leaves durable retry evidence.
+          const current = store.get(previousSessionId);
+          if (JSON.stringify(current) === JSON.stringify(pending)) {
+            await reconcileSessionTransferLocked(pending).catch(reconcileError => {
+              log.warn('Worktree transfer reconciliation deferred', { sessionId: previousSessionId,
+                error: reconcileError instanceof Error ? reconcileError.message : String(reconcileError) });
+            });
+          }
+          throw error;
+        }
+      }),
+    ),
+  );
+}
+
 export function listAll(): WorktreeMeta[] {
   return store.getAll();
 }
@@ -652,6 +755,7 @@ const STAGE_CHECKOUT_PATHS = [
  */
 async function stageCheckout(
   worktreePath: string,
+  onCheckoutChildSpawn?: (pid: number) => void,
 ): Promise<{ fullCheckoutPromise: Promise<void> }> {
   const t0 = Date.now();
 
@@ -665,6 +769,7 @@ async function stageCheckout(
     const { stdout } = await gitExec(
       ['ls-tree', '--name-only', 'HEAD', '--', ...STAGE_CHECKOUT_PATHS],
       worktreePath,
+      { onSpawn: onCheckoutChildSpawn },
     );
     existingPaths = stdout
       .split(/\r?\n/)
@@ -681,7 +786,9 @@ async function stageCheckout(
   // 2. 选择性 checkout 白名单文件(同步, 用户可见)
   if (existingPaths.length > 0) {
     try {
-      await gitExec(['checkout', 'HEAD', '--', ...existingPaths], worktreePath);
+      await gitExec(['checkout', 'HEAD', '--', ...existingPaths], worktreePath, {
+        onSpawn: onCheckoutChildSpawn,
+      });
       log.info(
         `[stageCheckout] selective checkout done in ${Date.now() - t0}ms (${existingPaths.length} paths)`,
       );
@@ -700,7 +807,7 @@ async function stageCheckout(
   const fullCheckoutPromise = gitExec(
     ['checkout', 'HEAD', '--', '.', ':(exclude).claude', ':(exclude).sivi'],
     worktreePath,
-    { extraEnv: { LC_ALL: 'C' } },
+    { extraEnv: { LC_ALL: 'C' }, onSpawn: onCheckoutChildSpawn },
   )
     .then(() => {
       log.info(
@@ -919,10 +1026,11 @@ export async function copyClaudeSiviDirs(
  *    删除/归档时由 removeWorktreeForSession 清理该 path 的条目, 见 #2627)
  */
 export async function createWorktree(req: CreateWorktreeReq): Promise<CreateWorktreeResp> {
-  const create = () => withCreateWorktreeQueue(req.baseRepo, () => createWorktreeInner(req));
-  return req.recoveryKey === undefined
-    ? create()
-    : withPrecreatedWorktreeOperationQueue(req.sessionId, create);
+  const create = () => withCreateWorktreeQueue(req.baseRepo, () => {
+    assertPrecreatedSessionNotCancelled(req.sessionId);
+    return createWorktreeInner(req);
+  });
+  return withPrecreatedWorktreeOperationQueue(req.sessionId, create);
 }
 
 async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktreeResp> {
@@ -1065,7 +1173,10 @@ async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktr
       const checkoutLease = await acquireWorktreeRuntimeLease(`checkout:${req.sessionId}`, worktreePath);
       if (!checkoutLease) throw new Error('managed checkout runtime lease is missing');
       try {
-        const stageRes = await timed('stage checkout', () => stageCheckout(worktreePath));
+        const stageRes = await timed('stage checkout', () => stageCheckout(
+          worktreePath,
+          (pid) => recordWorktreeRuntimeLeaseChild(checkoutLease, pid),
+        ));
         bgPromise = stageRes.fullCheckoutPromise.finally(() => releaseWorktreeRuntimeLease(checkoutLease));
       } catch (err) {
         await releaseWorktreeRuntimeLease(checkoutLease);
@@ -1116,7 +1227,16 @@ async function createWorktreeInner(req: CreateWorktreeReq): Promise<CreateWorktr
         );
       }
 
-      // 9. store + DB
+      // 9. Recheck after asynchronous Git/setup work before publishing metadata.
+      // The profile/session lock also closes the check -> store.set window.
+      try {
+        assertPrecreatedSessionNotCancelled(req.sessionId);
+      } catch (error) {
+        // Rollback must not race our own background checkout writer.
+        await bgPromise?.catch(() => undefined);
+        throw error;
+      }
+      // store + DB
       const meta: WorktreeMeta = {
         sessionId: req.sessionId,
         name,
@@ -1178,6 +1298,12 @@ export interface RemoveWorktreeOptions {
    * 命中 dirty 时保留整个 worktree。
    */
   preserveDirty?: boolean;
+  /**
+   * Explicit cancellation of an unclaimed pre-created worktree may reclaim
+   * dead-owner runtime leases for its exact path. Ordinary task removal keeps
+   * those leases protective because they may belong to detached children.
+   */
+  reclaimOrphanedRuntimeLeases?: boolean;
 }
 
 /**
@@ -1233,6 +1359,7 @@ async function removeWorktreeForSessionInner(
 ): Promise<void> {
   let meta = store.get(sessionId);
   if (!meta) return;
+  if (meta.pendingSessionTransfer) return;
   if (meta.quarantinePath && !isExpectedQuarantinePath(meta, meta.quarantinePath)) {
     log.warn(`[worktree] preserved worktree at ${meta.path}: invalid persisted quarantine path`);
     return;
@@ -1275,7 +1402,23 @@ async function removeWorktreeForSessionInner(
     excludeSessionId: sessionId,
     isSessionRuntimeAlive: options.isSessionRuntimeAlive,
   });
-  if (hasLiveSessionReference(meta, liveKeys)) {
+  if (options.reclaimOrphanedRuntimeLeases) {
+    const reclaimed = await reclaimOrphanedWorktreeRuntimeLeases(worktreePath);
+    if (reclaimed > 0) {
+      log.info(
+        '[worktree] reclaimed ' + reclaimed
+          + ' dead-owner runtime lease(s) for cancelled pre-created worktree at ' + worktreePath,
+      );
+    }
+  }
+  const refreshedLiveKeys = options.reclaimOrphanedRuntimeLeases
+    ? await loadLiveSessionPathKeys({
+      contextPath: worktreePath,
+      excludeSessionId: sessionId,
+      isSessionRuntimeAlive: options.isSessionRuntimeAlive,
+    })
+    : liveKeys;
+  if (hasLiveSessionReference(meta, refreshedLiveKeys)) {
     log.info(
       `[worktree] preserved worktree at ${worktreePath}: still referenced by another live session`,
     );
@@ -1499,6 +1642,35 @@ export type DiscardPrecreatedWorktreeResult =
   | { status: 'preserved' }
   | { status: 'discarded'; branchDeleted: boolean };
 
+/** Caller holds the session-create lock. Seal before deleting so a late create
+ * cannot resurrect the cancelled id. Keep the seal even if dirty files prevent
+ * removal; the same explicit cancellation can safely be retried later. */
+export async function cancelPrecreatedWorktree(
+  sessionId: string,
+  locator: { path?: string; recoveryKey?: string },
+  options: Pick<RemoveWorktreeOptions, 'canRemove'>,
+): Promise<DiscardPrecreatedWorktreeResult> {
+  return withPrecreatedWorktreeOperationQueue(sessionId, async () => {
+    const meta = store.get(sessionId);
+    if (meta && (locator.recoveryKey !== undefined
+      ? meta.recoveryKey !== locator.recoveryKey
+      : !locator.path || (path.resolve(meta.path) !== path.resolve(locator.path)
+        && (!meta.quarantinePath || path.resolve(meta.quarantinePath) !== path.resolve(locator.path))))) {
+      return { status: 'path-mismatch' };
+    }
+    if (meta?.ephemeral) return { status: 'preserved' };
+    if (!options.canRemove || !(await options.canRemove())) return { status: 'preserved' };
+    sealPrecreatedSessionCancellation(sessionId);
+    return meta
+      ? discardPrecreatedWorktree(sessionId, meta.path, {
+        ...options,
+        reclaimOrphanedRuntimeLeases: true,
+      })
+      : { status: 'absent' };
+  });
+}
+export { assertPrecreatedSessionNotCancelled } from './precreatedCancellation';
+
 /**
  * 手机在 worktree:create 之前先持久化 sessionId + recoveryKey；若进程在 create
  * 回包前退出，恢复端拿不到 path。这里仅在随机关联键与被控端持久元数据精确匹配时
@@ -1507,7 +1679,7 @@ export type DiscardPrecreatedWorktreeResult =
 export async function discardPrecreatedWorktreeByRecoveryKey(
   sessionId: string,
   recoveryKey: string,
-  options: Pick<RemoveWorktreeOptions, 'canRemove'> = {},
+  options: Pick<RemoveWorktreeOptions, 'canRemove' | 'reclaimOrphanedRuntimeLeases'> = {},
 ): Promise<DiscardPrecreatedWorktreeResult> {
   return withPrecreatedWorktreeOperationQueue(sessionId, async () => {
     const meta = store.get(sessionId);
@@ -1532,7 +1704,7 @@ export async function discardPrecreatedWorktreeByRecoveryKey(
 export async function discardPrecreatedWorktree(
   sessionId: string,
   expectedPath: string,
-  options: Pick<RemoveWorktreeOptions, 'canRemove'> = {},
+  options: Pick<RemoveWorktreeOptions, 'canRemove' | 'reclaimOrphanedRuntimeLeases'> = {},
 ): Promise<DiscardPrecreatedWorktreeResult> {
   const meta = store.get(sessionId);
   if (!meta) return { status: 'absent' };

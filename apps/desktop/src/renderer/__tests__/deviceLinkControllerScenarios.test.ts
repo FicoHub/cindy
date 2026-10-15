@@ -58,6 +58,7 @@ import { projectHistoryView, HistoryViewHandoff } from '@cindy/maker-shared/mess
 import { getLatestMessageTodoState } from '@cindy/maker-shared/message-render';
 import { remoteProjectsStore } from '@/features/device-link/remoteProjectsStore';
 import { readCachedMessages, clearCachedMessages } from '@/features/device-link/mirrorCacheClient';
+import { clearSystemSessionAttention, setRemoteReceiptDisplayReady } from '@/lib/sessionAttentionStore';
 
 // ─── 忠实的被控端内存替身(单一真相源)───────────────────────────────────────────
 
@@ -86,6 +87,7 @@ function makeFakeHost(deviceId: string, deviceName: string) {
   const messages = new Map<string, Message[]>();
   let pushCb: ((p: RemotePush) => void) | null = null;
   let historyViewEnabled = false;
+  let historyViewStreaming = false;
 
   function meta(sid: string): Record<string, unknown> {
     return {
@@ -101,7 +103,7 @@ function makeFakeHost(deviceId: string, deviceName: string) {
         if (!historyViewEnabled) return null;
         const rows = messages.get(args[0] as string) ?? [];
         const before = (args[1] as { before?: string })?.before;
-        const projected = projectHistoryView(before ? rows.slice(0, rows.findIndex((row) => row.id === before)) : rows, false);
+        const projected = projectHistoryView(before ? rows.slice(0, rows.findIndex((row) => row.id === before)) : rows, !before && historyViewStreaming);
         const items = projected.slice(-20);
         const first = items[0];
         const hasMore = projected.length > items.length;
@@ -140,18 +142,18 @@ function makeFakeHost(deviceId: string, deviceName: string) {
   return {
     deviceId,
     deviceName,
-    enableHistoryView: () => { historyViewEnabled = true; },
+    enableHistoryView: (streaming = false) => { historyViewEnabled = true; historyViewStreaming = streaming; },
     disableHistoryView: () => { historyViewEnabled = false; },
     invoke,
-    push(channel: string, payload: unknown): void {
-      pushCb?.({ deviceId, channel, payload });
-    },
     /** 注册控制端 onRemotePush 回调(被控端经此向控制端转发广播)。 */
     registerPush(cb: (p: RemotePush) => void): () => void {
       pushCb = (push) => cb({ ...push, ownerStamp: push.ownerStamp ?? TEST_OWNER_STAMP });
       return () => {
         pushCb = null;
       };
+    },
+    push(channel: string, payload: unknown): void {
+      pushCb?.({ deviceId, channel, payload });
     },
     seedSession(sid: string, m: Record<string, unknown> = {}, history: Message[] = []): void {
       sessionsMeta.set(sid, m);
@@ -237,6 +239,239 @@ afterEach(() => {
 });
 
 describe('device-link controller mirror — end-to-end scenarios', () => {
+  it.each(['success', 'force', 'hidden', 'page-failed', 'interaction-failed', 'replaced'])(
+    'releases history-view read receipts only after visible successful reconciliation: %s',
+    async (scenario) => {
+      const s = sid();
+      host.enableHistoryView();
+      host.seedSession(s, {}, [dbMessage(s, 'answer', 'answer', '2026-06-15T00:00:00Z')]);
+      remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+      await makerChatStore.ensureInitialMessages(s);
+      await flush();
+      const view = getRemoteHistoryView(s)!;
+      expect(view.getSnapshot().ready).toBe(true);
+      const original = host.invoke.getMockImplementation()!;
+      let finish!: () => void;
+      host.invoke.mockImplementation(async (device, channel, args) => {
+        if (channel === 'local-db:messages:view') {
+          await new Promise<void>((done) => { finish = done; });
+          if (scenario === 'page-failed') throw new Error('history unavailable');
+        }
+        if (channel === 'maker:get-pending-interactions' && scenario === 'interaction-failed') {
+          throw new Error('interactions unavailable');
+        }
+        return original(device, channel, args);
+      });
+      const receipts = () => host.invoke.mock.calls.filter(([, channel]) => channel === 'notification:clear-session-attention');
+      clearSystemSessionAttention(s);
+      setRemoteReceiptDisplayReady(s, scenario !== 'hidden');
+      const sync = makerChatStore.reconcileRemoteMessages(s, { force: scenario === 'force' });
+      // Attach immediately: interaction errors may arrive before the page does.
+      const settled = sync.catch(() => false);
+      await flush();
+      expect(receipts()).toHaveLength(0);
+      if (scenario === 'replaced') view.setActive(false);
+      finish();
+      await settled;
+      await flush();
+      if (scenario === 'success' || scenario === 'force') {
+        expect(receipts()).toEqual([[DEVICE_ID, 'notification:clear-session-attention', [s, 'passive']]]);
+      } else {
+        expect(receipts()).toHaveLength(0);
+      }
+      setRemoteReceiptDisplayReady(s, false);
+      view.setActive(false);
+    },
+  );
+
+  it.each(['success', 'failed', 'hidden', 'collapsed'])(
+    'waits for refreshed expanded details before releasing a read receipt: %s', async (scenario) => {
+      const s = sid();
+      host.enableHistoryView(true);
+      const user = dbMessage(s, 'question', 'question', '2026-09-08T00:00:00Z', 'user');
+      const thought = (text: string) => ({
+        ...dbMessage(s, 'thought', '', '2026-09-08T00:00:01Z', 'thinking'),
+        content: { kind: 'thinking', text, durationMs: 2000, finishedAt: Date.parse('2026-09-08T00:00:03Z') },
+      });
+      host.seedSession(s, {}, [user, thought('old thought')]);
+      remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+      await makerChatStore.ensureInitialMessages(s);
+      await flush();
+      const view = getRemoteHistoryView(s)!;
+      const group = view.getSnapshot().items.find((item) => item.type === 'work')!;
+      view.setExpanded(group.key, true);
+      await flush();
+      expect(view.getSnapshot().details.get(group.key)?.complete).toBe(true);
+      host.seedSession(s, {}, [user, thought('updated thought')]);
+      const original = host.invoke.getMockImplementation()!;
+      let finish!: () => void;
+      host.invoke.mockImplementation(async (...args) => {
+        if (args[1] === 'local-db:messages:work-details') {
+          await new Promise<void>((resolve) => { finish = resolve; });
+          if (scenario === 'failed') throw new Error('details unavailable');
+        }
+        return original(...args);
+      });
+      clearSystemSessionAttention(s);
+      setRemoteReceiptDisplayReady(s, true);
+      const receipts = () => host.invoke.mock.calls.filter(([, channel]) => channel === 'notification:clear-session-attention');
+      const sync = makerChatStore.reconcileRemoteMessages(s);
+      await flush();
+      expect(finish).toBeTypeOf('function');
+      expect(receipts()).toHaveLength(0);
+      if (scenario === 'hidden') view.setActive(false);
+      if (scenario === 'collapsed') view.setExpanded(group.key, false);
+      finish();
+      await sync;
+      expect(receipts()).toHaveLength(scenario === 'success' || scenario === 'collapsed' ? 1 : 0);
+      setRemoteReceiptDisplayReady(s, false);
+      makerChatStore.purgeSession(s);
+    },
+  );
+
+  it('does not certify a history page that was already in flight before the read receipt', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    host.seedSession(s, {}, [dbMessage(s, 'answer', 'answer', '2026-06-15T00:00:00Z')]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    await makerChatStore.ensureInitialMessages(s);
+    await flush();
+    const view = getRemoteHistoryView(s)!;
+    const original = host.invoke.getMockImplementation()!;
+    const finishes: Array<() => void> = [];
+    host.invoke.mockImplementation(async (device, channel, args) => {
+      if (channel === 'local-db:messages:view') await new Promise<void>((done) => { finishes.push(done); });
+      return original(device, channel, args);
+    });
+    const oldPage = view.refresh();
+    await flush();
+    clearSystemSessionAttention(s);
+    setRemoteReceiptDisplayReady(s, true);
+    const sync = makerChatStore.reconcileRemoteMessages(s);
+    const receipts = () => host.invoke.mock.calls.filter(([, channel]) => channel === 'notification:clear-session-attention');
+    finishes[0]();
+    await oldPage;
+    await flush();
+    expect(receipts()).toHaveLength(0);
+    expect(finishes).toHaveLength(2);
+    finishes[1]();
+    await sync;
+    expect(receipts()).toEqual([[DEVICE_ID, 'notification:clear-session-attention', [s, 'passive']]]);
+    setRemoteReceiptDisplayReady(s, false);
+    view.setActive(false);
+  });
+
+  it('keeps the existing mirror when an old Host rejects history-view and raw fallback fails', async () => {
+    const s = sid();
+    const cached = dbMessage(s, 'cached', 'usable offline history', '2026-09-08T00:00:00Z');
+    vi.mocked(readCachedMessages).mockResolvedValue([cached]);
+    host.seedSession(s);
+    const original = host.invoke.getMockImplementation()!;
+    host.invoke.mockImplementation((...args) => {
+      if (args[1] === 'local-db:messages:list') return Promise.reject(new Error('raw fallback timed out'));
+      return original(...args);
+    });
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await vi.waitFor(() => expect(host.invoke).toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:list', expect.anything()));
+    await flush();
+    expect(clearCachedMessages).not.toHaveBeenCalled();
+    expect(makerChatStore.getSnapshot(s).messages.map((row) => row.content)).toContain('usable offline history');
+    makerChatStore.purgeSession(s);
+    vi.mocked(readCachedMessages).mockResolvedValue([]);
+  });
+
+  it('keeps the real sent row reserved through DB echo until history takes ownership', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    host.seedSession(s);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    const original = host.invoke.getMockImplementation()!;
+    host.invoke.mockImplementation((...args) => args[1] === 'maker:input:enqueue'
+      ? Promise.resolve(emptyProjection(s)) : original(...args));
+    await makerChatStore.sendMessage(s, 'keep my message', 'claude', '', 'default', '/remote/project');
+    const sent = makerChatStore.getSnapshot(s).messages.find((row) => row.content === 'keep my message')!;
+    expect(sent.localSendPrecedingClientIds).toBeDefined();
+    host.hostMessage(s, { ...dbMessage(s, 'sent-db', 'keep my message', '2026-09-17T00:00:00Z', 'user'), clientId: sent.clientId });
+    await flush();
+    const echoed = makerChatStore.getSnapshot(s).messages.find((row) => row.clientId === sent.clientId)!;
+    expect(echoed.isPendingPersist).toBeUndefined();
+    expect(echoed.localSendPrecedingClientIds).toBeDefined();
+    await getRemoteHistoryView(s)!.refresh();
+    const final = makerChatStore.getSnapshot(s).messages.filter((row) => row.clientId === sent.clientId);
+    expect(final).toHaveLength(1);
+    expect(final[0].localSendPrecedingClientIds).toBeUndefined();
+    makerChatStore.purgeSession(s);
+  });
+
+  it.each([false, true])('reconciles an external queue departure without a local pending bubble (persisted=%s)', async (persisted) => {
+    const s = sid();
+    host.enableHistoryView();
+    host.seedSession(s);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    const queued = {
+      clientId: 'scheduled-input', text: 'Check the PR', persistedContent: 'Check the PR',
+      chatMessage: { clientId: 'scheduled-input', role: 'user', content: 'Check the PR', createdAt: '2026-09-17T00:00:00Z' },
+    };
+    host.push('maker:input:projection', { ...emptyProjection(s), pendingQueue: [queued] });
+    expect(makerChatStore.getSnapshot(s).pendingQueue).toHaveLength(1);
+    // The queue may be cancelled or its DB push may be lost. Neither proves a
+    // local send; only authoritative history may introduce the scheduled row.
+    const origin = { kind: 'scheduler' as const, scheduleId: 'schedule', scheduleName: 'PR check', runId: 'run' };
+    if (persisted) host.hostMessage(s, {
+      ...dbMessage(s, 'scheduled-db', 'Check the PR', '2026-09-17T00:00:00Z', 'user'),
+      clientId: queued.clientId, agentMeta: { origin },
+    }, { lossy: true });
+    host.push('maker:input:projection', emptyProjection(s));
+    expect(makerChatStore.getSnapshot(s).messages).toEqual([]);
+    await flush(); await flush();
+    const rows = makerChatStore.getSnapshot(s).messages;
+    if (!persisted) {
+      expect(rows).toEqual([]);
+      makerChatStore.purgeSession(s);
+      return;
+    }
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ automationOrigin: origin });
+    expect(rows[0].isPendingPersist).toBeUndefined();
+    expect(rows[0].localSendPrecedingClientIds).toBeUndefined();
+    makerChatStore.purgeSession(s);
+  });
+
+  it('reserves a queued send whose DB echo beats the dispatch projection', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    host.seedSession(s);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    const original = host.invoke.getMockImplementation()!;
+    host.invoke.mockImplementation((...args) => args[1] === 'maker:input:enqueue'
+      ? Promise.resolve({ ...emptyProjection(s), pendingQueue: [(args[2] as unknown[])[1]] })
+      : original(...args));
+    await makerChatStore.sendMessage(s, 'queued on host', 'claude', '', 'default', '/remote/project');
+    await vi.waitFor(() => expect(makerChatStore.getSnapshot(s).pendingQueue.filter((item) => !item.isPendingEnqueue)).toHaveLength(1));
+    const queued = makerChatStore.getSnapshot(s).pendingQueue[0];
+    host.hostMessage(s, { ...dbMessage(s, 'queued-db', 'queued on host', '2026-09-17T00:00:00Z', 'user'), clientId: queued.clientId });
+    await flush();
+    const echoed = makerChatStore.getSnapshot(s);
+    expect(echoed.pendingQueue).toEqual([]);
+    expect(echoed.messages.find((row) => row.clientId === queued.clientId)?.localSendPrecedingClientIds).toBeDefined();
+    await getRemoteHistoryView(s)!.refresh();
+    const final = makerChatStore.getSnapshot(s).messages.filter((row) => row.clientId === queued.clientId);
+    expect(final).toHaveLength(1);
+    expect(final[0].localSendPrecedingClientIds).toBeUndefined();
+    makerChatStore.purgeSession(s);
+  });
+
   it('does not lose repair signals received while the first historical page is in flight', async () => {
     const s = sid();
     const old = dbMessage(s, 'h1', 'old page', '2026-09-08T00:00:00Z');
@@ -307,6 +542,8 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     finish([durable]);
     await flush();
     await flush();
+    await flush();
+    await flush();
     const row = makerChatStore.getSnapshot(s).messages.find((message) => message.clientId === 'live');
     expect(row?.content).toBe(concurrent ? 'prefix newer' : 'prefix complete');
     expect(row?.isStreaming).toBe(concurrent);
@@ -317,6 +554,199 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
       const rendered = handoff.reconcile(view.getSnapshot(), raw);
       expect(rendered.messages.find((message) => message?.clientId === 'live')?.content).toBe(concurrent ? 'prefix newer' : 'prefix complete');
     }
+  });
+
+  it.each(['resume', 'force', 'resync'] as const)('keeps live thinking receptive to deltas after HistoryView recovery (%s)', async (recovery) => {
+    const s = sid();
+    const startedAt = Date.parse('2026-09-08T00:00:01Z');
+    const user = dbMessage(s, 'question', 'question', '2026-09-08T00:00:00Z', 'user');
+    host.enableHistoryView(true);
+    host.seedSession(s, {}, [user]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    const leave = makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    const thinking = (data: Record<string, unknown>) => host.push('maker:event', {
+      sessionId: s, event: { type: 'thinking', source: 'claude-code', agentMeta: { parentUuid: 'toolu_worker' }, data: { blockId: 'live-thought', ...data } },
+    });
+    host.push('maker:event', { sessionId: s, event: { type: 'status', data: { status: 'Running', isRunning: true } } });
+    thinking({ stage: 'start', startedAt });
+    thinking({ stage: 'delta', text: 'current thought' });
+    const current = () => makerChatStore.getSnapshot(s).messages.find(row => row.clientId === 'live-thought');
+    expect(current()).toMatchObject({ content: 'current thought', isStreaming: true, thinkingStartedAt: startedAt });
+    // Child-agent thinking stays inline in the real Host projection. Its
+    // getSessionThinkingSnapshots() row is synthetic, with no terminal marker.
+    const liveSnapshot: Message = {
+      ...dbMessage(s, 'history-live:live-thought', '', new Date(startedAt).toISOString(), 'thinking'),
+      clientId: 'live-thought', agentMeta: { parentUuid: 'toolu_worker' },
+      content: { kind: 'thinking', text: 'current thought', durationMs: 0 },
+    };
+    host.seedSession(s, {}, [user, liveSnapshot]);
+    if (recovery === 'resume') { leave(); makerChatStore.enterView(s); }
+    else if (recovery === 'force') await makerChatStore.reconcileRemoteMessages(s, { force: true });
+    else host.push('maker:session-sync', { sessionId: s, resyncRequired: true });
+    await flush(); await flush();
+    expect(JSON.stringify(getRemoteHistoryView(s)!.getSnapshot().items)).toContain('history-live:live-thought');
+    expect(current()).toMatchObject({ content: 'current thought', isStreaming: true, thinkingStartedAt: startedAt });
+    thinking({ stage: 'delta', text: ' continues' });
+    expect(current()).toMatchObject({ content: 'current thought continues', isStreaming: true });
+    expect(makerChatStore.getSnapshot(s).messages.filter(row => row.clientId === 'live-thought')).toHaveLength(1);
+
+    // A lost final event is still healed once the Host returns a durable row.
+    host.seedSession(s, {}, [user, { ...liveSnapshot, id: 'stored-thought',
+      content: { kind: 'thinking', text: 'completed thought', durationMs: 2000, finishedAt: startedAt + 2000 } }]);
+    await makerChatStore.reconcileRemoteMessages(s, { force: true });
+    expect(current()).toMatchObject({ content: 'completed thought', isStreaming: false, thinkingDurationMs: 2000 });
+    makerChatStore.purgeSession(s);
+  });
+
+  it.each(['force', 'resync', 'snapshot-resync', 'newer-live'] as const)(
+    'waits for expanded work details to heal a lost terminal row (%s)', async (recovery) => {
+    const s = sid();
+    host.enableHistoryView(true);
+    const startedAt = Date.parse('2026-09-08T00:00:01Z');
+    const user = dbMessage(s, 'question', 'question', '2026-09-08T00:00:00Z', 'user');
+    host.seedSession(s, {}, [user]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    host.push('maker:event', { sessionId: s, event: { type: 'status', data: { status: 'Running', isRunning: true } } });
+    const thinking = (data: Record<string, unknown>) => host.push('maker:event', {
+      sessionId: s, event: { type: 'thinking', data: { blockId: 'client-thought', ...data } },
+    });
+    thinking({ stage: 'start', startedAt });
+    thinking({ stage: 'delta', text: 'stale thought' });
+    const thought = () => makerChatStore.getSnapshot(s).messages.find(row => row.clientId === 'client-thought');
+    const durable = { ...dbMessage(s, 'thought', '', new Date(startedAt).toISOString(), 'thinking'),
+      content: { kind: 'thinking', text: 'sealed thought', durationMs: 2000, finishedAt: startedAt + 2000 } };
+    host.seedSession(s, {}, [user, durable, dbMessage(s, 'current', '# Current answer\nold text', '2026-09-08T00:00:04Z')]);
+    // The live current block is valid even if the same history page contains
+    // an older copy. No terminal event/persistence echo for the thought arrived.
+    const snapshot = (resyncRequired: boolean) => host.push('maker:session-sync', {
+      sessionId: s, persistId: 'client-current', resyncRequired,
+      event: { type: 'text', data: { text: 'current live snapshot', isFullText: true, isFinal: false } },
+    });
+    snapshot(false);
+    const view = getRemoteHistoryView(s)!;
+    await view.refresh();
+    const group = view.getSnapshot().items.find((item) => item.type === 'work');
+    if (!group) throw new Error('Expected an expanded work group');
+    const original = host.invoke.getMockImplementation()!;
+    let finish!: () => void;
+    host.invoke.mockImplementation(async (...args) => {
+      const value = await original(...args);
+      if (args[1] === 'local-db:messages:work-details') await new Promise<void>(resolve => { finish = resolve; });
+      return value;
+    });
+    view.setExpanded(group.key, true);
+    await flush();
+    expect(finish).toBeTypeOf('function');
+    expect(thought()).toMatchObject({ content: 'stale thought', isStreaming: true });
+    let completed = false;
+    let pending: Promise<unknown> | undefined;
+    if (recovery === 'force') pending = makerChatStore.reconcileRemoteMessages(s, { force: true }).then(() => { completed = true; });
+    else if (recovery === 'resync') host.push('maker:session-sync', { sessionId: s, resyncRequired: true });
+    else snapshot(true);
+    await flush(); await flush();
+    expect(completed).toBe(false);
+    expect(thought()).toMatchObject({ content: 'stale thought', isStreaming: true });
+    if (recovery === 'newer-live') thinking({ stage: 'delta', text: ' updated during fetch' });
+    finish();
+    await pending;
+    await flush(); await flush();
+    expect(view.getSnapshot().details.get(group.key)?.messages[0]).toMatchObject({ clientId: 'client-thought', content: 'sealed thought' });
+    expect(thought()).toMatchObject(recovery === 'newer-live'
+      ? { content: 'stale thought updated during fetch', isStreaming: true }
+      : { content: 'sealed thought', isStreaming: false, thinkingDurationMs: 2000 });
+    if (recovery === 'snapshot-resync' || recovery === 'newer-live') expect(makerChatStore.getSnapshot(s).messages.find((row) => row.clientId === 'client-current')).toMatchObject({
+      content: 'current live snapshot', isStreaming: true,
+    });
+    expect(host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:work-details')).toHaveLength(1);
+    expect(host.invoke).not.toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:list', expect.anything());
+    makerChatStore.purgeSession(s);
+  });
+
+  it('falls back to the authoritative raw window when expanded details fail during force repair', async () => {
+    const s = sid();
+    host.enableHistoryView(true);
+    const user = dbMessage(s, 'question', 'question', '2026-09-08T00:00:00Z', 'user');
+    host.seedSession(s, {}, [user]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    host.push('maker:event', { sessionId: s, event: { type: 'status', data: { status: 'Running', isRunning: true } } });
+    host.push('maker:event', { sessionId: s, event: { type: 'thinking', data: { blockId: 'client-thought', stage: 'start', startedAt: Date.now() } } });
+    host.push('maker:event', { sessionId: s, event: { type: 'thinking', data: { blockId: 'client-thought', stage: 'delta', text: 'stale thought' } } });
+    const durable = { ...dbMessage(s, 'thought', '', '2026-09-08T00:00:01Z', 'thinking'),
+      content: { kind: 'thinking', text: 'sealed thought', durationMs: 2000, finishedAt: Date.parse('2026-09-08T00:00:03Z') } };
+    host.seedSession(s, {}, [user, durable]);
+    const view = getRemoteHistoryView(s)!;
+    await view.refresh();
+    const group = view.getSnapshot().items.find((item) => item.type === 'work');
+    if (!group) throw new Error('Expected an expanded work group');
+    const original = host.invoke.getMockImplementation()!;
+    host.invoke.mockImplementation(async (...args) => {
+      if (args[1] === 'local-db:messages:work-details') throw new Error('transient details timeout');
+      return original(...args);
+    });
+    view.setExpanded(group.key, true);
+    await flush();
+    await expect(makerChatStore.reconcileRemoteMessages(s, { force: true })).resolves.toBe(true);
+    expect(makerChatStore.getSnapshot(s).messages.find(row => row.clientId === 'client-thought'))
+      .toMatchObject({ content: 'sealed thought', isStreaming: false, thinkingDurationMs: 2000 });
+    expect(host.invoke).toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:list', expect.anything());
+    makerChatStore.purgeSession(s);
+  });
+
+  it.each([false, true])('recovers cancelled work details without reporting incomplete force success (rawFails=%s)', async (rawFails) => {
+    const s = sid();
+    host.enableHistoryView(true);
+    const user = dbMessage(s, 'question', 'question', '2026-09-08T00:00:00Z', 'user');
+    host.seedSession(s, {}, [user]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    host.push('maker:event', { sessionId: s, event: { type: 'thinking', data: { blockId: 'client-thought', stage: 'start', startedAt: Date.parse('2026-09-08T00:00:01Z') } } });
+    host.push('maker:event', { sessionId: s, event: { type: 'thinking', data: { blockId: 'client-thought', stage: 'delta', text: 'stale thought' } } });
+    const durable = { ...dbMessage(s, 'thought', '', '2026-09-08T00:00:01Z', 'thinking'),
+      content: { kind: 'thinking', text: 'sealed thought', durationMs: 2000, finishedAt: Date.parse('2026-09-08T00:00:03Z') } };
+    host.seedSession(s, {}, [user, durable]);
+    const view = getRemoteHistoryView(s)!;
+    await view.refresh();
+    const group = view.getSnapshot().items.find((item) => item.type === 'work')!;
+    const original = host.invoke.getMockImplementation()!;
+    let finish!: () => void;
+    const pendingDetails = new Promise<void>(resolve => { finish = resolve; });
+    const detailReads = vi.spyOn(view, 'loadDetails');
+    host.invoke.mockImplementation(async (...args) => {
+      if (rawFails && args[1] === 'local-db:messages:list') throw new Error('raw history unavailable');
+      const value = await original(...args);
+      if (args[1] === 'local-db:messages:work-details') await pendingDetails;
+      return value;
+    });
+    view.setExpanded(group.key, true);
+    await flush();
+    const force = makerChatStore.reconcileRemoteMessages(s, { force: true });
+    const result = rawFails ? expect(force).rejects.toThrow('raw history unavailable') : expect(force).resolves.toBe(true);
+    await vi.waitFor(() => expect(detailReads).toHaveBeenCalledWith(expect.objectContaining({ key: group.key }), { allowCollapsed: true }));
+    view.setExpanded(group.key, false);
+    finish();
+    await result;
+    expect(view.getSnapshot().expanded.has(group.key)).toBe(false);
+    expect(view.getSnapshot().details.get(group.key)?.complete).toBe(false);
+    expect(host.invoke).toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:list', expect.anything());
+    const thought = () => makerChatStore.getSnapshot(s).messages.find(row => row.clientId === 'client-thought');
+    if (rawFails) {
+      expect(thought()).toMatchObject({ content: 'stale thought', isStreaming: true });
+      host.invoke.mockImplementation(original);
+      await expect(makerChatStore.reconcileRemoteMessages(s, { force: true })).resolves.toBe(true);
+    }
+    expect(thought()).toMatchObject({ content: 'sealed thought', isStreaming: false });
+    detailReads.mockRestore();
+    makerChatStore.purgeSession(s);
   });
 
   it('resumes terminal handoff when the first projected page was not ready before leaving', async () => {
@@ -607,7 +1037,8 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
         expect(state.historyLoaded).toBe(true);
         expect(state.messages.some((row) => row.cacheHydrated)).toBe(false);
         expect(getLatestMessageTodoState(state.messages).hasPlanEvent).toBe(false);
-        expect(clearCachedMessages).toHaveBeenCalledWith(DEVICE_ID, s);
+        // Successful structured history now replaces the mirror snapshot instead of deleting it.
+        expect(clearCachedMessages).not.toHaveBeenCalled();
         if (scenario === 'rewound') {
           expect(state.messages.map((row) => row.content)).toEqual(['current text', 'live output']);
         } else expect(state.messages).toHaveLength(0);
@@ -617,7 +1048,7 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     }
   });
 
-  it.each(['demote', 'in-flight-demote', 'purge'])('releases unmounted prefetch without starting another read (%s)', async (mode) => {
+  it.each(['evict', 'in-flight-evict', 'purge'])('releases unmounted prefetch without starting another read (%s)', async (mode) => {
     vi.useFakeTimers();
     const s = sid();
     let finishPage: () => void = () => {};
@@ -629,7 +1060,7 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
       await vi.advanceTimersByTimeAsync(0);
       const view = getRemoteHistoryView(s)!;
       const invoke = host.invoke.getMockImplementation()!;
-      if (mode === 'in-flight-demote') {
+      if (mode === 'in-flight-evict') {
         host.invoke.mockImplementation(async (device, channel, args) => {
           if (channel === 'local-db:messages:view') await new Promise<void>((resolve) => { finishPage = resolve; });
           return invoke(device, channel, args);
@@ -638,7 +1069,10 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
       }
       const reads = host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view').length;
       if (mode === 'purge') makerChatStore.purgeSession(s);
-      else await vi.advanceTimersByTimeAsync(5 * 60_000);
+      else {
+        makerChatStore.__activeViewTest.setSoftEvictionBudget({ messages: 0, characters: 0 });
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
       expect(view.isActive()).toBe(false);
       expect(getRemoteHistoryView(s)).toBeUndefined();
       finishPage();
@@ -653,6 +1087,7 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
       expect(makerChatStore.getSnapshot(s).messages.map((row) => row.content)).toEqual(['new text']);
       expect(host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(reads + 1);
     } finally {
+      makerChatStore.__activeViewTest.setSoftEvictionBudget(null);
       finishPage();
       makerChatStore.purgeSession(s);
       vi.useRealTimers();
@@ -709,6 +1144,9 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
       expect(JSON.stringify(plan.insertion)).toContain('Collect logs');
       expect(view.getSnapshot().hasMore).toBe(false);
       expect(view.getSnapshot().details.size).toBe(0);
+      // Resuming starts a new receipt sync. Reactivation already sent a page in
+      // the same synchronous step, after every earlier signal, so the sync joins
+      // it instead of queueing a second read of the same page.
       expect(host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(entry === 'resumed' ? 4 : 3);
       expect(host.invoke.mock.calls.some(([, channel]) => channel === 'local-db:messages:list' || channel === 'local-db:messages:work-details')).toBe(false);
     } finally {
@@ -744,6 +1182,59 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
       leave?.();
       makerChatStore.purgeSession(s);
       vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { older: true, fails: false }, { older: true, fails: true },
+    { older: false, fails: false }, { older: false, fails: true },
+  ])('only propagates pagination loading to the rendered light state (older=$older, fails=$fails)', async ({ older, fails }) => {
+    const s = sid();
+    host.enableHistoryView();
+    const rows = Array.from({ length: 30 }, (_, index) => dbMessage(s, String(index), 'visible',
+      new Date(1_750_000_000_000 + index * 1000).toISOString(), 'user'));
+    host.seedSession(s, {}, rows);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    const view = getRemoteHistoryView(s)!;
+    const previousItems = view.getSnapshot().items;
+    expect(view.getSnapshot()).toMatchObject({ ready: true, loading: false, hasMore: true });
+    const invoke = host.invoke.getMockImplementation()!;
+    let release!: () => void;
+    host.invoke.mockImplementation(async (device, channel, args) => {
+      if (channel === 'local-db:messages:view') {
+        await new Promise<void>((resolve) => { release = resolve; });
+        if (fails) throw new Error('page unavailable');
+      }
+      return invoke(device, channel, args);
+    });
+    const observed: boolean[] = [];
+    // MessageStream subscribes to this view while its parent reads the light
+    // store. Check both at the same notification, before any React scheduling.
+    const unsubscribe = view.subscribe(() => {
+      const loading = view.getSnapshot().loading && older;
+      expect(makerChatStore.getSnapshot(s).isLoadingMore).toBe(loading);
+      expect(makerChatStore.getLightSnapshot(s).isLoadingMore).toBe(loading);
+      observed.push(loading);
+    });
+    try {
+      const result = (older ? makerChatStore.loadOlderMessages(s) : view.refresh()).then(
+        (advanced) => ({ advanced }),
+        (error: Error) => ({ error: error.message }),
+      );
+      expect(view.getSnapshot().loading).toBe(true);
+      expect(observed).toEqual([older]);
+      expect(view.getSnapshot().items).toBe(previousItems);
+      expect(makerChatStore.getLightSnapshot(s).isLoadingMore).toBe(older);
+      release();
+      expect(await result).toEqual(!older ? { advanced: undefined } : fails ? { error: 'page unavailable' } : { advanced: true });
+      expect(observed).toEqual([older, false]);
+      expect(view.getSnapshot().items).toHaveLength(fails || !older ? 20 : 30);
+      expect(makerChatStore.getLightSnapshot(s).isLoadingMore).toBe(false);
+    } finally {
+      unsubscribe();
+      makerChatStore.purgeSession(s);
     }
   });
 
@@ -792,6 +1283,96 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     expect(host.invoke).toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:list', expect.anything());
     expect(makerChatStore.getSnapshot(s).messages.map((row) => row.clientId)).toEqual(['client-old', 'client-new']);
   });
+  it.each(['resync', 'queued-resync', 'stall', 'newer-live', 'snapshot-repair'] as const)(
+    'recovers HistoryView rows without losing expanded history (%s)', async (scenario) => {
+      const s = sid();
+      host.enableHistoryView();
+      const history = [
+        dbMessage(s, 'u', 'previous question', '2026-06-15T00:00:00.000Z', 'user'),
+        { ...dbMessage(s, 'thought', '', '2026-06-15T00:00:01.000Z', 'thinking'),
+          content: { kind: 'thinking', text: 'expanded history', durationMs: 500, isRedacted: false } },
+        dbMessage(s, 'previous', 'previous answer', '2026-06-15T00:00:02.000Z'),
+        dbMessage(s, 'question', 'current question', '2026-06-15T00:00:03.000Z', 'user'),
+      ];
+      host.seedSession(s, {}, history);
+      remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+      makerChatStore.ensureInitialMessages(s);
+      await flush(); await flush();
+      const view = getRemoteHistoryView(s)!;
+      expect(view.getSnapshot().ready).toBe(true);
+      const group = view.getSnapshot().items.find((item) => item.type === 'work')!;
+      view.setExpanded(group.key, true);
+      await flush();
+      expect(view.getSnapshot().details.get(group.key)?.messages[0].content).toBe('expanded history');
+
+      host.push('maker:event', { sessionId: s, event: { type: 'status', source: 'claude-code',
+        data: { status: 'thinking', isRunning: true, tokenUsage: 0, contextTokens: 0, contextWindow: 0 } } });
+      const snapshot = (text: string, resyncRequired = false) => host.push('maker:session-sync', {
+        sessionId: s, persistId: 'client-answer', resyncRequired,
+        event: { type: 'text', source: 'claude-code', data: { text, isFullText: true, isFinal: false } },
+      });
+      snapshot('stale prefix');
+      const raw = () => makerChatStore.getSnapshot(s).messages;
+      expect(makerChatStore.getSnapshot(s).isStreaming).toBe(true);
+      expect(raw().find((row) => row.clientId === 'client-answer')).toMatchObject({ content: 'stale prefix', isStreaming: true });
+      const handoff = new HistoryViewHandoff<HistoryChatMessage>((row) => !!row.isStreaming);
+      const visible = () => handoff.reconcile(view.getSnapshot(), raw().map(row => ({
+        ...row, id: row.id ?? row.clientId, createdAt: row.createdAt ?? '',
+      })));
+      expect(visible().pending.has('client-answer')).toBe(true);
+
+      const original = host.invoke.getMockImplementation()!;
+      let finish: (() => void) | undefined;
+      let delayNextPage = scenario === 'queued-resync' || scenario === 'newer-live';
+      host.invoke.mockImplementation(async (device, channel, args) => {
+        const value = await original(device, channel, args);
+        if (channel === 'local-db:messages:view' && delayNextPage) {
+          delayNextPage = false;
+          await new Promise<void>(resolve => { finish = resolve; });
+        }
+        return value;
+      });
+      let repair: Promise<boolean> | undefined;
+      if (scenario === 'queued-resync') {
+        repair = makerChatStore.reconcileRemoteMessages(s, { repair: true });
+        await flush();
+        expect(finish).toBeTypeOf('function');
+      }
+      // The final text and terminal push were both lost. The same persistId is
+      // now sealed in the Host DB; the controller still has the streaming prefix.
+      host.hostMessage(s, dbMessage(s, 'answer', 'authoritative sealed answer', '2026-06-15T00:00:04.000Z'), { lossy: true });
+      const readsBeforeRecovery = host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view').length;
+      let forced: Promise<boolean> | undefined;
+      if (scenario === 'stall') forced = makerChatStore.reconcileRemoteMessages(s, { force: true });
+      else if (scenario === 'snapshot-repair') snapshot('current live snapshot', true);
+      else host.push('maker:session-sync', { sessionId: s, resyncRequired: true });
+      await flush();
+      if (scenario === 'newer-live') {
+        expect(finish).toBeTypeOf('function');
+        snapshot('newer live text received during recovery');
+      }
+      finish?.();
+      await repair; await forced;
+      await flush(); await flush();
+
+      const stillLive = scenario === 'newer-live' || scenario === 'snapshot-repair';
+      const expected = scenario === 'newer-live' ? 'newer live text received during recovery'
+        : scenario === 'snapshot-repair' ? 'current live snapshot' : 'authoritative sealed answer';
+      expect(raw().filter((row) => row.clientId === 'client-answer')).toEqual([
+        expect.objectContaining({ content: expected, isStreaming: stillLive }),
+      ]);
+      expect(getRemoteHistoryView(s)).toBe(view);
+      expect(view.isActive()).toBe(true);
+      expect(view.getSnapshot().expanded.has(group.key)).toBe(true);
+      expect(view.getSnapshot().details.get(group.key)?.messages[0].content).toBe('expanded history');
+      expect(visible().messages.find((row) => row.clientId === 'client-answer')?.content).toBe(expected);
+      expect(visible().pending.has('client-answer')).toBe(stillLive);
+      expect(host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:view')).toHaveLength(readsBeforeRecovery + 1);
+      expect(host.invoke).not.toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:list', expect.anything());
+      makerChatStore.purgeSession(s);
+    },
+  );
+
   it.each([false, true])('registers a fresh history page after ACK; reset during wait=%s', async (reset) => {
     const s = sid();
     host.enableHistoryView();
@@ -841,6 +1422,173 @@ describe('device-link controller mirror — end-to-end scenarios', () => {
     expect(view.getSnapshot().details.get(group.key)?.messages[0].content).toBe('hidden body');
     expect(makerChatStore.getSnapshot(s).messages.some((row) => row.clientId === 'client-thought')).toBe(true);
     view.setActive(false);
+  });
+
+  it('seals a displayed live row without fetching an older collapsed work range', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    const older = [dbMessage(s, 'old-u', 'old question', '2026-09-08T00:00:00Z', 'user'),
+      { ...dbMessage(s, 'old-thought', '', '2026-09-08T00:00:01Z', 'thinking'), content: { text: 'old hidden body', durationMs: 500 } },
+      dbMessage(s, 'old-answer', 'old answer', '2026-09-08T00:00:02Z'),
+      dbMessage(s, 'question', 'new question', '2026-09-08T00:00:03Z', 'user')];
+    host.seedSession(s, {}, older);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    const startedAt = Date.parse('2026-09-08T00:00:04Z');
+    host.push('maker:event', { sessionId: s, event: { type: 'thinking', data: { blockId: 'client-thought', stage: 'start', startedAt } } });
+    host.push('maker:event', { sessionId: s, event: { type: 'thinking', data: { blockId: 'client-thought', stage: 'delta', text: 'live prefix' } } });
+    const terminal = { ...dbMessage(s, 'thought', '', new Date(startedAt).toISOString(), 'thinking'),
+      content: { text: 'sealed thought', durationMs: 1000, finishedAt: startedAt + 1000 } };
+    host.seedSession(s, {}, [...older, terminal, dbMessage(s, 'answer', 'final answer', '2026-09-08T00:00:06Z')]);
+    host.invoke.mockClear();
+    await expect(makerChatStore.reconcileRemoteMessages(s, { force: true })).resolves.toBe(true);
+    const state = makerChatStore.getSnapshot(s);
+    expect(state.messages.find((row) => row.clientId === 'client-thought')).toMatchObject({ content: 'sealed thought', isStreaming: false });
+    expect(state.messages.some((row) => row.clientId === 'client-old-thought')).toBe(false);
+    const view = getRemoteHistoryView(s)!;
+    expect(view.getSnapshot().expanded.size).toBe(0);
+    expect([...view.getSnapshot().details.values()].flatMap((detail) => detail.messages.map((row) => row.clientId))).toEqual(['client-thought']);
+    expect(host.invoke.mock.calls.filter(([, channel]) => channel === 'local-db:messages:work-details')).toHaveLength(1);
+    expect(host.invoke).not.toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:list', expect.anything());
+    makerChatStore.purgeSession(s);
+  });
+
+  it('force reconciliation leaves completed historical work folded until expansion', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    const history = [dbMessage(s, 'u', 'question', '2026-06-15T00:00:00.000Z', 'user'),
+      { ...dbMessage(s, 'thought', '', '2026-06-15T00:00:01.000Z', 'thinking'), content: { kind: 'thinking', text: 'terminal body', durationMs: 500, isRedacted: false } },
+      dbMessage(s, 'answer', 'answer', '2026-06-15T00:00:02.000Z')];
+    host.seedSession(s, {}, history);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+
+    makerChatStore.ensureInitialMessages(s);
+    await flush();
+    await flush();
+    const view = getRemoteHistoryView(s)!;
+    const group = view.getSnapshot().items.find((item) => item.type === 'work')!;
+    expect(view.getSnapshot().expanded.has(group.key)).toBe(false);
+    expect(makerChatStore.getSnapshot(s).messages.map((row) => row.clientId)).toEqual([
+      'client-u', 'client-answer',
+    ]);
+
+    host.invoke.mockClear();
+    await makerChatStore.reconcileRemoteMessages(s, { force: true });
+
+    expect(makerChatStore.getSnapshot(s).messages.map((row) => row.clientId)).toEqual([
+      'client-u', 'client-answer',
+    ]);
+    expect(host.invoke).not.toHaveBeenCalledWith(DEVICE_ID, 'local-db:messages:work-details', expect.anything());
+    expect(view.getSnapshot().expanded.has(group.key)).toBe(false);
+    view.setExpanded(group.key, true);
+    await flush();
+    expect(makerChatStore.getSnapshot(s).messages.find((row) => row.clientId === 'client-thought'))
+      .toMatchObject({ content: 'terminal body', isStreaming: false });
+    view.setActive(false);
+  });
+
+  it('coalesces concurrent force reconciliation while HistoryView reads its page', async () => {
+    const s = sid();
+    host.enableHistoryView();
+    host.seedSession(s, {}, [dbMessage(s, 'answer', 'answer', '2026-06-15T00:00:00.000Z')]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+
+    makerChatStore.ensureInitialMessages(s);
+    await flush();
+    await flush();
+
+    const original = host.invoke.getMockImplementation()!;
+    let releaseFirstPage!: () => void;
+    let pageCalls = 0;
+    let activePages = 0;
+    let maxActivePages = 0;
+    host.invoke.mockImplementation(async (device, channel, args) => {
+      if (channel !== 'local-db:messages:view') return original(device, channel, args);
+      pageCalls += 1;
+      activePages += 1;
+      maxActivePages = Math.max(maxActivePages, activePages);
+      try {
+        const result = await original(device, channel, args);
+        if (pageCalls === 1) await new Promise<void>((done) => { releaseFirstPage = done; });
+        return result;
+      } finally {
+        activePages -= 1;
+      }
+    });
+
+    const first = makerChatStore.reconcileRemoteMessages(s, { force: true });
+    await flush();
+    const second = makerChatStore.reconcileRemoteMessages(s, { force: true });
+    expect(second).toBe(first);
+    releaseFirstPage();
+    await first;
+    await flush();
+
+    // The duplicate force is coalesced into one in-flight read. A trailing
+    // refresh is allowed after it settles so a view replacement during the
+    // first read cannot leave the session on a stale snapshot.
+    expect(pageCalls).toBe(2);
+    expect(maxActivePages).toBe(1);
+    getRemoteHistoryView(s)?.setActive(false);
+  });
+
+  it.each([
+    ['view', 'none'], ['view', 'first'], ['view', 'second'],
+    ['raw-fallback', 'none'], ['raw-fallback', 'first'], ['raw-fallback', 'second'],
+  ] as const)('refreshes its own force hydration while protecting live updates (%s, live=%s)', async (path, live) => {
+    const s = sid();
+    host.enableHistoryView(path === 'raw-fallback');
+    const user = dbMessage(s, 'question', 'question', '2026-09-08T00:00:00Z', 'user');
+    const thought = { ...dbMessage(s, 'thought', '', '2026-09-08T00:00:01Z', 'thinking'),
+      content: { kind: 'thinking', text: 'sealed thought', durationMs: 2000, finishedAt: Date.parse('2026-09-08T00:00:03Z') } };
+    host.seedSession(s, {}, [user]);
+    remoteProjectsStore.setDeviceSessions(DEVICE_ID, 'Mac A', [{ id: s } as Session]);
+    makerChatStore.enterView(s);
+    makerChatStore.ensureInitialMessages(s);
+    await flush(); await flush();
+    const pushLive = (text: string) => host.push('maker:session-sync', { sessionId: s, persistId: 'client-answer',
+      event: { type: 'text', data: { text, isFullText: true, isFinal: false } } });
+    pushLive('initial live prefix');
+    const answer = (text: string) => dbMessage(s, 'answer', text, '2026-09-08T00:00:04Z');
+    host.seedSession(s, {}, [user, thought, answer('first persisted answer')]);
+    const original = host.invoke.getMockImplementation()!;
+    const releases: (() => void)[] = [];
+    const channelToHold = path === 'view' ? 'local-db:messages:view' : 'local-db:messages:list';
+    host.invoke.mockImplementation(async (...args) => {
+      if (path === 'raw-fallback' && args[1] === 'local-db:messages:work-details') throw new Error('details unavailable');
+      const value = await original(...args);
+      if (args[1] === channelToHold) await new Promise<void>(resolve => { releases.push(resolve); });
+      return value;
+    });
+    if (path === 'raw-fallback') {
+      // A failed visible detail requires fallback; folded historical work does not.
+      const view = getRemoteHistoryView(s)!;
+      await view.refresh();
+      const group = view.getSnapshot().items.find((item) => item.type === 'work')!;
+      view.setExpanded(group.key, true);
+      await flush();
+    }
+    const first = makerChatStore.reconcileRemoteMessages(s, { force: true });
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    const second = makerChatStore.reconcileRemoteMessages(s, { force: true });
+    expect(second).toBe(first);
+    if (live === 'first') pushLive('live during first read');
+    host.seedSession(s, {}, [user, thought, answer('latest persisted answer')]);
+    releases[0]();
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    const current = () => makerChatStore.getSnapshot(s).messages.find(row => row.clientId === 'client-answer');
+    expect(current()?.content).toBe(live === 'first' ? 'live during first read' : 'first persisted answer');
+    if (live === 'second') host.push('local-db:messages:created', { sessionId: s, message: answer('live during second read') });
+    releases[1]();
+    await first;
+    expect(current()).toMatchObject({
+      content: live === 'none' ? 'latest persisted answer' : `live during ${live} read`,
+      isStreaming: live === 'first',
+    });
+    expect(releases).toHaveLength(2);
+    makerChatStore.purgeSession(s);
   });
 
   it('完整镜像回路:开会话见历史 → live push 追加 → 丢帧 reconcile heal → 设置变更镜像', async () => {

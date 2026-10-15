@@ -5,7 +5,7 @@ import type {
   ProviderRuntimeModelConfig,
   ProviderWireProtocol,
 } from '@cindy/model-providers';
-import piModelCatalogJson from '@cindy/model-providers/pi-model-catalog' with { type: 'json' };
+import { providerCatalogForPi } from '@cindy/model-providers';
 
 export interface BundledPiGatewayModelProfile {
   api: PiModelApi;
@@ -19,7 +19,7 @@ interface PiCatalogRow extends BundledPiGatewayModelProfile {
   provider: string;
 }
 
-const catalog = piModelCatalogJson as unknown as {
+const catalog = providerCatalogForPi() as unknown as {
   providers: Record<string, PiCatalogRow[]>;
 };
 const rows = Object.values(catalog.providers).flat();
@@ -30,6 +30,8 @@ function normalizeModelId(modelId: string): string {
 
 function piApiFromWireProtocol(protocol: ProviderWireProtocol | undefined): PiModelApi | undefined {
   switch (protocol) {
+    case 'google-generative-ai':
+      return 'google-generative-ai';
     case 'anthropic-messages':
       return 'anthropic-messages';
     case 'openai-responses':
@@ -42,7 +44,7 @@ function piApiFromWireProtocol(protocol: ProviderWireProtocol | undefined): PiMo
 }
 
 function catalogModelApi(
-  model: ProviderRuntimeModelConfig,
+  model: Pick<ProviderRuntimeModelConfig, 'piApi' | 'route'>,
   defaultProtocol: ProviderWireProtocol | undefined,
 ): PiModelApi | undefined {
   return model.piApi ?? piApiFromWireProtocol(model.route?.wireProtocol ?? defaultProtocol);
@@ -134,8 +136,10 @@ const gatewayCatalogIdentityOverrides = new Map<string, { provider: string; mode
     'gpt-6-astra',
   ].flatMap((id) => [
     [id, { provider: 'openai', modelId: id }] as const,
+    [`openai-codex/${id}`, { provider: 'openai', modelId: id }] as const,
     [`codex/${id}`, { provider: 'openai', modelId: id }] as const,
   ]),
+  ['openai-codex/gpt-5.5:auto', { provider: 'openai', modelId: 'gpt-5.5' }],
   ['codex/gpt-5.5:auto', { provider: 'openai', modelId: 'gpt-5.5' }],
   ...['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4-pro'].map(
     (id) => [`deepseek/${id}`, { provider: 'deepseek', modelId: id }] as const,
@@ -189,7 +193,13 @@ export function resolveBundledPiGatewayModelProfile(
     : undefined;
   const canonical = resolveModelNativeApi(BUNDLED_CATALOG.modelRegistry, 'xd', modelId);
   const api = canonical !== undefined ? canonical : matched?.api;
-  if (!api) return undefined;
+  if (
+    api !== 'anthropic-messages' &&
+    api !== 'openai-responses' &&
+    api !== 'openai-completions' &&
+    api !== 'google-generative-ai'
+  )
+    return undefined;
   const compatible = matched?.api === api ? matched : undefined;
   // Never borrow compat by bare ID across providers. An allowlisted Gateway identity may still
   // use its locally selected API, but provider-specific serialization metadata requires an exact

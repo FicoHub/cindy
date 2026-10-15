@@ -1,3 +1,4 @@
+import type { ModelDisplayPricing } from './modelDisplayPricing.js';
 import type { BaseModel, ModelMetadata } from "./modelMetadataLayers.js";
 import type { LocalModelCatalog } from "./localModelCatalog.js";
 /**
@@ -56,11 +57,19 @@ export const MODEL_REGISTRY_LEGACY_SCHEMA_VERSION = 1 as const;
 export const MODEL_REGISTRY_SCHEMA_VERSION = 2 as const;
 export const MODEL_REGISTRY_V3_SCHEMA_VERSION = 3 as const;
 export const MODEL_REGISTRY_V4_SCHEMA_VERSION = 4 as const;
+export const MODEL_REGISTRY_V5_SCHEMA_VERSION = 5 as const;
 export const MODEL_NATIVE_APIS = [
   "anthropic-messages",
   "openai-responses",
   "openai-completions",
   "google-generative-ai",
+  "openai-images",
+  "openai-videos",
+  "xai-videos",
+  "openai-audio-speech",
+  "openai-audio-transcriptions",
+  "openai-realtime",
+  "openai-embeddings",
 ] as const;
 export type ModelNativeApi = (typeof MODEL_NATIVE_APIS)[number];
 export const MODEL_REGISTRY_STATUSES = [
@@ -100,7 +109,15 @@ export interface ModelReferencePrice {
   source: ModelReferencePriceSource;
 }
 
+/** A manufacturer's tariff for a named market, independent of any reseller. */
+export interface ModelReferencePriceGroup {
+  id: string;
+  prices: ModelReferencePrice[];
+}
+
 export interface ModelRegistryRoute {
+  /** V5: explicitly selects a tariff on the entry's public model. */
+  referencePriceGroup?: string;
   defaults?: ModelMetadata;
   forceOverrides?: ModelMetadata;
   overrideReason?: string;
@@ -149,10 +166,10 @@ export interface ModelRegistryAgentOverride extends Omit<
   defaultEffort?: ModelEffort | null;
 }
 
-export interface ModelRegistryEntry extends Omit<
-  ModelRegistryEntryBase,
-  "defaultEffort" | "perAgent"
-> {
+export interface ModelRegistryEntry
+  extends
+    Pick<ModelMetadata, "mode" | "modalities" | "officialDocs">,
+    Omit<ModelRegistryEntryBase, "defaultEffort" | "perAgent"> {
   /** V4 entry-level image capability default. */
   supportsImageInput?: boolean;
   /** V4 only: null explicitly clears an inherited default. */
@@ -178,7 +195,8 @@ export interface ModelRegistry extends ModelRegistryBase {
     | typeof MODEL_REGISTRY_LEGACY_SCHEMA_VERSION
     | typeof MODEL_REGISTRY_SCHEMA_VERSION
     | typeof MODEL_REGISTRY_V3_SCHEMA_VERSION
-    | typeof MODEL_REGISTRY_V4_SCHEMA_VERSION;
+    | typeof MODEL_REGISTRY_V4_SCHEMA_VERSION
+    | typeof MODEL_REGISTRY_V5_SCHEMA_VERSION;
   baseModels?: BaseModel[];
   localModels?: LocalModelCatalog;
   models: ModelRegistryEntry[];
@@ -256,6 +274,7 @@ interface ModelCatalogAgentOverride extends Omit<
 }
 
 interface ModelCatalogEntryBase extends ModelPricing {
+  displayPricing?: ModelDisplayPricing;
   id: string;
   mode?: string;
   /** Optional for compatibility with older Model Access responses. */

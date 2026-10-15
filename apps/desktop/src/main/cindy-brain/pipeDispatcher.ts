@@ -27,12 +27,13 @@ import type {
   InstalledGhost,
 } from '../../shared/ghost.js';
 import { GHOST_PIPE_CALL_MAX_TOTAL_MS, isGhostPluginErrorCode } from '../../shared/ghost.js';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
 import type { GhostRuntimeState } from './runtime/GhostRuntime.js';
 import { isGhostOwnerScopeUsable, type GhostOwnerScope } from './ghostOwnerScope.js';
 
 export interface PipeDispatcherDeps {
   /** 按 id 取已装意识(未装 → null)。 */
-  getGhost(id: string): InstalledGhost | null;
+  getGhost(id: string, namespace?: string | null): InstalledGhost | null;
   /** 当前运行时状态。 */
   runtimeStateOf(id: string): GhostRuntimeState;
   /** 拉起沙箱(幂等;fused/stopping 拒绝)。 */
@@ -59,6 +60,7 @@ interface PendingBindingClaim {
 }
 
 interface PendingCall {
+  sessionId?: string;
   ghostId: string;
   tool: string;
   ownerScopeSnapshot: unknown;
@@ -76,6 +78,10 @@ interface PendingCall {
   deadlineAt: number;
   /** 在途代办 hold 计数(同一卷可并发多单代办,全部收工才收窗)。 */
   holds: number;
+  lifetime: AbortController;
+  sourceSignal?: AbortSignal;
+  cancellationBound?: boolean;
+  detachAbort?: () => void;
 }
 
 /**
@@ -120,6 +126,7 @@ export function toolNotFoundMessage(
 
 export class GhostPipeDispatcher {
   private readonly pending = new Map<string, PendingCall>();
+  private readonly sessionCalls = new Map<string, Set<AbortController>>();
 
   constructor(private readonly deps: PipeDispatcherDeps) {}
 
@@ -139,8 +146,34 @@ export class GhostPipeDispatcher {
    * 派活主入口(ghost 总机的 callGhostTool 回调)。
    * 永不 reject——一切失败都折叠成结构化 GhostToolCallResult。
    */
-  async callGhostTool(request: {
+  async callGhostTool(request: Parameters<GhostPipeDispatcher['dispatchCall']>[0]): Promise<GhostToolCallResult> {
+    // Remember Stop even while a sandbox starts, without changing legacy RPC
+    // completion. Only an explicit Node opt-in consumes this cancellation gate.
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    request.signal?.addEventListener('abort', abort, { once: true });
+    if (request.signal?.aborted) abort();
+    const sessionId = request.sessionId;
+    if (sessionId) {
+      const calls = this.sessionCalls.get(sessionId) ?? new Set<AbortController>();
+      calls.add(controller);
+      this.sessionCalls.set(sessionId, calls);
+    }
+    try {
+      return await this.dispatchCall({ ...request, signal: controller.signal });
+    } finally {
+      request.signal?.removeEventListener('abort', abort);
+      if (sessionId) {
+        const calls = this.sessionCalls.get(sessionId);
+        calls?.delete(controller);
+        if (calls?.size === 0) this.sessionCalls.delete(sessionId);
+      }
+    }
+  }
+
+  private async dispatchCall(request: {
     ghostId: string;
+    namespace?: string | null;
     tool: string;
     args: Record<string, unknown>;
     /**
@@ -150,11 +183,15 @@ export class GhostPipeDispatcher {
     callId?: string;
     /** 仅供可信宿主内部调用方收短等待时间；插件不能控制该值。 */
     timeoutMs?: number;
+    /** Trusted caller's MCP cancellation; not a plugin-controlled field. */
+    signal?: AbortSignal;
+    /** Trusted Host session attribution, never accepted from plugin input. */
+    sessionId?: string;
   }): Promise<GhostToolCallResult> {
-    const { ghostId, tool, args } = request;
+    const { ghostId, namespace, tool, args } = request;
 
     // ── 资格审 ─────────────────────────────────────────────────────────
-    const ghost = this.deps.getGhost(ghostId);
+    const ghost = this.deps.getGhost(ghostId, namespace);
     if (!ghost) {
       return { ok: false, errorCode: 'GHOST_NOT_FOUND', message: `插件 ${ghostId} 未安装或已卸载` };
     }
@@ -165,7 +202,8 @@ export class GhostPipeDispatcher {
     if (!declared) {
       return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: toolNotFoundMessage(ghostId, tool, ghost.manifest.tools) };
     }
-    if (this.deps.runtimeStateOf(ghostId) === 'fused') {
+    const storagePart = installedGhostStoragePart(ghost);
+    if (this.deps.runtimeStateOf(storagePart) === 'fused') {
       return { ok: false, errorCode: 'GHOST_CRASHED', message: `插件 ${ghostId} 已熔断(反复崩溃),重载或重新启用后再试` };
     }
     let ownerScopeSnapshot: unknown;
@@ -176,13 +214,13 @@ export class GhostPipeDispatcher {
     }
 
     // ── 按需拉起 ────────────────────────────────────────────────────────
-    if (this.deps.runtimeStateOf(ghostId) !== 'running') {
+    if (this.deps.runtimeStateOf(storagePart) !== 'running') {
       const spawned = await this.deps.spawn(ghost);
       if (!spawned.ok) {
         return { ok: false, errorCode: 'GHOST_CRASHED', message: `插件启动失败:${spawned.reason}` };
       }
     }
-    if (!this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
+    if (!this.ownerScopeUsable(storagePart, ownerScopeSnapshot)) {
       return this.ownerBoundaryResult();
     }
 
@@ -194,7 +232,8 @@ export class GhostPipeDispatcher {
       const startedAt = Date.now();
       const baseTimeoutMs = this.baseTimeoutMs(request.timeoutMs);
       const entry: PendingCall = {
-        ghostId,
+        sessionId: request.sessionId,
+        ghostId: storagePart,
         tool,
         ownerScopeSnapshot,
         claimedBindings: new Map(),
@@ -205,20 +244,56 @@ export class GhostPipeDispatcher {
         timeoutExtensionsAllowed: request.timeoutMs === undefined,
         deadlineAt: startedAt + baseTimeoutMs,
         holds: 0,
+        lifetime: new AbortController(),
+        sourceSignal: request.signal,
       };
       this.pending.set(callId, entry);
       this.armTimer(callId, entry);
 
-      if (!this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
+      if (!this.ownerScopeUsable(storagePart, ownerScopeSnapshot)) {
         this.settle(callId, this.ownerBoundaryResult());
         return;
       }
-      if (!this.deps.sendToGhost(ghostId, payload)) {
+      if (!this.deps.sendToGhost(storagePart, payload)) {
         // 逻辑页不在线(拉起后瞬时死亡等):立即收卷。
         this.settle(callId, { ok: false, errorCode: 'GHOST_CRASHED', message: '电子脑离线,派发失败' });
       }
     });
   }
+
+  /** Cancel opt-in work and deny late opt-in; legacy completion remains unchanged. */
+  cancelSessionCalls(sessionId: string): void {
+    for (const controller of this.sessionCalls.get(sessionId) ?? []) controller.abort();
+  }
+
+  private cancelBoundCall(callId: string): void {
+    this.settle(callId, { ok: false, errorCode: 'INTERNAL', message: 'Plugin tool call cancelled' });
+  }
+
+  /** Called only for an explicit cancelWithCall Node request. Legacy tools keep their lifetime. */
+  getPendingCallSignal(ghostId: string, callId: string): AbortSignal | null {
+    const entry = this.pending.get(callId);
+    if (!entry || entry.ghostId !== ghostId || !this.ownerScopeUsable(ghostId, entry.ownerScopeSnapshot)) return null;
+    if (!entry.cancellationBound) {
+      entry.cancellationBound = true;
+      const abort = () => this.cancelBoundCall(callId);
+      entry.sourceSignal?.addEventListener('abort', abort, { once: true });
+      entry.detachAbort = () => entry.sourceSignal?.removeEventListener('abort', abort);
+    }
+    if (entry.sourceSignal?.aborted) {
+      this.cancelBoundCall(callId);
+      return null;
+    }
+    return entry.lifetime.signal;
+  }
+
+  getPendingCallSessionId(ghostId: string, callId: string): string | null {
+    const entry = this.pending.get(callId);
+    if (!entry?.cancellationBound || entry.ghostId !== ghostId || entry.lifetime.signal.aborted ||
+      entry.sourceSignal?.aborted || !this.ownerScopeUsable(ghostId, entry.ownerScopeSnapshot)) return null;
+    return entry.sessionId ?? null;
+  }
+
 
   /**
    * 认领真实在途 tool-call 的宿主能力绑定。
@@ -301,6 +376,8 @@ export class GhostPipeDispatcher {
     const setT = this.deps.setTimeoutFn ?? setTimeout;
     entry.timer = setT(() => {
       if (this.pending.delete(callId)) {
+        entry.detachAbort?.();
+        entry.lifetime.abort();
         this.deps.log?.warn('ghost tool call timed out', {
           ghostId: entry.ghostId,
           tool: entry.tool,
@@ -462,6 +539,8 @@ export class GhostPipeDispatcher {
     if (!entry) return;
     this.pending.delete(callId);
     (this.deps.clearTimeoutFn ?? clearTimeout)(entry.timer);
+    entry.detachAbort?.();
+    entry.lifetime.abort();
     this.deps.log?.info('ghost tool call completed', {
       ghostId: entry.ghostId,
       tool: entry.tool,

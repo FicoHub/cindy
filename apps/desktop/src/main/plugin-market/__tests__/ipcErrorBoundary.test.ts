@@ -36,6 +36,8 @@ describe('Plugin Market IPC error boundary', () => {
     const body = registerSource.slice(start, end);
 
     expect(body).toContain('if (isIpcError(error)) throw error;');
+    expect(body).toContain('isPluginMarketPassthroughErrorCode(error.code)');
+    expect(body).toContain("throwIpcError(error.code, 'Plugin market operation failed');");
     expect(body).toContain("throwIpcError('INTERNAL', 'Plugin market operation failed');");
     expect(registerSource.match(/return invokePluginMarket\(/g)?.length).toBe(12);
   });
@@ -140,8 +142,11 @@ describe('Plugin Market IPC error boundary', () => {
     expect(serviceSource).toContain('if (error instanceof SilentUpgradeBusyError) {');
 
     expect(registerSource).toContain('deferReconciliation: true');
+    expect(registerSource).toContain('plugin-market:update-consent-holds-changed');
+    expect(registerSource).toContain('onConsentHoldsChanged:');
     expect(ghostPluginPageSource).toContain('const installedGhostMarketKey = useMemo(');
     expect(ghostPluginPageSource).toContain('void refreshMarket(true).catch(() => undefined);');
+    expect(ghostPluginPageSource).toContain('onUpdateConsentHoldsChanged');
 
     const ownerTaskStart = bootstrapSource.indexOf(
       'authManager.setStableOwnerPostCommitTask(async ({ reason, scopeKey, dataOwnerId }) => {',

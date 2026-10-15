@@ -1,6 +1,6 @@
 import { advanceSessionRewindGeneration, withSendToSessionLock } from '../sendToSessionLock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { GhostSetupAssessment } from '../../../shared/ghost';
+import type { GhostSetupAssessment, InstalledGhost } from '../../../shared/ghost';
 import type { BotAuthorizationCard } from '../../../shared/botAuthorization';
 import type { initBotAuthorizationService } from '../botAuthorizationService';
 
@@ -11,22 +11,30 @@ const state = vi.hoisted(() => ({
   profileStatus: 'active',
   login: vi.fn(async () => ({ ok: true })),
   continued: vi.fn(),
-  policy: JSON.stringify({ toolsets: ['art'] }) as string | undefined,
+  visible: true,
+  ghost: null as InstalledGhost | null,
+  realService: false,
+  persistedCard: null as BotAuthorizationCard | null,
   deps: null as unknown as Parameters<typeof initBotAuthorizationService>[0],
   execute: vi.fn(async () => ({ ok: true })),
 }));
 vi.mock('electron', () => ({ shell: { openExternal: vi.fn() } }));
 vi.mock('../../i18n.js', () => ({ t: (key: string) => key }));
 vi.mock('../../logger.js', () => ({ createLogger: () => ({ warn: vi.fn() }) }));
-vi.mock('../botAuthorizationService.js', () => ({
-  initBotAuthorizationService: (deps: typeof state.deps) => { state.deps = deps; },
-}));
+vi.mock('../botAuthorizationService.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../botAuthorizationService.js')>();
+  return { ...actual, initBotAuthorizationService: (deps: typeof state.deps) => {
+    state.deps = deps;
+    return state.realService ? new actual.BotAuthorizationService(deps) : undefined;
+  } };
+});
 vi.mock('../../localDb/client/current.js', () => ({
   getDbClient: () => ({ drizzle: { select: (fields: Record<string, unknown>) => {
     const query = {
-      from: () => query, innerJoin: () => query, where: () => query, orderBy: () => query,
-      limit: async () => 'resolvedJson' in fields
-        ? (state.policy === undefined ? [] : [{ resolvedJson: state.policy }])
+      from: () => query, innerJoin: () => query, where: () => query,
+      orderBy: async () => state.persistedCard ? [{ sessionId: 'session', meta: { botAuthorization: state.persistedCard } }] : [],
+      limit: async () => 'meta' in fields
+        ? (state.persistedCard ? [{ sessionId: 'session', meta: { botAuthorization: state.persistedCard } }] : [])
         : [{ id: 'bot', workingDir: '/bot', status: state.profileStatus }],
     };
     return query;
@@ -47,7 +55,9 @@ vi.mock('../../cindy-brain/index.js', () => ({
   acquireGhostMutationLeaseForMcp: () => () => {}, captureGhostMutationOwnerForMcp: () => ({}),
 }));
 vi.mock('../../cindy-brain/ghostVisibility.js', () => ({
-  classifyGhostVisibility: () => ({ ok: true, ghost: { manifest: { id: 'art', name: 'Art' } } }),
+  classifyGhostVisibility: () => state.visible
+    ? { ok: true, ghost: state.ghost }
+    : { ok: false, errorCode: 'GHOST_DISABLED_IN_WORKDIR' },
 }));
 vi.mock('../../cindy-brain/ghostWorkdirPrefs.js', () => ({ isGhostDisabledForWorkdir: () => false }));
 vi.mock('../../cindy-brain/ghostSetupChangeBus.js', () => ({
@@ -60,11 +70,17 @@ vi.mock('../../maker-host/grok-oauth-login.js', () => ({
 import { initializeBotAuthorizationHost } from '../botAuthorizationHost';
 
 const target = { kind: 'plugin' as const, id: 'art' };
-describe('authorization Host frozen plugin policy', () => {
+describe('authorization Host live plugin policy', () => {
   beforeEach(() => {
     state.assessment.mockReturnValue({ state: 'ready', revision: 1, groups: [] });
     state.subscribe.mockClear();
-    state.policy = JSON.stringify({ toolsets: ['art'] });
+    state.visible = true;
+    state.ghost = { dir: '/fake/art', namespace: null,
+      manifest: { id: 'art', name: 'Art' },
+      approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000001' },
+    } as InstalledGhost;
+    state.realService = false;
+    state.persistedCard = null;
     state.save.mockClear();
     state.profileStatus = 'active';
     state.login.mockClear();
@@ -74,6 +90,99 @@ describe('authorization Host frozen plugin policy', () => {
       await validate();
       state.continued();
     });
+  });
+
+  it.each(['move', 'replace'] as const)('rejects a stale adapter after its physical target changes by %s', async (change) => {
+    state.ghost = { ...state.ghost!, namespace: 'acme' };
+    const adapter = await state.deps.adapter('session', { kind: 'plugin', id: 'art', namespace: 'acme' });
+    state.ghost = change === 'move'
+      ? { ...state.ghost, dir: '/fake/_ns/acme/art' }
+      : { ...state.ghost, approval: { state: 'approved', revision: '00000000-0000-4000-8000-000000000002' } };
+    await expect(adapter.assess()).rejects.toThrow();
+    await expect(adapter.execute({ id: 'save', kind: 'inline_form' } as never,
+      undefined, 'synthetic-secret')).rejects.toThrow();
+    expect(state.execute).not.toHaveBeenCalled();
+    const current = await state.deps.adapter('session', { kind: 'plugin', id: 'art', namespace: 'acme' });
+    await expect(current.assess()).resolves.toMatchObject({ state: 'ready' });
+  });
+
+  it.each(['move', 'replace'] as const)('restores a moved card but rejects a changed approval (%s)', async (change) => {
+    state.realService = true;
+    state.ghost = { ...state.ghost!, namespace: 'acme' };
+    state.save.mockImplementation(async (_sessionId, message) => {
+      state.persistedCard = structuredClone(message.agentMeta.botAuthorization);
+    });
+    state.assessment.mockReturnValue({ state: 'required', revision: 1, groups: [{
+      id: 'account', mode: 'any_of', items: [{ ref: 'oauth:account', kind: 'oauth', label: 'Account', state: 'missing',
+        actions: [{ id: 'connect', kind: 'oauth_connect' }] }],
+    }] });
+    const service = initializeBotAuthorizationHost(async () => {});
+    const sender = { id: 1, isDestroyed: () => false, send: vi.fn() };
+    try {
+      await service.request('session', { kind: 'plugin', id: 'art', namespace: 'acme' });
+      const original = structuredClone(state.persistedCard!);
+      service.invalidatePlugin('art');
+      state.ghost = change === 'move' ? { ...state.ghost!, dir: '/fake/_ns/acme/art' }
+        : { ...state.ghost!, approval: { state: 'approved', revision: 'replacement' } };
+      const action = { kind: 'plugin_setup' as const, action: 'run_action' as const,
+        actionId: original.snapshot.steps[0]!.action!.id, expectedRevision: original.snapshot.revision };
+      expect(await service.resolve(original.snapshot.requestId, action, sender)).toBe(change === 'move');
+      expect(state.execute).not.toHaveBeenCalled();
+      const restored = state.persistedCard!;
+      if (change === 'replace') {
+        expect(restored.snapshot.terminal).toBe(true);
+        return;
+      }
+      expect(restored.snapshot.ghost.id).toBe('_ns__acme__art');
+      expect(restored.snapshot.revision).toBeGreaterThan(original.snapshot.revision);
+      expect(await service.resolve(restored.snapshot.requestId, { ...action, expectedRevision: restored.snapshot.revision }, sender)).toBe(true);
+      await vi.waitFor(() => expect(state.execute).toHaveBeenCalledTimes(1));
+      expect(state.execute).toHaveBeenCalledWith(expect.objectContaining({ ghostId: '_ns__acme__art' }));
+      expect(await service.resolve(restored.snapshot.requestId, {
+        kind: 'plugin_setup', action: 'cancel', expectedRevision: state.persistedCard!.snapshot.revision,
+      }, sender)).toBe(true);
+      expect(state.persistedCard!.snapshot.terminal).toBe(true);
+    } finally {
+      await service.dispose();
+      state.save.mockReset();
+    }
+  });
+
+  it('runs the real Host and card lifecycle: dynamic plugin login saves a card and completion resumes once', async () => {
+    state.realService = true;
+    state.save.mockImplementation(async (_sessionId, message) => {
+      state.persistedCard = structuredClone(message.agentMeta.botAuthorization);
+    });
+    state.assessment.mockReturnValue({ state: 'required', revision: 1, groups: [{
+      id: 'account', mode: 'any_of', items: [{ ref: 'oauth:account', kind: 'oauth', label: 'Account', state: 'missing',
+        actions: [{ id: 'connect', kind: 'oauth_connect' }] }],
+    }] });
+    const service = initializeBotAuthorizationHost(async (_card, validate, assertCurrent) => {
+      await validate();
+      assertCurrent();
+      state.continued();
+    });
+    try {
+      await expect(service.request('session', target)).resolves.toMatchObject({ ok: false, errorCode: 'SETUP_REQUIRED' });
+      expect(state.persistedCard?.sessionId).toBe('session');
+      expect(state.execute).not.toHaveBeenCalled();
+      const card = state.persistedCard!;
+      const sender = { id: 1, isDestroyed: () => false, send: vi.fn() };
+      await service.resolve(card.snapshot.requestId, { kind: 'plugin_setup', action: 'run_action',
+        actionId: card.snapshot.steps[0]!.action!.id, expectedRevision: card.snapshot.revision }, sender);
+      await vi.waitFor(() => expect(state.execute).toHaveBeenCalledTimes(1));
+      expect(state.continued).not.toHaveBeenCalled();
+      state.assessment.mockReturnValue({ state: 'ready', revision: 2, groups: [] });
+      for (const [, wake] of state.subscribe.mock.calls) {
+        wake({ source: 'oauth' });
+        wake({ source: 'oauth' });
+      }
+      await vi.waitFor(() => expect(state.continued).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(state.persistedCard?.snapshot.terminal).toBe(true));
+    } finally {
+      await service.dispose();
+      state.save.mockReset();
+    }
   });
 
   it.each(['oauth_connect', 'inline_form'] as const)('checks the action generation after asynchronous Host validation for %s', async (kind) => {
@@ -167,27 +276,29 @@ describe('authorization Host frozen plugin policy', () => {
     expect(state.continued).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, '{', '{}', '{"toolsets":[]}'])('rejects restored cards without an applied grant: %s', async (policy) => {
-    state.policy = policy;
-    await expect(state.deps.adapter('session', target)).rejects.toThrow('disabled in teammate profile');
-    expect(state.execute).not.toHaveBeenCalled();
-  });
-
-  it('rechecks the durable policy before assessment, credential mutation and continuation', async () => {
+  it('rechecks live visibility before assessment, credential mutation and continuation', async () => {
     const adapter = await state.deps.adapter('session', target);
     await expect(adapter.assess()).resolves.toMatchObject({ state: 'ready' });
-    state.policy = JSON.stringify({ toolsets: [] });
-    await expect(adapter.assess()).rejects.toThrow('disabled in teammate profile');
-    await expect(adapter.execute({ id: 'connect', kind: 'oauth_connect' }, undefined)).rejects.toThrow('disabled in teammate profile');
-    await expect(state.deps.resume({ sessionId: 'session', target } as BotAuthorizationCard, () => {})).rejects.toThrow('disabled in teammate profile');
+    state.visible = false; // plugin disabled/uninstalled or account no longer available
+    await expect(adapter.assess()).rejects.toThrow('Plugin is unavailable');
+    await expect(adapter.execute({ id: 'connect', kind: 'oauth_connect' }, undefined)).rejects.toThrow('Plugin is unavailable');
+    await expect(state.deps.resume({ sessionId: 'session', target } as BotAuthorizationCard, () => {})).rejects.toThrow('Plugin is unavailable');
     expect(state.execute).not.toHaveBeenCalled();
+    expect(state.continued).not.toHaveBeenCalled();
   });
 
-  it('permits configured plugin actions and does not apply plugin policy to Host login', async () => {
+  it('does not resume original work when a connection becomes incomplete again', async () => {
+    await state.deps.adapter('session', target);
+    state.assessment.mockReturnValue({ state: 'required', revision: 2, groups: [] });
+    await expect(state.deps.resume({ sessionId: 'session', target } as BotAuthorizationCard, () => {})).rejects.toThrow('Plugin is not ready');
+    expect(state.continued).not.toHaveBeenCalled();
+  });
+
+  it('permits dynamically discovered plugin actions and does not apply plugin policy to Host login', async () => {
     const adapter = await state.deps.adapter('session', target);
     await expect(adapter.execute({ id: 'connect', kind: 'oauth_connect' }, undefined)).resolves.toMatchObject({ ok: true });
     expect(state.execute).toHaveBeenCalledTimes(1);
-    state.policy = undefined;
+    state.visible = false;
     await expect(state.deps.adapter('session', { kind: 'host', id: 'grok' })).resolves.toMatchObject({ identity: { id: 'grok' } });
   });
 });

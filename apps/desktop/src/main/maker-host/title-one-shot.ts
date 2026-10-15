@@ -1,3 +1,5 @@
+import { isOpenAiSubscriptionProvider } from '@cindy/model-providers';
+import { isClaudeSubscriptionProviderId } from './subscription-account-auth.js';
 /**
  * title-one-shot —— 会话标题的「单次 HTTP」生成器。
  *
@@ -41,8 +43,10 @@ import {
   findModelRegistryRoute,
   isModelSelectableForNewRoute,
   nativeDefaultSourceId,
+  providerCatalogId,
 } from '@cindy/model-providers';
 import { toSdkModelString } from '@cindy/maker-core';
+import { AUTO_TITLE_MAX_CHARS } from '@cindy/maker-shared/session-title';
 
 import { createLogger } from '../logger.js';
 import { getAppCapabilities } from '../appCapabilities.js';
@@ -51,7 +55,6 @@ import { getActiveCatalog } from './active-catalog.js';
 import { isModelDisabled, isProviderDisabled } from '@cindy/model-providers';
 import { readModelDisableOverrides } from './model-disable-store.js';
 import { readClaudeApiKey, readCodexOneShotCreds } from './auth-adapters.js';
-import { getValidClaudeAiOAuth } from './claude-oauth-refresh.js';
 import { outboundUndiciFetch } from './outbound-fetch.js';
 import { effectiveXdGatewayBaseUrl } from '../model-access/effectiveEndpoint.js';
 import { validateTitleOutput } from './title-output-validation.js';
@@ -60,11 +63,11 @@ const log = createLogger('maker-host:title-one-shot');
 
 /** 标题 oneShot 单次请求超时(对齐 renderer scheduleAutoName 的等待窗口语义,留余量)。 */
 const TITLE_TIMEOUT_MS = 12_000;
-/** 标题 ≤ 20 字,32 token 足够;codex Responses 协议层不暴露 max_tokens,仅对 messages/chat 生效。 */
-const TITLE_MAX_TOKENS = 32;
+/** 为多字节中文 / emoji 留出每字符 4 token；字符上限仍单独校验。 */
+const TITLE_MAX_TOKENS = AUTO_TITLE_MAX_CHARS * 4;
 /**
  * XD 网关思考模型(Hy3 / DeepSeek 等)默认会先写 reasoning_content。
- * 标题只要短正文;不关思考时 32 token 会全部烧掉,content 仍是空串。
+ * 标题只要短正文;不关思考时短标题的 token 预算会全部烧掉,content 仍是空串。
  * 网关认 OpenAI 兼容的 thinking.type=disabled;官方 no_think / enable_thinking=false 无效。
  */
 const TITLE_GATEWAY_THINKING = { type: 'disabled' } as const;
@@ -116,9 +119,9 @@ export interface TitleOneShotDeps {
   readSessionProviderId?: (sessionId: string) => Promise<string | null>;
   /** 某 agent 下已连接的供应商视图列表(实时连接态)。用于无显式选择时取 WYSIWYG 默认。 */
   listConnectedProviders?: (agentKind: AgentKind) => Promise<ProviderView[]>;
-  readAnthropicOAuth?: () =>
+  readAnthropicOAuth?: (providerId?: string) =>
     Promise<{ accessToken: string } | null> | { accessToken: string } | null;
-  readCodexCreds?: () => { accessToken: string; accountId: string } | null;
+  readCodexCreds?: (providerId?: string) => { accessToken: string; accountId: string } | null;
   readGatewayKey?: () => string | null;
   /**
    * 派发紧前复查(异步):凭证到手、请求发出的紧前,回读会话归属 / agent 是否仍与本次
@@ -151,8 +154,8 @@ function trimTrailingSlash(s: string): string {
 
 /** 标题请求固定走供应商自己的原生通道，不能被其它 harness 的同名模型遮住状态。 */
 function titleCatalogAgent(providerId: string): 'claude-code' | 'codex' | null {
-  if (providerId === 'anthropic') return 'claude-code';
-  if (providerId === 'openai') return 'codex';
+  if (isClaudeSubscriptionProviderId(providerId)) return 'claude-code';
+  if (providerId === 'openai' || isOpenAiSubscriptionProvider(getActiveCatalog().providers.find((p) => p.id === providerId))) return 'codex';
   return null;
 }
 
@@ -167,7 +170,7 @@ function findTitleCatalogModel(provider: Provider, modelId: string) {
   return undefined;
 }
 
-type TitleRouteUnavailableReason = 'disabled' | 'retired' | 'capability-model';
+type TitleRouteUnavailableReason = 'disabled' | 'retired' | 'capability-model' | 'provider-unavailable';
 
 function titleRouteUnavailableReason(
   model: CatalogModel,
@@ -234,7 +237,7 @@ export function buildTitleTarget(providerId: string): TitleTarget | null {
   const provider = getActiveCatalog().providers.find((p) => p.id === providerId);
   if (!provider) return null;
 
-  switch (provider.id) {
+  switch (isOpenAiSubscriptionProvider(provider) ? 'openai' : provider.auth.native === 'claude' ? 'anthropic' : provider.id) {
     case 'anthropic': {
       if (!provider.titleModel) return null;
       const model = provider.titleModel;
@@ -454,7 +457,7 @@ export function parseResponsesSse(raw: string): string {
  * 用于 prompt prediction 等复用同一条 provider 通路但需要不同 token/校验的场景。
  */
 export interface OneShotOpts {
-  /** 覆盖 max_tokens(标题默认 32)。 */
+  /** 覆盖 max_tokens(标题默认 160)。 */
   maxTokens?: number;
   /** 覆盖 Codex instructions(标题默认 CODEX_TITLE_INSTRUCTIONS)。 */
   codexInstructions?: string;
@@ -489,11 +492,10 @@ export async function generateTitleViaProviderResult(
   const fetchImpl = deps.fetchImpl ?? outboundUndiciFetch;
   const readSessionProviderId = deps.readSessionProviderId ?? (async () => null);
   const listConnectedProviders = deps.listConnectedProviders ?? (async () => []);
-  const readCodexCreds = deps.readCodexCreds ?? readCodexOneShotCreds;
-  // 走刷新模块而非直读凭证库:cc >= 2.1.198 后凭证库的新鲜度取决于 host 刷新节奏,
-  // 直读会在 token 过期后长期拿死值 → 静默 401 回落启发式标题。getValidClaudeAiOAuth
-  // 临期自动续(非强制语义,失败退回现值,行为不劣于直读)。
-  const readAnthropicOAuth = deps.readAnthropicOAuth ?? (() => getValidClaudeAiOAuth());
+  const readCodexCreds = deps.readCodexCreds ?? ((providerId?: string) => readCodexOneShotCreds(undefined, providerId));
+  // Claude 订阅凭证只在内置 Claude Code CLI 里,Cindy 不持有:缺省没有 anthropic 凭证,
+  // 该 wire 的标题请求一律跳过(回落启发式标题)。
+  const readAnthropicOAuth = deps.readAnthropicOAuth ?? (async () => null);
   const readGatewayKey = deps.readGatewayKey ?? readClaudeApiKey;
 
   // Provider 解析:WYSIWYG,与模型选择器高亮同口径。
@@ -521,7 +523,7 @@ export async function generateTitleViaProviderResult(
   let target = buildTitleTarget(providerId);
   // 无标题 wire 的会话供应商(自定义 DeepSeek / xAI 等)回落官方
   // Cindy AI / XD;有 wire 的三家仍不因组不出目标而 hop。
-  if (!target && !TITLE_ONE_SHOT_PROVIDER_IDS.has(providerId)) {
+  if (!target && !(TITLE_ONE_SHOT_PROVIDER_IDS.has(providerId) || isClaudeSubscriptionProviderId(providerId) || isOpenAiSubscriptionProvider(rail.find((p) => p.id === providerId)))) {
     const officialConnected = rail.some((p) => p.id === OFFICIAL_TITLE_FALLBACK_ID);
     const officialTarget = officialConnected
       ? buildTitleTarget(OFFICIAL_TITLE_FALLBACK_ID)
@@ -537,7 +539,7 @@ export async function generateTitleViaProviderResult(
     }
   }
   if (!target) {
-    const status = TITLE_ONE_SHOT_PROVIDER_IDS.has(sessionProviderId)
+    const status = (TITLE_ONE_SHOT_PROVIDER_IDS.has(sessionProviderId) || isClaudeSubscriptionProviderId(sessionProviderId) || isOpenAiSubscriptionProvider(rail.find((p) => p.id === sessionProviderId)))
       ? 'failed'
       : 'unsupported-provider';
 log.debug('title oneShot skipped: no title target', {
@@ -588,6 +590,7 @@ log.debug('title oneShot skipped: no title target', {
     }
     const currentCatalog = getActiveCatalog();
     const currentProvider = currentCatalog.providers.find((provider) => provider.id === providerId);
+    if (!currentProvider) return 'provider-unavailable';
     const currentModel = currentProvider
       ? findTitleCatalogModel(currentProvider, target.model)
       : undefined;
@@ -598,7 +601,7 @@ log.debug('title oneShot skipped: no title target', {
     // Registry tombstone 本身识别，不能把“未实体化”误当成“没有限制”。
     return findModelRegistryRoute(
       currentCatalog.modelRegistry,
-      providerId,
+      providerCatalogId(currentProvider),
       target.model,
       titleCatalogAgent(providerId) ?? undefined,
     )?.entry.status === 'retired'
@@ -638,19 +641,19 @@ log.debug('title oneShot skipped: no title target', {
   const maxTokens = opts?.maxTokens ?? TITLE_MAX_TOKENS;
   const codexInstructions = opts?.codexInstructions ?? CODEX_TITLE_INSTRUCTIONS;
   const maxOutputChars = opts?.maxOutputChars ?? TITLE_OUTPUT_MAX_CHARS;
-  const maxVisualChars = opts?.maxVisualChars ?? 40;
+  const maxVisualChars = opts?.maxVisualChars ?? AUTO_TITLE_MAX_CHARS;
   try {
     let text = '';
     switch (target.wire) {
       case 'anthropic-messages': {
-        const oauth = await readAnthropicOAuth();
+        const oauth = await readAnthropicOAuth(providerId);
         if (!oauth?.accessToken) {
           log.debug('oneShot skipped: no anthropic OAuth', { providerId });
           return { status: 'failed' };
         }
         // 紧前复查：readAnthropicOAuth 是异步操作，期间用户可能登出/切换账号/轮换凭证。
         // 重新读取当前凭证并与捕获值比对，不一致则中止，避免向旧账号外发付费调用。
-        const oauthRecheck = await readAnthropicOAuth();
+        const oauthRecheck = await readAnthropicOAuth(providerId);
         if (oauthRecheck?.accessToken !== oauth.accessToken) {
           log.debug('oneShot skipped: credential changed during OAuth read', {
             providerId,
@@ -666,7 +669,7 @@ log.debug('title oneShot skipped: no title target', {
         // preDispatchEligible 内部可能有异步 provider 状态读取，期间用户仍可能登出/
         // 切换账号/轮换凭证。在最后一个 await 之后重新读取并比对，捕获 eligibility
         // 检查期间的凭证变更，避免向旧账号外发付费调用。
-        const oauthPostEligibility = await readAnthropicOAuth();
+        const oauthPostEligibility = await readAnthropicOAuth(providerId);
         if (oauthPostEligibility?.accessToken !== oauth.accessToken) {
           log.debug('oneShot skipped: credential changed during eligibility check', {
             providerId,
@@ -704,14 +707,14 @@ log.debug('title oneShot skipped: no title target', {
         break;
       }
       case 'codex-responses': {
-        const creds = readCodexCreds();
+        const creds = readCodexCreds(providerId === 'openai' ? undefined : providerId);
         if (!creds) {
           log.debug('oneShot skipped: no codex creds', { providerId });
           return { status: 'failed' };
         }
         // 紧前复查：readCodexCreds 之后用户可能切换 ChatGPT workspace/账号或轮换 token。
         // 重新读取并与捕获值比对（accountId + accessToken），不一致则中止。
-        const credsRecheck = readCodexCreds();
+        const credsRecheck = readCodexCreds(providerId === 'openai' ? undefined : providerId);
         if (
           !credsRecheck ||
           credsRecheck.accountId !== creds.accountId ||
@@ -729,7 +732,7 @@ log.debug('title oneShot skipped: no title target', {
         // preDispatchEligible 内部可能有异步 provider 状态读取，期间用户仍可能登出/
         // 切换 workspace/轮换 token。在最后一个 await 之后重新读取并比对，捕获
         // eligibility 检查期间的凭证变更，避免向旧账号外发付费调用。
-        const credsPostEligibility = readCodexCreds();
+        const credsPostEligibility = readCodexCreds(providerId === 'openai' ? undefined : providerId);
         if (
           !credsPostEligibility ||
           credsPostEligibility.accountId !== creds.accountId ||

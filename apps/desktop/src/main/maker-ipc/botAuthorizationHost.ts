@@ -1,9 +1,9 @@
 import { getSessionRewindGeneration, withSendToSessionLock } from './sendToSessionLock.js';
 import { shell } from 'electron';
 import { t } from '../i18n.js';
-import { and, eq, isNull, ne, or, gt, like, desc, inArray } from 'drizzle-orm';
+import { and, eq, isNull, ne, or, gt, like, desc } from 'drizzle-orm';
 import { getDbClient } from '../localDb/client/current.js';
-import { botSessionLinks, botProfiles, botRuntimeSnapshots, sessions, messages } from '../localDb/schema.js';
+import { botSessionLinks, botProfiles, sessions, messages } from '../localDb/schema.js';
 import {
   createMessage,
   patchMessageAgentMeta,
@@ -24,7 +24,9 @@ import {
   captureGhostMutationOwnerForMcp,
 } from '../cindy-brain/index.js';
 import { getGhostSetupChangeBus } from '../cindy-brain/ghostSetupChangeBus.js';
+import { ghostInstallApprovalToken } from '../../shared/ghost.js';
 import { classifyGhostVisibility } from '../cindy-brain/ghostVisibility.js';
+import { installedGhostStoragePart, installedGhostMutationTargetToken } from '../../shared/pluginIdentity.js';
 import { isGhostDisabledForWorkdir } from '../cindy-brain/ghostWorkdirPrefs.js';
 import {
   getGrokAccessToken,
@@ -55,6 +57,7 @@ export async function isBotAuthorizationSession(sessionId: string): Promise<bool
         isNull(botSessionLinks.archivedAt),
         ne(sessions.status, 'deleted'),
         ne(sessions.status, 'archived'),
+        isNull(sessions.remoteHostId),
       ),
     )
     .limit(1);
@@ -67,30 +70,6 @@ export function initializeBotAuthorizationHost(
   captureInputGuard: (sessionId: string) => () => void = () => () => {},
 ) {
   const ownerScopes = new Map<string, ReturnType<typeof captureDataOwnerBroadcastScope>>();
-  const assertPluginPolicy = async (sessionId: string, pluginId: string) => {
-    // The applied snapshot survives Host restarts; never infer teammate grants
-    // from global plugin visibility or from the card's display metadata.
-    const [snapshot] = await getDbClient()
-      .drizzle
-      .select({ resolvedJson: botRuntimeSnapshots.resolvedJson })
-      .from(botRuntimeSnapshots)
-      .where(
-        and(
-          eq(botRuntimeSnapshots.sessionId, sessionId),
-          inArray(botRuntimeSnapshots.status, ['applied', 'degraded']),
-        ),
-      )
-      .orderBy(desc(botRuntimeSnapshots.preparedAt))
-      .limit(1);
-    let resolved: { toolsets?: unknown } | null = null;
-    try {
-      resolved = JSON.parse(snapshot?.resolvedJson ?? 'null');
-    } catch {
-      /* deny malformed policy */
-    }
-    if (!Array.isArray(resolved?.toolsets) || !resolved.toolsets.includes(pluginId))
-      throw new Error('Plugin is disabled in teammate profile');
-  };
   const assertSession = async (sessionId: string) => {
     const scope = ownerScopes.get(sessionId);
     if (
@@ -101,7 +80,7 @@ export function initializeBotAuthorizationHost(
     )
       throw new Error('Authorization owner or teammate is unavailable');
   };
-  return initBotAuthorizationService({
+  const service: Parameters<typeof initBotAuthorizationService>[0] = {
     async adapter(sessionId, target) {
       const scope = captureDataOwnerBroadcastScope();
       if (!scope) throw new Error('Authorization owner unavailable');
@@ -178,29 +157,34 @@ export function initializeBotAuthorizationHost(
         .from(sessions)
         .where(eq(sessions.id, sessionId))
         .limit(1);
-      const validate = async () => {
-        await assertSession(sessionId);
-        await assertPluginPolicy(sessionId, target.id);
+      const validate = async (expectedTarget?: string | null) => {
         await assertSession(sessionId);
         const result = classifyGhostVisibility(target.id, session?.workingDir ?? null, {
           listGhosts: () => getGhostManager().list(),
           isAvailableForActiveSession: isGhostAvailableForActiveSession,
           isDisabledForWorkdir: isGhostDisabledForWorkdir,
-        });
+        }, target.namespace);
         if (!result.ok) throw new Error('Plugin is unavailable');
+        if (expectedTarget !== undefined && (expectedTarget === null ||
+            installedGhostMutationTargetToken(result.ghost, '') !== expectedTarget)) {
+          throw new Error('Authorization plugin instance changed');
+        }
         return result.ghost;
       };
       const ghost = await validate();
+      const expectedTarget = installedGhostMutationTargetToken(ghost, '');
+      const instanceId = installedGhostStoragePart(ghost);
       let reconnected = false;
       return {
+        pluginApprovalToken: ghostInstallApprovalToken(ghost.approval),
         identity: {
-          id: target.id,
+          id: instanceId,
           name: ghost.manifest.name,
           ...(ghost.iconDataUrl ? { iconDataUrl: ghost.iconDataUrl } : {}),
         },
         async assess() {
-          await validate();
-          const assessment = getGhostSetupAssessment(target.id);
+          await validate(expectedTarget);
+          const assessment = getGhostSetupAssessment(instanceId);
           if (!target.reauthorize) return assessment;
           const suggested = toReauthInteractionAssessment(assessment);
           // A plugin-wide OAuth event (or successful action) cannot satisfy a
@@ -221,12 +205,12 @@ export function initializeBotAuthorizationHost(
           return groups.length ? { ...assessment, state: 'required' as const, groups } : assessment;
         },
         subscribe: (wake) =>
-          bus.subscribe(target.id, (event) => {
+          bus.subscribe(instanceId, (event) => {
             if (event.source === 'oauth') reconnected = true;
             wake();
           }),
         async execute(action, sender, value, onAuthorizationUrl, assertCurrent, beforeCommit) {
-          await validate();
+          await validate(expectedTarget);
           assertCurrent?.();
           const release = acquireGhostMutationLeaseForMcp(captureGhostMutationOwnerForMcp());
           try {
@@ -234,14 +218,14 @@ export function initializeBotAuthorizationHost(
               if (value === undefined) return { ok: false, errorCode: 'INLINE_UNAVAILABLE' };
               return await executeGhostSetupInlineAction({
                 sessionId,
-                ghostId: target.id,
+                ghostId: instanceId,
                 action,
                 value,
               });
             }
             const result = await executeGhostSetupAction({
               sessionId,
-              ghostId: target.id,
+              ghostId: instanceId,
               action,
               responseTarget: sender,
               onAuthorizationUrl,
@@ -352,6 +336,7 @@ export function initializeBotAuthorizationHost(
           !card.snapshot.terminal &&
           card.target.kind === target.kind &&
           card.target.id === target.id &&
+          (card.target.kind !== 'plugin' || card.target.namespace === (target.kind === 'plugin' ? target.namespace : undefined)) &&
           !!card.target.reauthorize === !!target.reauthorize
         )
           return card;
@@ -361,8 +346,10 @@ export function initializeBotAuthorizationHost(
     async resume(card, assertCurrent) {
       await resume(card, async () => {
         await assertSession(card.sessionId);
-        if (card.target.kind === 'plugin')
-          await assertPluginPolicy(card.sessionId, card.target.id);
+        if (card.target.kind === 'plugin') {
+          const adapter = await service.adapter(card.sessionId, { ...card.target, reauthorize: false });
+          if ((await adapter.assess()).state !== 'ready') throw new Error('Plugin is not ready');
+        }
         const [row] = await getDbClient()
           .drizzle.select({ id: messages.id })
           .from(messages)
@@ -384,7 +371,8 @@ export function initializeBotAuthorizationHost(
     onDispose: () => ownerScopes.clear(),
     openExternal: (url) => shell.openExternal(url),
     warn: () => log.warn('Authorization card operation failed'),
-  });
+  };
+  return initBotAuthorizationService(service);
 }
 
 function readStoredAuthorization(row: {

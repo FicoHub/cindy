@@ -1,3 +1,11 @@
+import type {
+  DeviceAuthorizationHandle,
+  DeviceAuthorizationInput,
+  PluginAuthorizationHandle,
+  PluginAuthorizationInput,
+} from '../plugin-oauth/deviceCard.js';
+import { parseDeviceAuthorizationUrl } from '@cindy/device-link';
+import { bindDeviceAuthorizationTarget, bindPluginAuthorizationTarget } from '../plugin-oauth/targetPolicy.js';
 /**
  * nodeRuntimeBroker — 随意识安装的本地 Node 工作进程守门与 stdio 中继。
  *
@@ -31,6 +39,7 @@ import type {
   GhostPipeNodeResult,
   InstalledGhost,
 } from '../../shared/ghost.js';
+import { installedGhostStoragePart } from '../../shared/pluginIdentity.js';
 import {
   GHOST_NODE_CHILD_MODE_FLAG,
   GHOST_NODE_MAX_CHILDREN_PER_GHOST,
@@ -103,6 +112,8 @@ export interface NodeWorkerProcess {
    * 观测的 utility-process-spawned。
    */
   onStartupObservation?(listener: (observation: NodeWorkerStartupObservation) => void): void;
+  /** Diagnostic-only adapter facts; absent on test/custom process implementations. */
+  readStartupState?(): NodeWorkerStartupState;
   /** 订阅 worker 引导层就绪后经 parentPort 上行的控制帧(代启子进程用;可选)。 */
   onControl?(listener: (message: unknown) => void): void;
   /** 给 worker 引导层下行一条控制帧(代启结果/子进程输出等;可选)。 */
@@ -114,6 +125,13 @@ export type NodeWorkerStartupStage = 'utility-process-spawned' | 'parent-port-re
 export interface NodeWorkerStartupObservation {
   stage: NodeWorkerStartupStage;
   pid?: number;
+}
+
+/** Main-only facts sampled at a failed startup deadline; never gate readiness. */
+export interface NodeWorkerStartupState {
+  messageCount: number;
+  readySeen: boolean;
+  adapterReady: boolean;
 }
 
 type NodeWorkerObservedTimeoutClass = 'native-not-observed' | 'native-observed-ready-not-observed';
@@ -130,12 +148,25 @@ export interface NodeRuntimeStartAttemptContext {
 
 export interface GhostNodeRuntimeBrokerDeps {
   getGhost(id: string): InstalledGhost | null;
+  /** 宿主要求这个实例暂不启动时返回原因(如换库后缓存没清掉、需要重启应用)。 */
+  startBlockedReason?(id: string): string | null;
+  openSecretInput?: (input: import('./nodeSecretSetup.js').NodeSecretSetupInput) => Promise<boolean>;
+  /** Main's exact live tool-call lookup; a plugin cannot select another call's owner. */
+  getCallSignal?: (ghostId: string, callId: string) => AbortSignal | null;
+  getCallSessionId?: (ghostId: string, callId: string) => string | null;
+  openDeviceAuthorization?: (input: DeviceAuthorizationInput) => DeviceAuthorizationHandle;
+  openAuthorization?: (input: PluginAuthorizationInput) => PluginAuthorizationHandle;
   ownerScope?: GhostOwnerScope;
   /**
    * 读取当前插件自己声明的 Node 凭证。生产接 safeStorage；返回 null =
    * 未保存或保险库不可用。调用方不得记录返回值。
    */
   readSecret?: (ghostId: string, secretKey: string) => string | null;
+  secretSaved?: (ghostId: string, secretKey: string) => boolean;
+  /** 只解析本插件显式引用的 OAuth 槽；不交付 refresh token。 */
+  resolveOauthSecret?: (ghostId: string, secretKey: string, accountId?: string) => Promise<
+    { ok: true; accessToken: string } | { ok: false; error: string }
+  >;
   spawnProcess?: (entryPath: string, cwd: string, ghostId: string) => NodeWorkerProcess;
   /** 代启原样 stdio 子进程(childSpawn;缺省用 utilityProcess 适配器)。 */
   spawnChildProcess?: (
@@ -196,6 +227,60 @@ function readDiagnosticPid(child: NodeWorkerProcess): number | undefined {
   }
 }
 
+type NodeWorkerStartupDiagnosticState = {
+  messageCount: number | 'unknown';
+  readySeen: boolean | 'unknown';
+  adapterReady: boolean | 'unknown';
+};
+
+function readDiagnosticStartupState(child: NodeWorkerProcess): NodeWorkerStartupDiagnosticState {
+  const unknown: NodeWorkerStartupDiagnosticState = {
+    messageCount: 'unknown',
+    readySeen: 'unknown',
+    adapterReady: 'unknown',
+  };
+  try {
+    const state = child.readStartupState?.();
+    if (!state) return unknown;
+    let messageCount: number | 'unknown' = 'unknown';
+    let readySeen: boolean | 'unknown' = 'unknown';
+    let adapterReady: boolean | 'unknown' = 'unknown';
+    try {
+      const value = state.messageCount;
+      messageCount = Number.isSafeInteger(value) && value >= 0 ? value : 'unknown';
+    } catch {
+      // A custom adapter may expose throwing diagnostic fields.
+    }
+    try {
+      readySeen = typeof state.readySeen === 'boolean' ? state.readySeen : 'unknown';
+    } catch {
+      // A custom adapter may expose throwing diagnostic fields.
+    }
+    try {
+      adapterReady = typeof state.adapterReady === 'boolean' ? state.adapterReady : 'unknown';
+    } catch {
+      // A custom adapter may expose throwing diagnostic fields.
+    }
+    return {
+      messageCount,
+      readySeen,
+      adapterReady,
+    };
+  } catch {
+    return unknown;
+  }
+}
+
+/** Best-effort state exposed by Electron's UtilityProcess adapter, not OS polling. */
+/** Adapter fact only; false means the adapter has not marked it killed, not OS liveness. */
+function readDiagnosticAdapterKilled(child: NodeWorkerProcess): boolean | 'unknown' {
+  try {
+    return typeof child.killed === 'boolean' ? child.killed : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 interface PendingRpc {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -207,11 +292,18 @@ interface PendingRpc {
   /** 超时收尾(初臂/续命共用同一段收尾逻辑)。 */
   expire(): void;
   ownerScopeSnapshot: unknown;
+  signal?: AbortSignal;
+  callId?: string;
+  authorization?: DeviceAuthorizationHandle;
+  authorizationStarted?: boolean;
+  cancel(): void;
+  cleanup(): void;
 }
 
 /** 宿主代启的原样 stdio 子进程(childSpawn;挂在某个 worker 名下)。 */
 interface ChildProcEntry {
   childId: string;
+  rpcId?: string;
   entryRel: string;
   proc: NodeWorkerProcess;
   hardKillTimer: NodeJS.Timeout | null;
@@ -261,7 +353,7 @@ interface WorkerEntry {
   hardKillTimer: NodeJS.Timeout | null;
   mcpInitPromise: Promise<void> | null;
   stopping: boolean;
-  /** 曾发给本 worker 的凭证明文(退出诊断脱敏用;settleExit 后立即清空)。 */
+  /** 曾发给本 worker 的凭证明文(stderr 及退出诊断脱敏用;settleExit 后立即清空)。 */
   exposedSecretValues: Set<string>;
   /** exit 后 stderr drain 用:非 null 表示进程已退出、正在等待管道排空。 */
   exitDrain: {
@@ -277,7 +369,7 @@ interface WorkerEntry {
 
 class NodeRpcError extends Error {
   constructor(
-    readonly kind: 'exit' | 'protocol' | 'timeout' | 'remote',
+    readonly kind: 'exit' | 'protocol' | 'timeout' | 'remote' | 'cancelled',
     message: string,
     readonly data?: unknown,
   ) {
@@ -309,6 +401,10 @@ interface StartAttemptDiagnostic {
   observedMainWindowState: NodeRuntimeObservedMainWindowState;
   observedScreenState: NodeRuntimeObservedScreenState;
   observedStages: Set<NodeWorkerStartupStage>;
+  messageCount?: number | 'unknown';
+  readySeen?: boolean | 'unknown';
+  adapterReady?: boolean | 'unknown';
+  adapterKilledAtDeadline?: boolean | 'unknown';
   pid?: number;
   observedTimeoutClass?: NodeWorkerObservedTimeoutClass;
   observedStagesAtDeadline?: NodeWorkerStartupStage[];
@@ -441,6 +537,8 @@ export function createUtilityNodeWorkerProcess(
   let destroyed = false;
   let killed = false;
   let ready = false;
+  let messageCount = 0;
+  let readySeen = false;
   const readNativePid = (): number | undefined => {
     try {
       const value = child.pid;
@@ -471,6 +569,7 @@ export function createUtilityNodeWorkerProcess(
     }
   };
   const onMessage = (message: unknown) => {
+    messageCount += 1;
     if (
       !ready &&
       message &&
@@ -479,6 +578,7 @@ export function createUtilityNodeWorkerProcess(
       (message as Record<string, unknown>).type === 'ready'
     ) {
       ready = true;
+      readySeen = true;
       events.emit('spawn');
       // 子进程原样模式:就绪后一律不再收消息——它没有任何上行控制资格。
       if (isChild) child.removeListener('message', onMessage);
@@ -526,6 +626,9 @@ export function createUtilityNodeWorkerProcess(
     },
     stdout,
     stderr,
+    readStartupState(): NodeWorkerStartupState {
+      return { messageCount, readySeen, adapterReady: ready };
+    },
     onStartupObservation(listener: (observation: NodeWorkerStartupObservation) => void): void {
       if (nativeSpawnObservation) {
         try {
@@ -606,6 +709,7 @@ function clearHostSecrets(secrets: Record<string, string> | undefined): void {
  * 任意命令执行。stop(ghostId) 收掉该意识全部进程。
  */
 export class GhostNodeRuntimeBroker {
+  private readonly secretInputCalls = new Set<string>();
   /**
    * key = `ghostId::entryRel`(entryRel = 主入口或申报的额外入口;ghostId 与
    * 安全相对路径的字符集都不含 ":",拼接无歧义)。
@@ -684,9 +788,13 @@ export class GhostNodeRuntimeBroker {
     return `${ghostId}::${entryRel}`;
   }
 
+  private static instanceId(ghost: InstalledGhost): string {
+    return installedGhostStoragePart(ghost);
+  }
+
   stateOf(ghostId: string): 'off' | 'running' {
     for (const entry of this.workers.values()) {
-      if (entry.ghost.manifest.id === ghostId) return 'running';
+      if (GhostNodeRuntimeBroker.instanceId(entry.ghost) === ghostId) return 'running';
     }
     return 'off';
   }
@@ -694,21 +802,21 @@ export class GhostNodeRuntimeBroker {
   /** resident 档在插件启用/启动时调用；按需档保持零进程。常驻只覆盖主入口。
    *  同时也是 stop() 的对称点:上层完成更新/重启后调用此方法,清除停止标记。 */
   async startResident(ghost: InstalledGhost): Promise<void> {
-    this.stoppedGhosts.delete(ghost.manifest.id);
+    this.stoppedGhosts.delete(GhostNodeRuntimeBroker.instanceId(ghost));
     if (!ghost.enabled || ghost.manifest.node?.lifecycle !== 'resident') return;
     const ownerScopeSnapshot = this.captureOwnerScope();
     const entry = await this.ensureWorker(ghost, ghost.manifest.node.entry, ownerScopeSnapshot);
-    this.assertOwnerScopeUsable(ghost.manifest.id, ownerScopeSnapshot);
+    this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), ownerScopeSnapshot);
     if (ghost.manifest.node.protocol === 'mcp-stdio') await this.ensureMcpInitialized(entry);
   }
 
   /** Recovery-only restart for a runtime that was already running on demand. */
   async startForRecovery(ghost: InstalledGhost): Promise<void> {
-    this.stoppedGhosts.delete(ghost.manifest.id);
+    this.stoppedGhosts.delete(GhostNodeRuntimeBroker.instanceId(ghost));
     if (!ghost.enabled || !ghost.manifest.node) return;
     const ownerScopeSnapshot = this.captureOwnerScope();
     const entry = await this.ensureWorker(ghost, ghost.manifest.node.entry, ownerScopeSnapshot);
-    this.assertOwnerScopeUsable(ghost.manifest.id, ownerScopeSnapshot);
+    this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), ownerScopeSnapshot);
     if (ghost.manifest.node.protocol === 'mcp-stdio') await this.ensureMcpInitialized(entry);
   }
 
@@ -721,12 +829,46 @@ export class GhostNodeRuntimeBroker {
     // getGhost 确认插件当前已启用——这是按需插件的"后更新/重启边界",
     // 清除 stop() 留下的停止标记,使按需进程可以恢复启动。
     this.stoppedGhosts.delete(ghostId);
+    const requestGeneration = this.stopGeneration.get(ghostId) ?? 0;
+    const requestManifest = JSON.stringify(ghost.manifest);
+    const requestDirectory = ghost.dir;
+    const requestStillCurrent = (): boolean => {
+      const current = this.deps.getGhost(ghostId);
+      return !this.destroyed && current?.enabled === true
+        && current.dir === requestDirectory
+        && (this.stopGeneration.get(ghostId) ?? 0) === requestGeneration
+        && JSON.stringify(current.manifest) === requestManifest;
+    };
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return errorResult('INVALID_REQUEST', 'node-request 载荷必须是对象');
     }
     const request = payload as Record<string, unknown>;
+    if (request.cancelWithCall !== undefined && typeof request.cancelWithCall !== 'boolean') {
+      return errorResult('INVALID_REQUEST', 'cancelWithCall must be a boolean');
+    }
+    if (request.promptSecrets !== undefined && typeof request.promptSecrets !== 'boolean') {
+      return errorResult('INVALID_REQUEST', 'promptSecrets must be a boolean');
+    }
+    if (request.promptSecrets === true && request.cancelWithCall !== true) {
+      return errorResult('INVALID_REQUEST', 'Protected credential input requires cancelWithCall');
+    }
+    if (request.authAccount !== undefined &&
+      (typeof request.authAccount !== 'string' || request.authAccount.length === 0 || request.authAccount.length > 64)) {
+      return errorResult('INVALID_REQUEST', 'authAccount 必须是 1–64 字符的账号 id');
+    }
     if (request.type !== 'node-request') {
       return errorResult('INVALID_REQUEST', '请求类型必须是 node-request');
+    }
+    let signal: AbortSignal | undefined;
+    // callId alone was ignored by older Hosts. Only the new explicit contract
+    // changes a legacy RPC's lifetime or grants access to authorization cards.
+    if (request.cancelWithCall === true) {
+      if (typeof request.callId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(request.callId)) {
+        return errorResult('INVALID_REQUEST', 'callId must identify the current tool call');
+      }
+      const current = this.deps.getCallSignal?.(ghostId, request.callId);
+      if (!current || current.aborted) return errorResult('CANCELLED', 'The tool call is no longer active');
+      signal = current;
     }
     if (
       typeof request.method !== 'string' ||
@@ -803,6 +945,56 @@ export class GhostNodeRuntimeBroker {
     }
 
     let hostSecrets: Record<string, string> | undefined;
+    let secretInputCompleted = false;
+    const manualBindings = secretBindings.filter(binding => !binding.oauthSecret);
+    if (request.promptSecrets === true && manualBindings.length === 0) {
+      return errorResult('INVALID_REQUEST', 'This Node method has no manual credential binding');
+    }
+    // A missing optional credential can prompt only inside the exact live tool
+    // call. No account, key or URL can be selected by the plugin's params.
+    let needsSecretInput = request.promptSecrets === true;
+    try {
+      if (signal && !needsSecretInput && this.deps.openSecretInput && this.deps.secretSaved) {
+        needsSecretInput = manualBindings.some(binding => !this.deps.secretSaved!(ghostId, binding.key));
+      }
+    } catch {
+      return errorResult('INTERNAL', 'Plugin credential status is unavailable');
+    }
+    if (manualBindings.length > 0 && needsSecretInput) {
+      const callId = typeof request.callId === 'string' ? request.callId : null;
+      const sessionId = callId ? this.deps.getCallSessionId?.(ghostId, callId) : null;
+      if (signal && callId && sessionId && this.deps.openSecretInput) {
+        const inputKey = `${ghostId}\0${callId}`;
+        if (this.secretInputCalls.has(inputKey) || this.secretInputCalls.size >= MAX_PENDING_REQUESTS) {
+          return errorResult('RATE_LIMITED', 'A protected credential input is already pending');
+        }
+        const assertCurrent = () => {
+          if (signal.aborted || !requestStillCurrent() ||
+            !this.ownerScopeUsable(ghostId, ownerScopeSnapshot) ||
+            this.deps.getCallSignal?.(ghostId, callId) !== signal ||
+            this.deps.getCallSessionId?.(ghostId, callId) !== sessionId) {
+            throw new Error('NODE_SECRET_INPUT_UNAVAILABLE');
+          }
+        };
+        this.secretInputCalls.add(inputKey);
+        try {
+          assertCurrent();
+          const saved = await this.deps.openSecretInput({
+            ghostId, entry: entryRel, method: request.method as string,
+            sessionId, signal, force: request.promptSecrets === true, assertCurrent,
+          });
+          assertCurrent();
+          if (!saved) return errorResult('CANCELLED', 'Plugin credential input was not completed');
+          secretInputCompleted = true;
+        } catch {
+          return errorResult('CANCELLED', 'Plugin credential input is no longer active');
+        } finally {
+          this.secretInputCalls.delete(inputKey);
+        }
+      } else if (request.promptSecrets === true) {
+        return errorResult('PERMISSION_DENIED', 'Protected credential input requires a live task');
+      }
+    }
     if (secretBindings.length > 0) {
       hostSecrets = Object.create(null) as Record<string, string>;
       try {
@@ -811,7 +1003,28 @@ export class GhostNodeRuntimeBroker {
             clearHostSecrets(hostSecrets);
             return errorResult('PERMISSION_DENIED', 'Plugin owner boundary is not stable');
           }
-          const value = this.deps.readSecret?.(ghostId, binding.key) ?? null;
+          let value: string | null;
+          if (binding.oauthSecret !== undefined) {
+            const source = ghost.manifest.network?.secrets?.find((s) => s.key === binding.oauthSecret);
+            if (source?.source !== 'oauth' || !source.oauth || !this.deps.resolveOauthSecret) {
+              clearHostSecrets(hostSecrets);
+              return errorResult('PERMISSION_DENIED', 'Node OAuth 凭证声明无效或当前客户端不支持');
+            }
+            const resolved = await this.deps.resolveOauthSecret(
+              ghostId, binding.oauthSecret, request.authAccount as string | undefined,
+            );
+            if (!requestStillCurrent() || !this.ownerScopeUsable(ghostId, ownerScopeSnapshot)) {
+              clearHostSecrets(hostSecrets);
+              return errorResult('PERMISSION_DENIED', 'Plugin owner boundary is not stable');
+            }
+            if (!resolved.ok) {
+              clearHostSecrets(hostSecrets);
+              return errorResult('PERMISSION_DENIED', '账号不可用，请在插件详情页检查授权');
+            }
+            value = resolved.accessToken;
+          } else {
+            value = this.deps.readSecret?.(ghostId, binding.key) ?? null;
+          }
           if (value === null) {
             clearHostSecrets(hostSecrets);
             return errorResult(
@@ -833,8 +1046,16 @@ export class GhostNodeRuntimeBroker {
 
     let entry: WorkerEntry;
     try {
+      if (signal?.aborted) {
+        clearHostSecrets(hostSecrets);
+        return errorResult('CANCELLED', 'The tool call was cancelled');
+      }
       entry = await this.ensureWorker(ghost, entryRel, ownerScopeSnapshot);
       this.assertOwnerScopeUsable(ghostId, ownerScopeSnapshot);
+      if (!requestStillCurrent()) {
+        clearHostSecrets(hostSecrets);
+        return errorResult('PERMISSION_DENIED', '插件已停止或更新，请重新发起调用');
+      }
     } catch (error) {
       clearHostSecrets(hostSecrets);
       if (error instanceof WorkerStartError && error.ownerBoundary) {
@@ -859,6 +1080,7 @@ export class GhostNodeRuntimeBroker {
         }
       }
       if (hostSecrets) {
+        if (!requestStillCurrent()) return errorResult('PERMISSION_DENIED', '插件已停止或更新，请重新发起调用');
         for (const v of Object.values(hostSecrets)) {
           if (v) entry.exposedSecretValues.add(v);
         }
@@ -871,6 +1093,9 @@ export class GhostNodeRuntimeBroker {
         request.maxTotalMs as number | undefined,
         hostSecrets,
         ownerScopeSnapshot,
+        signal,
+        signal ? request.callId as string : undefined,
+        secretInputCompleted,
       );
       // writeLine/JSON.stringify 在 sendRpc 内同步完成；随即抹掉本次临时对象，
       // 不让凭证明文跟随 Promise 生命周期常驻在 broker 闭包里。
@@ -882,6 +1107,7 @@ export class GhostNodeRuntimeBroker {
       return { ok: true, result };
     } catch (error) {
       if (error instanceof NodeRpcError) {
+        if (error.kind === 'cancelled') return errorResult('CANCELLED', error.message);
         if (error.kind === 'timeout') return errorResult('TIMEOUT', error.message);
         if (error.kind === 'exit') return errorResult('PROCESS_EXITED', error.message);
         return errorResult('PROTOCOL_ERROR', error.message, error.data);
@@ -897,9 +1123,13 @@ export class GhostNodeRuntimeBroker {
 
   /** worker 引导层上行控制帧的总入口:形状不合静默丢,资格逐项查。 */
   private handleWorkerControl(entry: WorkerEntry, raw: unknown): void {
-    if (!this.ownerScopeUsable(entry.ghost.manifest.id, entry.ownerScopeSnapshot)) return;
+    if (!this.ownerScopeUsable(GhostNodeRuntimeBroker.instanceId(entry.ghost), entry.ownerScopeSnapshot)) return;
     const message = parseGhostNodeChildToHostMessage(raw);
     if (!message) return;
+    if (message.type === 'device-authorize' || message.type === 'plugin-authorize') {
+      this.authorizePlugin(entry, message);
+      return;
+    }
     if (message.type === 'spawn-child') {
       void this.spawnChildForWorker(entry, message);
       return;
@@ -915,11 +1145,95 @@ export class GhostNodeRuntimeBroker {
     }
   }
 
+  private authorizePlugin(
+    entry: WorkerEntry,
+    message: Extract<GhostNodeChildToHostMessage, { type: 'device-authorize' | 'plugin-authorize' }>,
+  ): void {
+    const ghostId = GhostNodeRuntimeBroker.instanceId(entry.ghost);
+    const pending = entry.pending.get(message.rpcId);
+    const reply = (ok: boolean, result?: Awaited<PluginAuthorizationHandle['result']>) =>
+      this.replyToWorker(entry, message.type === 'device-authorize'
+        ? { type: 'device-authorize-result', reqId: message.reqId, ok }
+        : { type: 'plugin-authorize-result', reqId: message.reqId, ok, ...(result ? { result } : {}) });
+    const sessionId = pending?.signal && pending.callId
+      ? this.deps.getCallSessionId?.(ghostId, pending.callId)
+      : null;
+    if (
+      !pending?.signal ||
+      !sessionId ||
+      !this.isLiveBoundRpc(entry, message.rpcId) ||
+      !(message.type === 'device-authorize' ? this.deps.openDeviceAuthorization : this.deps.openAuthorization) ||
+      pending.authorizationStarted
+    ) {
+      reply(false);
+      return;
+    }
+    pending.authorizationStarted = true;
+    try {
+      const request = message.type === 'device-authorize'
+        ? { kind: 'device' as const, url: parseDeviceAuthorizationUrl(message.url) } : message.request;
+      const checkTarget = message.type === 'device-authorize'
+        ? bindDeviceAuthorizationTarget(entry.ghost.manifest, request.url)
+        : bindPluginAuthorizationTarget(entry.ghost.manifest, request);
+      const assertCurrent = () => {
+        const currentGhost = this.deps.getGhost(ghostId);
+        if (!currentGhost || !currentGhost.enabled || currentGhost.dir !== entry.ghost.dir)
+          throw new Error('DEVICE_AUTHORIZATION_UNAVAILABLE');
+        checkTarget(currentGhost.manifest);
+        if (
+          entry.pending.get(message.rpcId) !== pending ||
+          !this.isLiveBoundRpc(entry, message.rpcId) ||
+          !this.ownerScopeUsable(ghostId, pending.ownerScopeSnapshot) ||
+          this.deps.getCallSessionId?.(ghostId, pending.callId!) !== sessionId ||
+          this.workers.get(GhostNodeRuntimeBroker.keyOf(ghostId, entry.entryRel)) !== entry
+        )
+          throw new Error('DEVICE_AUTHORIZATION_UNAVAILABLE');
+      };
+      assertCurrent();
+      const input = {
+        ghost: { id: ghostId, name: entry.ghost.manifest.name },
+        sessionId,
+        signal: pending.signal,
+        assertCurrent,
+        cancel: () => pending.cancel(),
+      };
+      let handle: DeviceAuthorizationHandle;
+      let result: Promise<Awaited<PluginAuthorizationHandle['result']> | undefined>;
+      if (message.type === 'device-authorize') {
+        handle = this.deps.openDeviceAuthorization!({ ...input, url: request.url });
+        result = handle.opened.then(() => undefined);
+      } else {
+        const authorization = this.deps.openAuthorization!({ ...input, request });
+        handle = authorization;
+        result = authorization.result;
+      }
+      pending.authorization = handle;
+      void result
+        .then(
+          value => {
+            assertCurrent();
+            reply(true, value);
+          },
+          () => {
+            reply(false);
+            pending.cancel();
+          },
+        )
+        .catch(() => {
+          reply(false);
+          pending.cancel();
+        });
+    } catch {
+      reply(false);
+      pending.cancel();
+    }
+  }
+
   /** 某插件当前在世的代启子进程总数(跨该插件全部 worker)。 */
   private childCountOf(ghostId: string): number {
     let count = 0;
     for (const entry of this.workers.values()) {
-      if (entry.ghost.manifest.id === ghostId) count += entry.children.size;
+      if (GhostNodeRuntimeBroker.instanceId(entry.ghost) === ghostId) count += entry.children.size;
     }
     return count;
   }
@@ -931,7 +1245,7 @@ export class GhostNodeRuntimeBroker {
   private readonly childReservations = new Map<string, number>();
 
   private replyToWorker(entry: WorkerEntry, message: GhostNodeChildToWorkerMessage): void {
-    if (!this.ownerScopeUsable(entry.ghost.manifest.id, entry.ownerScopeSnapshot)) return;
+    if (!this.ownerScopeUsable(GhostNodeRuntimeBroker.instanceId(entry.ghost), entry.ownerScopeSnapshot)) return;
     entry.child.sendControl?.(message);
   }
 
@@ -945,7 +1259,7 @@ export class GhostNodeRuntimeBroker {
     entry: WorkerEntry,
     message: Extract<GhostNodeChildToHostMessage, { type: 'spawn-child' }>,
   ): Promise<void> {
-    const ghostId = entry.ghost.manifest.id;
+    const ghostId = GhostNodeRuntimeBroker.instanceId(entry.ghost);
     const fail = (reason: string): void => {
       this.deps.log?.warn('ghost node child spawn rejected', { ghostId, reason });
       this.replyToWorker(entry, {
@@ -963,6 +1277,10 @@ export class GhostNodeRuntimeBroker {
     }
     if (this.stoppedGhosts.has(ghostId)) {
       fail('插件正在停止，不能再启动子进程');
+      return;
+    }
+    if (message.rpcId !== undefined && !this.isLiveBoundRpc(entry, message.rpcId)) {
+      fail('The originating Node request is no longer active');
       return;
     }
     if (!this.ownerScopeUsable(ghostId, entry.ownerScopeSnapshot)) {
@@ -1033,6 +1351,10 @@ export class GhostNodeRuntimeBroker {
     // entry.children。原位更新不能漏掉这段空窗，否则 Windows rename 仍可能
     // 撞上子进程持有的插件文件句柄。
     const startingChild = this.trackStartingChild(ghostId, proc);
+    const signal = message.rpcId === undefined ? undefined : entry.pending.get(message.rpcId)?.signal;
+    const abortStarting = () => this.stopStartingChild(startingChild, true);
+    signal?.addEventListener('abort', abortStarting, { once: true });
+    if (signal?.aborted) abortStarting();
     try {
       await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -1058,12 +1380,15 @@ export class GhostNodeRuntimeBroker {
       this.stopStartingChild(startingChild, true);
       fail(error instanceof Error ? error.message : '子进程启动失败');
       return;
+    } finally {
+      signal?.removeEventListener('abort', abortStarting);
     }
 
     // worker 在等待答复期间死了/被停:孩子不能变孤儿,就地收掉。
     if (
       this.workers.get(GhostNodeRuntimeBroker.keyOf(ghostId, entry.entryRel)) !== entry
       || !this.ownerScopeUsable(ghostId, entry.ownerScopeSnapshot)
+      || (message.rpcId !== undefined && !this.isLiveBoundRpc(entry, message.rpcId))
     ) {
       try {
         proc.kill('SIGKILL');
@@ -1077,6 +1402,7 @@ export class GhostNodeRuntimeBroker {
     this.forgetStartingChild(startingChild);
     const child: ChildProcEntry = {
       childId: randomUUID(),
+      ...(message.rpcId !== undefined ? { rpcId: message.rpcId } : {}),
       entryRel: message.entry,
       proc,
       hardKillTimer: null,
@@ -1157,12 +1483,13 @@ export class GhostNodeRuntimeBroker {
 
   /** 停用、更新或卸载一个插件时立即停止其名下**全部** Node 进程。 */
   stop(ghostId: string): void {
+    this.stopGeneration.set(ghostId, (this.stopGeneration.get(ghostId) ?? 0) + 1);
     this.stoppedGhosts.add(ghostId);
     for (const starting of [...(this.startingChildren.get(ghostId) ?? [])]) {
       this.stopStartingChild(starting);
     }
     for (const [key, entry] of [...this.workers]) {
-      if (entry.ghost.manifest.id === ghostId) this.stopWorker(key, entry);
+      if (GhostNodeRuntimeBroker.instanceId(entry.ghost) === ghostId) this.stopWorker(key, entry);
     }
   }
 
@@ -1286,6 +1613,7 @@ export class GhostNodeRuntimeBroker {
     // 级联:先收孩子再收本体,不留孤儿进程。
     for (const child of [...entry.children.values()]) this.stopChild(entry, child, true);
     for (const pending of entry.pending.values()) {
+      pending.cleanup();
       this.clearTimer(pending.timer);
       pending.reject(new NodeRpcError('exit', 'Node 工作进程已停止'));
     }
@@ -1352,6 +1680,8 @@ export class GhostNodeRuntimeBroker {
 
   /** stop(ghostId) 置入:在途重试检测到后立即中止,不继续拉新进程。 */
   private readonly stoppedGhosts = new Set<string>();
+  /** 阻止刷新 OAuth 令牌期间跨停用/升级边界交付旧调用。 */
+  private readonly stopGeneration = new Map<string, number>();
 
   /** 每次 handleExit 递增,settleExit 仅在世代未推进时发布 crashed。 */
   private readonly exitGen = new Map<string, number>();
@@ -1364,18 +1694,18 @@ export class GhostNodeRuntimeBroker {
     entryRel: string,
     ownerScopeSnapshot: unknown,
   ): Promise<WorkerEntry> {
-    const key = GhostNodeRuntimeBroker.keyOf(ghost.manifest.id, entryRel);
+    const key = GhostNodeRuntimeBroker.keyOf(GhostNodeRuntimeBroker.instanceId(ghost), entryRel);
     const inflight = this.startingWorkers.get(key);
     if (inflight) {
       const entry = await inflight;
-      this.assertOwnerScopeUsable(ghost.manifest.id, ownerScopeSnapshot);
-      this.assertOwnerScopeUsable(ghost.manifest.id, entry.ownerScopeSnapshot);
+      this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), ownerScopeSnapshot);
+      this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), entry.ownerScopeSnapshot);
       return entry;
     }
     const existing = this.workers.get(key);
     if (existing) {
-      this.assertOwnerScopeUsable(ghost.manifest.id, ownerScopeSnapshot);
-      this.assertOwnerScopeUsable(ghost.manifest.id, existing.ownerScopeSnapshot);
+      this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), ownerScopeSnapshot);
+      this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), existing.ownerScopeSnapshot);
       return existing;
     }
     this.startingWorkerScopes.set(key, ownerScopeSnapshot);
@@ -1395,21 +1725,23 @@ export class GhostNodeRuntimeBroker {
     key: string,
     ownerScopeSnapshot: unknown,
   ): Promise<WorkerEntry> {
-    this.assertOwnerScopeUsable(ghost.manifest.id, ownerScopeSnapshot);
-    if (this.destroyed || this.stoppedGhosts.has(ghost.manifest.id)) {
+    this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), ownerScopeSnapshot);
+    if (this.destroyed || this.stoppedGhosts.has(GhostNodeRuntimeBroker.instanceId(ghost))) {
       throw new WorkerStartError('Node 工作进程启动已取消', false, true);
     }
+    const blocked = this.deps.startBlockedReason?.(GhostNodeRuntimeBroker.instanceId(ghost)) ?? null;
+    if (blocked !== null) throw new WorkerStartError(blocked, false);
     this.sendStatus(ghost, 'starting', undefined, entryRel);
     let current = ghost;
     let lastError = new Error('Node 工作进程启动失败');
     for (let attempt = 1; attempt <= WORKER_START_ATTEMPTS; attempt++) {
       if (attempt > 1) {
         await this.delay(WORKER_START_RETRY_DELAYS_MS[attempt - 2] ?? 750);
-        this.assertOwnerScopeUsable(ghost.manifest.id, ownerScopeSnapshot);
+        this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), ownerScopeSnapshot);
         // 退避期间插件可能被停用/卸载/更新/停止,主机也可能正在退出:
         // 现查现用;已停用/已收摊/已停止就不再拉进程,也不补发状态事件。
-        if (this.destroyed || this.stoppedGhosts.has(ghost.manifest.id)) throw lastError;
-        const fresh = this.deps.getGhost(ghost.manifest.id);
+        if (this.destroyed || this.stoppedGhosts.has(GhostNodeRuntimeBroker.instanceId(ghost))) throw lastError;
+        const fresh = this.deps.getGhost(GhostNodeRuntimeBroker.instanceId(ghost));
         if (!fresh?.enabled) throw lastError;
         // 跨更新边界时重验入口:新 manifest 可能已不再申报该 entry。
         if (!fresh.manifest.node) throw lastError;
@@ -1463,7 +1795,17 @@ export class GhostNodeRuntimeBroker {
         if (cancelled) {
           debugDiagnostic(this.deps.log, 'ghost node startup settlement', settlement);
         } else {
-          warnDiagnostic(this.deps.log, 'ghost node start attempt failed', settlement);
+          warnDiagnostic(this.deps.log, 'ghost node start attempt failed', {
+            ...settlement,
+            ...(attemptDiagnostic.observedTimeoutClass
+              ? {
+                  messageCount: attemptDiagnostic.messageCount,
+                  readySeen: attemptDiagnostic.readySeen,
+                  adapterReady: attemptDiagnostic.adapterReady,
+                  adapterKilledAtDeadline: attemptDiagnostic.adapterKilledAtDeadline,
+                }
+              : {}),
+          });
         }
         if (!retryable) break;
       }
@@ -1481,7 +1823,7 @@ export class GhostNodeRuntimeBroker {
     ownerScopeSnapshot: unknown,
     attemptDiagnostic: StartAttemptDiagnostic,
   ): Promise<WorkerEntry> {
-    this.assertOwnerScopeUsable(ghost.manifest.id, ownerScopeSnapshot);
+    this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), ownerScopeSnapshot);
     const node = ghost.manifest.node;
     if (!node) throw new WorkerStartError('ghost.json 缺少 node 工作进程详单', false);
     const entryPath = path.resolve(ghost.dir, ...entryRel.split('/'));
@@ -1502,7 +1844,7 @@ export class GhostNodeRuntimeBroker {
         { error: 'utility-process-fork-threw' },
       );
     }
-    this.trackLiveProcess(ghost.manifest.id, child);
+    this.trackLiveProcess(GhostNodeRuntimeBroker.instanceId(ghost), child);
     const readChildDiagnosticPid = (): number | undefined => readDiagnosticPid(child);
     attemptDiagnostic.pid = readChildDiagnosticPid();
     const entry: WorkerEntry = {
@@ -1574,7 +1916,7 @@ export class GhostNodeRuntimeBroker {
       // 诊断订阅失败不能改变 ready / retry 语义。
     }
     this.workers.set(key, entry);
-    if (this.destroyed || this.stoppedGhosts.has(ghost.manifest.id)) {
+    if (this.destroyed || this.stoppedGhosts.has(GhostNodeRuntimeBroker.instanceId(ghost))) {
       this.workers.delete(key);
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
       throw new WorkerStartError('Node 工作进程启动已取消', false, true);
@@ -1583,12 +1925,15 @@ export class GhostNodeRuntimeBroker {
     child.onControl?.((message) => this.handleWorkerControl(entry, message));
     child.stdout.on('data', (chunk) => this.handleStdout(entry, chunk));
     child.stderr.on('data', (chunk) => {
-      const decoded = entry.stderrDecoder.write(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      // stop/排空结算已清掉令牌集合，不能把迟到输出当作无凭据的新进程日志。
+      if (entry.stopping || (this.workers.get(key) !== entry && !entry.exitDrain)) return;
+      const decoded = this.redactStderrChunk(entry,
+        entry.stderrDecoder.write(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
       if (entry.startupPhase && entry.startupStderr.length < STARTUP_STDERR_CAP) {
         entry.startupStderr = (entry.startupStderr + decoded).slice(0, STARTUP_STDERR_CAP);
       }
       // 按段带时间戳截存,退出时只取回看窗口内的段,不让老日志被新 chunk 携带。
-      entry.stderrSegments.push({ text: decoded, at: this.now() });
+      if (decoded) entry.stderrSegments.push({ text: decoded, at: this.now() });
       entry.stderrTotalChars += decoded.length;
       // 总量控制:保留尾部 EXIT_STDERR_CAP 字符——部分裁剪最老段的头部。
       if (entry.stderrTotalChars > EXIT_STDERR_CAP) {
@@ -1610,7 +1955,7 @@ export class GhostNodeRuntimeBroker {
       // 进程已退出后不再续命——定时器已冻结,由 settleExit 统一结算。
       if (
         !entry.exitDrain
-        && this.ownerScopeUsable(entry.ghost.manifest.id, entry.ownerScopeSnapshot)
+        && this.ownerScopeUsable(GhostNodeRuntimeBroker.instanceId(entry.ghost), entry.ownerScopeSnapshot)
       ) {
         // stderr 是手册钦定的日志口——构建刷日志就是活着的证据,给续命请求重置沉默窗口。
         this.renewPendingOnActivity(entry);
@@ -1641,6 +1986,14 @@ export class GhostNodeRuntimeBroker {
               attemptDiagnostic.observedStagesAtDeadline = STARTUP_STAGE_ORDER.filter((stage) =>
                 entry.startupStages.has(stage),
               );
+              attemptDiagnostic.messageCount = 'unknown';
+              attemptDiagnostic.readySeen = 'unknown';
+              attemptDiagnostic.adapterReady = 'unknown';
+              const state = readDiagnosticStartupState(entry.child);
+              attemptDiagnostic.messageCount = state.messageCount;
+              attemptDiagnostic.readySeen = state.readySeen;
+              attemptDiagnostic.adapterReady = state.adapterReady;
+              attemptDiagnostic.adapterKilledAtDeadline = readDiagnosticAdapterKilled(entry.child);
               reject(new WorkerStartError('Node 工作进程启动超时', false));
             }),
           DEFAULT_START_TIMEOUT_MS,
@@ -1700,7 +2053,7 @@ export class GhostNodeRuntimeBroker {
       throw error;
     }
     entry.startupPhase = false;
-    this.assertOwnerScopeUsable(ghost.manifest.id, ownerScopeSnapshot);
+    this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(ghost), ownerScopeSnapshot);
     this.sendStatus(ghost, 'running', undefined, entryRel);
     this.scheduleIdleStop(entry);
     return entry;
@@ -1725,7 +2078,7 @@ export class GhostNodeRuntimeBroker {
         },
         10_000,
       ).then(() => {
-        this.assertOwnerScopeUsable(entry.ghost.manifest.id, entry.ownerScopeSnapshot);
+        this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(entry.ghost), entry.ownerScopeSnapshot);
         this.writeLine(entry, {
           jsonrpc: '2.0',
           method: 'notifications/initialized',
@@ -1747,8 +2100,12 @@ export class GhostNodeRuntimeBroker {
     maxTotalMs?: number,
     hostSecrets?: Readonly<Record<string, string>>,
     ownerScopeSnapshot: unknown = entry.ownerScopeSnapshot,
+    signal?: AbortSignal,
+    callId?: string,
+    secretInputCompleted = false,
   ): Promise<unknown> {
-    this.assertOwnerScopeUsable(entry.ghost.manifest.id, ownerScopeSnapshot);
+    this.assertOwnerScopeUsable(GhostNodeRuntimeBroker.instanceId(entry.ghost), ownerScopeSnapshot);
+    if (signal?.aborted) return Promise.reject(new NodeRpcError('cancelled', 'The tool call was cancelled'));
     this.clearIdleTimer(entry);
     const id = String(entry.nextId++);
     return new Promise((resolve, reject) => {
@@ -1761,29 +2118,64 @@ export class GhostNodeRuntimeBroker {
         deadlineAt: maxTotalMs !== undefined ? this.now() + maxTotalMs : null,
         expire: () => {
           entry.pending.delete(id);
+          pending.cleanup();
           reject(new NodeRpcError('timeout', `Node 请求 ${method} 等待超时`));
           this.scheduleIdleStop(entry);
         },
         ownerScopeSnapshot,
+        signal,
+        callId,
+        cancel: () => abort(),
+        cleanup: () => {
+          pending.authorization?.dispose();
+          signal?.removeEventListener('abort', abort);
+          if (!signal) return;
+          // Only explicitly call-bound work ends here; autonomous/background work is unchanged.
+          try { entry.child.sendControl?.({ type: 'request-settled', rpcId: id }); }
+          catch { /* A closed worker pipe must not prevent child cleanup or settlement. */ }
+          for (const child of entry.children.values()) {
+            if (child.rpcId === id) this.stopChild(entry, child, false);
+          }
+        },
+      };
+      const abort = () => {
+        if (entry.pending.get(id) !== pending) return;
+        entry.pending.delete(id);
+        this.clearTimer(pending.timer);
+        pending.cleanup();
+        reject(new NodeRpcError('cancelled', 'The tool call was cancelled'));
+        this.scheduleIdleStop(entry);
       };
       entry.pending.set(id, pending);
       this.armPendingTimer(pending);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) { abort(); return; }
       try {
         this.writeLine(entry, {
           jsonrpc: '2.0',
           id,
           method,
           params,
-          ...(hostSecrets && Object.keys(hostSecrets).length > 0
-            ? { cindy: { secrets: hostSecrets } }
+          ...(signal || (hostSecrets && Object.keys(hostSecrets).length > 0)
+            ? { cindy: {
+                ...(signal ? { cancelWithCall: true } : {}),
+                ...(secretInputCompleted ? { secretInputCompleted: true } : {}),
+                ...(hostSecrets && Object.keys(hostSecrets).length > 0 ? { secrets: hostSecrets } : {}),
+              } }
             : {}),
         });
       } catch (error) {
         entry.pending.delete(id);
         this.clearTimer(pending.timer);
+        pending.cleanup();
         reject(error);
       }
     });
+  }
+
+  private isLiveBoundRpc(entry: WorkerEntry, id: string): boolean {
+    const signal = entry.pending.get(id)?.signal;
+    return signal !== undefined && !signal.aborted;
   }
 
   /** 初臂/续命共用:按沉默窗口与绝对截止的较小者上闹钟。 */
@@ -1822,9 +2214,9 @@ export class GhostNodeRuntimeBroker {
   }
 
   private handleStdout(entry: WorkerEntry, chunk: Buffer | string): void {
-    const key = GhostNodeRuntimeBroker.keyOf(entry.ghost.manifest.id, entry.entryRel);
+    const key = GhostNodeRuntimeBroker.keyOf(GhostNodeRuntimeBroker.instanceId(entry.ghost), entry.entryRel);
     if (this.workers.get(key) !== entry) return;
-    if (!this.ownerScopeUsable(entry.ghost.manifest.id, entry.ownerScopeSnapshot)) return;
+    if (!this.ownerScopeUsable(GhostNodeRuntimeBroker.instanceId(entry.ghost), entry.ownerScopeSnapshot)) return;
     entry.stdoutBuffer += entry.stdoutDecoder.write(
       Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8'),
     );
@@ -1853,7 +2245,7 @@ export class GhostNodeRuntimeBroker {
   }
 
   private handleRpcMessage(entry: WorkerEntry, message: unknown): void {
-    if (!this.ownerScopeUsable(entry.ghost.manifest.id, entry.ownerScopeSnapshot)) return;
+    if (!this.ownerScopeUsable(GhostNodeRuntimeBroker.instanceId(entry.ghost), entry.ownerScopeSnapshot)) return;
     if (!message || typeof message !== 'object' || Array.isArray(message)) {
       this.failProtocol(entry, 'Node 返回的 JSON-RPC 消息必须是对象');
       return;
@@ -1866,9 +2258,24 @@ export class GhostNodeRuntimeBroker {
     if (msg.id !== undefined && typeof msg.method !== 'string') {
       const pending = entry.pending.get(String(msg.id));
       if (!pending) return; // 迟到或未知 response，静默丢弃。
+      const value = msg.result as {
+        isError?: unknown;
+        ok?: unknown;
+        structuredContent?: { ok?: unknown };
+      } | null;
+      const authorizationOk =
+        !msg.error &&
+        'result' in msg &&
+        !!value &&
+        typeof value === 'object' &&
+        value.isError !== true &&
+        value.ok !== false &&
+        value.structuredContent?.ok !== false;
+      pending.authorization?.finish(authorizationOk);
       entry.pending.delete(String(msg.id));
       this.clearTimer(pending.timer);
-      if (!this.ownerScopeUsable(entry.ghost.manifest.id, pending.ownerScopeSnapshot)) {
+      pending.cleanup();
+      if (!this.ownerScopeUsable(GhostNodeRuntimeBroker.instanceId(entry.ghost), pending.ownerScopeSnapshot)) {
         pending.reject(new NodeRpcError('exit', 'Plugin owner boundary changed before response'));
         return;
       }
@@ -1900,7 +2307,7 @@ export class GhostNodeRuntimeBroker {
       return;
     }
     if (typeof msg.method === 'string') {
-      this.deps.sendToGhost?.(entry.ghost.manifest.id, {
+      this.deps.sendToGhost?.(GhostNodeRuntimeBroker.instanceId(entry.ghost), {
         type: 'event',
         name: 'node-notification',
         method: msg.method,
@@ -1914,6 +2321,7 @@ export class GhostNodeRuntimeBroker {
 
   private failProtocol(entry: WorkerEntry, message: string): void {
     for (const pending of entry.pending.values()) {
+      pending.cleanup();
       this.clearTimer(pending.timer);
       pending.reject(new NodeRpcError('protocol', message));
     }
@@ -1940,7 +2348,7 @@ export class GhostNodeRuntimeBroker {
     // already belongs to the new owner. The runtime-level invalidation callback
     // is only safe when no fresh generation exists for the same ghost.
     for (const [key, entry] of [...this.workers]) {
-      if (entry.ghost.manifest.id !== ghostId) continue;
+      if (GhostNodeRuntimeBroker.instanceId(entry.ghost) !== ghostId) continue;
       if (isGhostOwnerScopeUsable(this.deps.ownerScope, entry.ownerScopeSnapshot)) {
         hasCurrentWorker = true;
         continue;
@@ -1975,7 +2383,7 @@ export class GhostNodeRuntimeBroker {
     signal: string | null,
     error: Error | null,
   ): void {
-    const ghostId = entry.ghost.manifest.id;
+    const ghostId = GhostNodeRuntimeBroker.instanceId(entry.ghost);
     const key = GhostNodeRuntimeBroker.keyOf(ghostId, entry.entryRel);
     if (this.workers.get(key) !== entry) {
       // stopWorker 已先移除 map。只有真实 exit 才能取消强杀；error 仍可能
@@ -2047,17 +2455,18 @@ export class GhostNodeRuntimeBroker {
     this.clearTimer(entry.exitDrain.timer);
     entry.exitDrain = null;
     // flush stderrDecoder 残留字节(多字节字符被切在最后一个 chunk 边界时)
-    const tail = entry.stderrDecoder.end();
+    const tail = this.redactStderrChunk(entry, entry.stderrDecoder.end());
     if (tail) {
       entry.stderrSegments.push({ text: tail, at: this.now() });
       entry.stderrTotalChars += tail.length;
     }
-    const ghostId = entry.ghost.manifest.id;
+    const ghostId = GhostNodeRuntimeBroker.instanceId(entry.ghost);
     const exitHint = this.exitStderrHint(entry, exitedAt);
-    const detail = `${error?.message ?? `code=${code}, signal=${signal ?? 'none'}`}${
+    const detail = `${this.redactSecrets(entry, error?.message ?? `code=${code}, signal=${signal ?? 'none'}`)}${
       exitHint ? `:${exitHint}` : ''
     }`;
     for (const pending of entry.pending.values()) {
+      pending.cleanup();
       this.clearTimer(pending.timer);
       pending.reject(new NodeRpcError('exit', `Node 工作进程已退出(${detail})`));
     }
@@ -2129,8 +2538,15 @@ export class GhostNodeRuntimeBroker {
     return text;
   }
 
+  private redactStderrChunk(entry: WorkerEntry, chunk: string): string {
+    // 接收过凭据的 Worker 可能打印截断、分块或编码后的令牌，字符串匹配
+    // 无法保证安全。整个 stderr 不落日志/诊断缓存，仅保留输出发生的标记；
+    // 未注入凭据的 Worker 保留原始诊断，RPC 返回结果不受影响。
+    return chunk && entry.exposedSecretValues.size > 0 ? '[REDACTED]' : chunk;
+  }
+
   private scheduleIdleStop(entry: WorkerEntry): void {
-    const key = GhostNodeRuntimeBroker.keyOf(entry.ghost.manifest.id, entry.entryRel);
+    const key = GhostNodeRuntimeBroker.keyOf(GhostNodeRuntimeBroker.instanceId(entry.ghost), entry.entryRel);
     if (this.workers.get(key) !== entry) return;
     if (entry.ghost.manifest.node?.lifecycle === 'resident' || entry.pending.size > 0) return;
     // 有代启子进程在世时不空闲回收——收 worker 会级联杀掉正在干活的代理。
@@ -2171,7 +2587,7 @@ export class GhostNodeRuntimeBroker {
   ): void {
     // entry 字段只在非主入口时携带("缺省 = 主入口"的协议语义;老包零变化)。
     const isExtraEntry = entryRel !== undefined && entryRel !== ghost.manifest.node?.entry;
-    this.deps.sendToGhost?.(ghost.manifest.id, {
+    this.deps.sendToGhost?.(GhostNodeRuntimeBroker.instanceId(ghost), {
       type: 'event',
       name: 'node-status',
       state,

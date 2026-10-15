@@ -36,6 +36,7 @@ const brain = vi.hoisted(() => ({
   ),
 }));
 vi.mock('../../cindy-brain/index.js', () => ({
+  confirmLegacyLibraryReattach: async () => false,
   getGhostManager: () => ({ inspect: brain.inspect }),
   installOrUpdateMarketGhostPackage: async (
     filePath: string,
@@ -82,6 +83,8 @@ const GOOD_MANIFEST: GhostManifest = {
 const GOOD_IDENTITY = {
   expectedGhostId: GOOD_MANIFEST.id,
   expectedVersion: GOOD_MANIFEST.version,
+  // 用户确认本身由 ghostInstallConsent 的用例覆盖；这里只验读取与打包闸。
+  resolveConsent: async () => ({ mode: 'unprompted' as const }),
 };
 
 let workDir: string;
