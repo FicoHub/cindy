@@ -23,7 +23,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentDeps, DeviceHostedSession } from '../../base-agent.js';
 import type { AuthAdapter } from '../../../interfaces/auth-adapter.js';
-import type { AgentEvent } from '../../../types/events.js';
+import type { AgentEvent, InteractionDecision } from '../../../types/events.js';
 import type { Logger } from '../../../interfaces/logger.js';
 import type { ToolLoopReviewer } from '../../shared/tool-loop-review.js';
 
@@ -148,6 +148,7 @@ async function startSessionWithStream(
   toolLoopReviewer?: ToolLoopReviewer,
   hosted?: { providerId: string; deviceHosted: (workingDir: string) => DeviceHostedSession },
   resumeSessionId?: string,
+  remote = false,
 ) {
   const configDir = await makeTempDir();
   process.env.CLAUDE_CONFIG_DIR = configDir;
@@ -168,12 +169,23 @@ async function startSessionWithStream(
     return fakeQuery;
   });
 
-  const agent = new ClaudeCodeAgent(createDeps(toolLoopReviewer));
+  const deps = createDeps(toolLoopReviewer);
+  let onApprovalRequest: ((params: unknown) => Promise<unknown>) | undefined;
+  if (remote) {
+    deps.remoteCcQueryFactory = async (options) => {
+      onApprovalRequest = options.onApprovalRequest;
+      return Object.assign(fakeQuery, {
+        send: vi.fn(async (input: unknown) => { acceptedInputs.push(input); }),
+      }) as never;
+    };
+  }
+  const agent = new ClaudeCodeAgent(deps);
   const handle = await agent.startSession({
     sessionId: 'session-idle-watchdog',
     model,
     workingDir,
     permissionMode: 'acceptEdits',
+    ...(remote ? { remoteHostId: 'remote-idle-watchdog' } : {}),
     ...(resumeSessionId ? { resumeSessionId } : {}),
     ...(hosted ? { providerId: hosted.providerId, deviceHosted: hosted.deviceHosted(workingDir) } : {}),
   });
@@ -185,7 +197,44 @@ async function startSessionWithStream(
     }
   })();
 
-  return { agent, handle, stream, fakeQuery, events, collected, acceptedInputs };
+  return { agent, handle, stream, fakeQuery, events, collected, acceptedInputs, onApprovalRequest };
+}
+
+async function startPendingRemoteApproval(kind: 'permission' | 'ask_user_question' | 'plan_review' = 'permission') {
+  process.env.XDT_CC_SSE_IDLE_TIMEOUT_MS = '60000';
+  const session = await startSessionWithStream(undefined, undefined, undefined, undefined, true);
+  let resolveDecision!: (decision: InteractionDecision) => void;
+  let rejectDecision!: (reason: Error) => void;
+  const resolver = vi.fn(() => new Promise<InteractionDecision>((resolve, reject) => {
+    resolveDecision = resolve;
+    rejectDecision = reject;
+  }));
+  session.handle.setInteractionResolver?.(resolver);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  await session.handle.send({ type: 'user', content: 'wait for remote confirmation' });
+  session.stream.emit({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0,
+      content_block: { type: 'tool_use', id: 'toolu_remote_approval', name: 'Bash', input: {} } },
+  });
+  await vi.advanceTimersByTimeAsync(5);
+  const approval = session.onApprovalRequest!({
+    sessionId: 'session-idle-watchdog', requestId: 'toolu_remote_approval', kind,
+    toolName: kind === 'permission' ? 'Bash' : kind === 'plan_review' ? 'ExitPlanMode' : 'AskUserQuestion',
+    input: { command: 'rm -rf build' },
+  });
+  await pumpUntil(() => resolver.mock.calls.length === 1, 'remote approval displayed');
+  return {
+    ...session, approval, resolveDecision, rejectDecision,
+    async cleanup() {
+      // Close settles any interaction still pending after a failed assertion.
+      session.stream.end();
+      await session.handle.close();
+      await approval.catch(() => undefined);
+      await session.collected;
+      vi.useRealTimers();
+    },
+  };
 }
 
 function successResult(): Record<string, unknown> {
@@ -500,6 +549,123 @@ describe('upstream-response-idle watchdog suspend awareness', () => {
       stream.end();
       await handle.close().catch(() => undefined);
       await collected;
+    }
+  });
+
+  it.each(['permission', 'ask_user_question', 'plan_review'] as const)(
+    'remote %s waiting before a complete assistant pauses idle; allowed tool resumes timing after its result',
+    async (kind) => {
+      const session = await startPendingRemoteApproval(kind);
+      const { handle, stream, events, fakeQuery } = session;
+      try {
+        await vi.advanceTimersByTimeAsync(90_000); // idle=60s, remote approval deadline=110s
+        expect(idleTimeoutError(events)).toBeUndefined();
+        expect(fakeQuery.interrupt).not.toHaveBeenCalled();
+        session.resolveDecision(kind === 'ask_user_question'
+          ? { kind, answers: {} }
+          : { kind, behavior: 'allow' });
+        await expect(session.approval).resolves.toMatchObject({ kind });
+        // Approval proves executable input even if the full assistant is delayed.
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(fakeQuery.interrupt).not.toHaveBeenCalled();
+        stream.emit(userToolResult('toolu_remote_approval'));
+        await pumpUntil(() => events.some(e => e.type === 'tool_result_full'), 'remote result received');
+        await vi.advanceTimersByTimeAsync(59_000);
+        expect(idleTimeoutError(events)).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1_001);
+        expect(idleTimeoutError(events)).toBeDefined();
+        expect(fakeQuery.interrupt).toHaveBeenCalledOnce();
+        expect(handle.isTurnRunning?.()).toBe(false);
+        await handle.send({ type: 'user', content: 'explicit next turn' });
+        stream.emit(successResult());
+        await pumpUntil(() => handle.isTurnRunning?.() === false, 'next turn finished');
+        expect(session.acceptedInputs).toHaveLength(2);
+      } finally {
+        await session.cleanup();
+      }
+    },
+  );
+
+  it.each(['deny', 'reject', 'timeout'] as const)(
+    'remote approval %s restores the idle budget even without a tool result',
+    async (outcome) => {
+      const session = await startPendingRemoteApproval();
+      try {
+        await vi.advanceTimersByTimeAsync(90_000);
+        expect(session.fakeQuery.interrupt).not.toHaveBeenCalled();
+        if (outcome === 'deny') session.resolveDecision({ kind: 'permission', behavior: 'deny' });
+        else if (outcome === 'reject') session.rejectDecision(new Error('fixture resolver failed'));
+        else await vi.advanceTimersByTimeAsync(20_000);
+        await expect(session.approval).resolves.toMatchObject({ behavior: 'deny' });
+        await vi.advanceTimersByTimeAsync(59_000);
+        expect(session.fakeQuery.interrupt).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1_001);
+        expect(session.fakeQuery.interrupt).toHaveBeenCalledOnce();
+        expect(idleTimeoutError(session.events)).toBeDefined();
+      } finally {
+        await session.cleanup();
+      }
+    },
+  );
+
+  it.each(['allow', 'deny'] as const)(
+    'cancelled remote approval with late %s cannot change the next turn idle budget',
+    async (behavior) => {
+      const session = await startPendingRemoteApproval();
+      try {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await session.handle.abort();
+        expect(session.fakeQuery.interrupt).toHaveBeenCalledOnce();
+        await session.handle.send({ type: 'user', content: 'explicit next turn' });
+        await vi.advanceTimersByTimeAsync(30_000);
+        session.resolveDecision({ kind: 'permission', behavior });
+        await session.approval;
+        await vi.advanceTimersByTimeAsync(30_001);
+        expect(session.fakeQuery.interrupt).toHaveBeenCalledTimes(2);
+        expect(idleTimeoutError(session.events)).toBeDefined();
+        expect(session.acceptedInputs).toHaveLength(2);
+      } finally {
+        await session.cleanup();
+      }
+    },
+  );
+
+  it('a cancelled remote denial cannot remove a reused tool id in the next turn', async () => {
+    const session = await startPendingRemoteApproval();
+    try {
+      await session.handle.abort();
+      await session.handle.send({ type: 'user', content: 'next turn with a running tool' });
+      session.stream.emit(assistantToolUse('toolu_remote_approval'));
+      await vi.advanceTimersByTimeAsync(5);
+      session.resolveDecision({ kind: 'permission', behavior: 'deny' });
+      await session.approval;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(session.fakeQuery.interrupt).toHaveBeenCalledOnce(); // only the explicit Stop
+      session.stream.emit(userToolResult('toolu_remote_approval'));
+      await pumpUntil(() => session.events.some(e => e.type === 'tool_result_full'), 'next turn tool result');
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(session.fakeQuery.interrupt).toHaveBeenCalledTimes(2);
+      expect(session.acceptedInputs).toHaveLength(2);
+    } finally {
+      await session.cleanup();
+    }
+  });
+
+  it('a remote approval callback throwing releases its idle pause', async () => {
+    const session = await startPendingRemoteApproval();
+    try {
+      session.resolveDecision({ kind: 'permission', behavior: 'deny' });
+      await session.approval;
+      session.handle.setInteractionResolver?.(() => { throw new Error('fixture synchronous failure'); });
+      await expect(session.onApprovalRequest!({
+        sessionId: 'session-idle-watchdog', requestId: 'toolu_remote_throws',
+        kind: 'ask_user_question', toolName: 'AskUserQuestion', input: {},
+      })).rejects.toThrow('fixture synchronous failure');
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(session.fakeQuery.interrupt).toHaveBeenCalledOnce();
+      expect(idleTimeoutError(session.events)).toBeDefined();
+    } finally {
+      await session.cleanup();
     }
   });
 
