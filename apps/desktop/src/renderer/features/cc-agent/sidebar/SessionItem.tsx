@@ -1,3 +1,4 @@
+import { usePointerNavigationFocus } from './usePointerNavigationFocus';
 import { SessionTaskMenu } from './SessionTaskMenu';
 import { TaskTagMenuSection, TaskTagEditor, TaskTagDots } from '@/features/task-tags/TaskTags';
 import { Button } from '@/components/ui/button';
@@ -571,6 +572,8 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
   //      也不会触发。这种"用户明确想再看一眼"的语义由调用方通过
   //      imperative 路径(querySelector + scrollIntoNearestView)补一刀
   const rowRef = useRef<HTMLDivElement>(null);
+  const { onClick: trackPointerNavigation, cancel: cancelPointerNavigation } =
+    usePointerNavigationFocus(rowRef, isActive);
   const dragStartTargetRef = useRef<Element | null>(null);
 
   // ── Double-click rename ──
@@ -601,13 +604,14 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
   const handleClick = useCallback(
     (e: ReactMouseEvent<HTMLDivElement>) => {
       if (isEditing) return;
+      trackPointerNavigation(e);
       onClick(session.id, {
         shiftKey: e.shiftKey,
         metaKey: e.metaKey,
         ctrlKey: e.ctrlKey,
       });
     },
-    [isEditing, onClick, session.id],
+    [isEditing, onClick, session.id, trackPointerNavigation],
   );
 
   const handleDoubleClick = useCallback(
@@ -934,6 +938,7 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
         }
       }}
       onClick={handleClick}
+      onBlur={cancelPointerNavigation}
       onDoubleClick={handleDoubleClick}
       onKeyDown={(e) => {
         // target 守卫:内部按钮(More/Archive/Undo/Edit/Run 等)的 Enter/Space
@@ -943,6 +948,7 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
         // PR #658 给 automation 会话行加 Edit/Run 后 P2 review 显性化。
         if (e.target !== e.currentTarget) return;
         if (!isEditing && (e.key === 'Enter' || e.key === ' ')) {
+          cancelPointerNavigation();
           e.preventDefault();
           onClick(session.id);
         }
