@@ -43,14 +43,16 @@ export async function snapshotContent(git: ContentGit, cwd: string, ref?: string
     const original = (
       await git(['rev-parse', '--path-format=absolute', '--git-path', 'index'], cwd)
     ).trim();
-    // Git's racy-clean check needs the index's original mtime: a newer copy can
-    // hide equal-size edits made in the same clock tick as the cached entry.
-    // Read it before copying so a concurrent replacement cannot lend old bytes
-    // a newer timestamp. Round down to seconds: Stats.mtime rounds to the nearest
-    // millisecond and can cross into the next tick, hiding the edit again.
+    // A later index mtime can hide equal-size edits from Git's racy-clean check.
+    // Read the original before copying so a concurrent replacement cannot lend
+    // old bytes a newer timestamp. Keep the earlier time: clock rollback can put
+    // the original index in the future. Round down to seconds since Stats.mtime
+    // can round up across a second boundary, hiding the edit again.
     const originalStat = await stat(original, { bigint: true });
     await copyFile(original, index);
-    await utimes(index, originalStat.atime, Number(originalStat.mtimeNs / 1_000_000_000n));
+    const copiedStat = await stat(index, { bigint: true });
+    const mtimeNs = originalStat.mtimeNs < copiedStat.mtimeNs ? originalStat.mtimeNs : copiedStat.mtimeNs;
+    await utimes(index, originalStat.atime, Number(mtimeNs / 1_000_000_000n));
     await git(['add', '--all', '--', '.'], cwd, index);
     const tree = (await git(['write-tree'], cwd, index)).trim();
     if (!HASH.test(tree)) throw new Error('Invalid content snapshot');

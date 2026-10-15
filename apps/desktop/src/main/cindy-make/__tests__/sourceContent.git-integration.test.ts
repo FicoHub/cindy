@@ -6,7 +6,13 @@ import { snapshotContent, type ContentGit } from '../sourceContent';
 import { runSourceGit } from '../sourceGit';
 
 // The second fixture also catches Stats.mtime rounding up into the next second.
-it.each([1_700_000_000, 1_700_000_000.9999])('snapshots a racily clean edit without changing the real index (%s)', async (tick) => {
+// The third models clock rollback: copied index < cached file < original index.
+const futureTick = Math.floor(Date.now() / 1000) + 3600;
+it.each([
+  [1_700_000_000, 1_700_000_000],
+  [1_700_000_000.9999, 1_700_000_000.9999],
+  [futureTick, futureTick + 3600],
+])('snapshots a racily clean edit without changing the real index (%s, %s)', async (tick, indexTick) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cindy-content-racy-'));
   const env = {
     PATH: process.env.PATH,
@@ -30,7 +36,7 @@ it.each([1_700_000_000, 1_700_000_000.9999])('snapshots a racily clean edit with
     await utimes(file, tick, tick);
     await git(['add', 'feature.txt'], root);
     const index = (await git(['rev-parse', '--path-format=absolute', '--git-path', 'index'], root)).trim();
-    await utimes(index, tick, tick);
+    await utimes(index, indexTick, indexTick);
     const before = await readFile(index);
     const beforeStat = await stat(index);
     const staged = await git(['rev-parse', ':feature.txt'], root);
