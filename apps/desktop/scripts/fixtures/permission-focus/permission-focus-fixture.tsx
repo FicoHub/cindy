@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import zh from '../../../src/renderer/i18n/locales/zh-CN/common.json';
@@ -13,6 +14,7 @@ import {
   hasSessionSelectionModifier,
 } from '../../../src/renderer/features/cc-agent/sidebar/SessionItem';
 import { SessionCard } from '../../../src/renderer/features/cc-agent/sidebar/SessionCard';
+import { SessionEntryList } from '../../../src/renderer/features/cc-agent/sidebar/SessionEntryList';
 import { CardMasonry } from '../../../src/renderer/features/cc-agent/sidebar/CardMasonry';
 import { PermissionPrompt } from '../../../src/renderer/components/new-chat/PermissionPrompt';
 import { shouldCardShortcutYield } from '../../../src/renderer/lib/editableKeyboardTarget';
@@ -75,13 +77,25 @@ window.addEventListener('keydown', (event) => {
 });
 function Fixture() {
   const [active, setActive] = useState('A');
+  const route = useLocation();
+  const navigate = useNavigate();
+  const fromFiles = query.has('files');
+  const routeReady = !fromFiles || route.pathname === `/cc-agent/${active}`;
+  data.route = route.pathname;
+  const completeNavigation = (id: string) => {
+    setActive(id);
+    if (fromFiles) navigate(`/cc-agent/${id}`);
+  };
+  const portal = (children: ReactNode) => fromFiles
+    ? createPortal(children, document.getElementById('rail-portal')!) : children;
   const [pending, setPending] = useState(!query.has('empty'));
   const [hover, setHover] = useState(true);
-  data.finish = () => setActive(data.next ?? 'B');
+  data.finish = () => completeNavigation(data.next ?? 'B');
   data.arrive = () => setPending(true);
   data.active = active;
   data.pending = active;
   const layout = query.get('layout') ?? 'rows';
+  const mountedOrder = query.get('split')?.split(',');
   const width = layout === 'three' ? 466 : layout === 'two' ? 340 : 240;
   const row = (session: Session) => {
     const Component = layout === 'rows' ? SessionItem : SessionCard;
@@ -96,7 +110,7 @@ function Fixture() {
           data.selections.push({ id, modifiers });
           if (hasSessionSelectionModifier(modifiers)) return;
           if (query.has('defer')) data.next = id;
-          else setActive(id);
+          else completeNavigation(id);
         }}
         onAction={noop}
         onRename={noop}
@@ -115,15 +129,31 @@ function Fixture() {
             <span>C</span>
           </nav>
         )}
-        {(layout !== 'rail' || hover) && (
+        {(layout !== 'rail' || hover) && portal(
           <aside
             style={{
               width,
-              ...(layout === 'rail' ? { position: 'absolute', left: 64, top: 50, zIndex: 10 } : {}),
+              ...(layout === 'rail' || fromFiles ? { position: 'absolute', left: 64, top: 50, zIndex: 10 } : {}),
             }}
           >
             <p className="fixture-label">置顶</p>
-            {layout === 'rows' ? (
+            {fromFiles ? (
+              <SessionEntryList
+                sessions={sessions}
+                activeSessionId={active}
+                navigationActiveSessionId={routeReady ? active : null}
+                sessionVariant={layout === 'rows' ? 'text' : 'list'}
+                runningSessionIds={new Set()}
+                attachedSessionIds={new Set()}
+                notifications={new Set()}
+                scheduleSessionIndex={new Map()}
+                onSessionClick={(id) => {
+                  if (query.has('defer')) data.next = id;
+                  else completeNavigation(id);
+                }}
+                onAction={noop} onRename={noop} onTogglePin={noop} onScheduleAction={noop}
+              />
+            ) : layout === 'rows' ? (
               sessions.map(row)
             ) : (
               <CardMasonry
@@ -141,10 +171,12 @@ function Fixture() {
           <section className="fixture-chat">
             <p>两个模拟待授权任务：鼠标切换后直接使用快捷键。</p>
             <div data-permission>
-              {pending && (
+              {pending && (mountedOrder ?? [active]).map((id) => (
                 <PermissionPrompt
+                  key={mountedOrder ? id : 'current'}
+                  keyboardShortcutsEnabled={id === active}
                   permission={{
-                    requestId: `request-${active}`,
+                    requestId: `request-${id}`,
                     toolName: 'Bash',
                     input: { command: 'echo synthetic-demo' },
                     description: '仅验证界面响应，不执行命令。',
@@ -158,10 +190,10 @@ function Fixture() {
                     ],
                   }}
                   onRespond={(decision) =>
-                    data.responses.push({ session: active, request: `request-${active}`, decision })
+                    data.responses.push({ session: id, request: `request-${id}`, decision })
                   }
                 />
-              )}
+              ))}
             </div>
           </section>
         </main>
@@ -170,7 +202,7 @@ function Fixture() {
   );
 }
 createRoot(document.getElementById('root')!).render(
-  <MemoryRouter>
+  <MemoryRouter initialEntries={[query.has('files') ? '/cc-agent/files/A' : '/']}>
     <Fixture />
   </MemoryRouter>,
 );

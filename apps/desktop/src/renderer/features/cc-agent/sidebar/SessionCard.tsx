@@ -141,6 +141,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
   navigate,
   session,
   isActive,
+  isNavigationActive = isActive,
   isRunning,
   isAttached = false,
   hasAttentionNotification,
@@ -309,7 +310,7 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
   const confirmPillRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const { onClick: trackPointerNavigation, cancel: cancelPointerNavigation } =
-    usePointerNavigationFocus(cardRef, isActive);
+    usePointerNavigationFocus(cardRef, isNavigationActive);
   const dragStartTargetRef = useRef<Element | null>(null);
 
   // 归档/删除前那次 dirty-worktree 预检要在 main 侧跑 git status,是"点了归档、

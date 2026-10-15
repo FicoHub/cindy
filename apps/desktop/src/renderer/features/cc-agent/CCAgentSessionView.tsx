@@ -5524,6 +5524,7 @@ function CCAgentSessionContent({
                 ) : pendingPermission ? (
                   <PermissionPrompt
                     permission={pendingPermission}
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     companion={botChatIdentity}
                     onRespond={respondToPermission}
                   />

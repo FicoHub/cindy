@@ -1342,6 +1342,7 @@ export function SessionGroupNode({
   parentSectionCollapsed,
   disableSessionCollapse,
   activeSessionId,
+  navigationActiveSessionId,
   runningSessionIds,
   attachedSessionIds,
   notifications,
@@ -1387,6 +1388,7 @@ export function SessionGroupNode({
   parentSectionCollapsed: boolean;
   disableSessionCollapse: boolean;
   activeSessionId?: string;
+  navigationActiveSessionId?: string | null;
   runningSessionIds: ReadonlySet<string>;
   attachedSessionIds: ReadonlySet<string>;
   notifications: ReadonlySet<string>;
@@ -1506,6 +1508,7 @@ export function SessionGroupNode({
           <SessionEntryList
             sessions={sessions}
             activeSessionId={activeSessionId}
+            navigationActiveSessionId={navigationActiveSessionId}
             runningSessionIds={runningSessionIds}
             attachedSessionIds={attachedSessionIds}
             notifications={notifications}

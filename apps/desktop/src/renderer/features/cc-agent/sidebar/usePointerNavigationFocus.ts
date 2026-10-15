@@ -3,7 +3,8 @@ import { useCallback, useLayoutEffect, useRef, type MouseEvent, type RefObject }
 /** Release only the focus left by pointer navigation, after the destination is active.
  * Navigation can await route resolution: blurring on click would expose the old
  * task's permission card to keys intended for the destination. Keyboard activation
- * and any focus move during that wait cancel this handoff.
+ * and any focus move during that wait cancel this handoff. The active signal
+ * must describe the actual navigation destination, not file-view highlighting.
  */
 export function usePointerNavigationFocus(
   ref: RefObject<HTMLDivElement | null>,

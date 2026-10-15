@@ -4610,6 +4610,7 @@ function RailPanels({
 
   const entryListShared = {
     activeSessionId: visibilityActiveId,
+    navigationActiveSessionId: activeSessionId ?? null,
     runningSessionIds,
     attachedSessionIds,
     notifications: panelNotifications,

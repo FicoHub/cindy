@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Isolated production-component layout regression; no Electron or device connections.
 // Run: node apps/desktop/scripts/check-permission-focus.mjs [Chromium executable] [screenshot directory]
+// --split-only isolates dual-mounted requests; --expect-split-broken checks their pre-fix failure.
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync as fsWrite } from 'node:fs';
 import os from 'node:os';
@@ -17,6 +18,10 @@ const renderer = path.join(desktop, 'src/renderer');
 const temp = mkdtempSync(path.join(os.tmpdir(), 'cindy-permission-focus-'));
 const screenshots = process.argv[3];
 const baseline = process.argv.includes('--expect-broken');
+const splitOnly = process.argv.includes('--split-only');
+const filesOnly = process.argv.includes('--files-only');
+const filesBaseline = process.argv.includes('--expect-files-broken');
+const splitBaseline = process.argv.includes('--expect-split-broken');
 if (screenshots) mkdirSync(screenshots, { recursive: true });
 // Stub host data only. Rows, cards, masonry, menus, permissions, keyboard guards
 // and theme styles are production code; the surrounding page is a synthetic shell.
@@ -111,13 +116,13 @@ try {
     route.request().url().startsWith('http://fixture.local/')
       ? route.fulfill({
           contentType: 'text/html',
-          body: `<!doctype html><meta charset="utf-8"><style>${css}${componentCss}${shellCss}</style><div id="root"></div><script type="module">${script.replace(/<\/script/gi, '<\\/script')}</script>`,
+          body: `<!doctype html><meta charset="utf-8"><style>${css}${componentCss}${shellCss}</style><div id="root"></div><div id="rail-portal"></div><script type="module">${script.replace(/<\/script/gi, '<\\/script')}</script>`,
         })
       : route.abort(),
   );
   page.setDefaultTimeout(8000);
   const results = [];
-  for (const theme of ['light', 'dark']) {
+  for (const theme of (splitOnly || filesOnly) ? [] : ['light', 'dark']) {
     for (const layout of ['rows', 'rail', 'one', 'two', 'three']) {
       for (const key of ['Enter', 'Control+Enter', 'Escape']) {
         await page.setViewportSize({ width: 1280, height: 760 });
@@ -162,7 +167,7 @@ try {
     }
   }
   let safetyCases = 0;
-  for (const layout of ['rows', 'one']) {
+  for (const layout of (splitOnly || filesOnly) ? [] : ['rows', 'one']) {
     const open = async (suffix = '') => {
       await page.goto(`http://fixture.local/?layout=${layout}${suffix}`);
       await page.locator('[data-session-id="B"]').waitFor();
@@ -243,8 +248,113 @@ try {
   console.log(
     `Passed: ${safetyCases} native Tab/menu/rename/delayed navigation/arrival/keyboard/multi-selection cases`,
   );
-  assert.deepEqual(errors, []);
+  let misrouted = 0;
+  const splitResults = [];
+  for (const theme of (baseline || filesOnly) ? [] : ['light', 'dark']) {
+    for (const layout of ['rows', 'one']) {
+      for (const order of ['A,B', 'B,A']) {
+        for (const key of ['Enter', 'Control+Enter', 'Escape']) {
+          await page.setViewportSize({ width: 1280, height: 900 });
+          await page.goto(`http://fixture.local/?theme=${theme}&layout=${layout}&split=${order}`);
+          for (const target of ['B', 'A', 'B']) {
+            await page.locator(`[data-session-id="${target}"]`).click();
+            assert.equal(await page.evaluate(() => document.activeElement.tagName), 'BODY');
+            await page.keyboard.press(key);
+            const result = await page.evaluate(() => window.permissionFocus);
+            splitResults.push({
+              theme, layout, order, key, target,
+              responses: result.responses,
+              events: result.events,
+            });
+            assert.equal(result.responses.length, 1);
+            if (result.responses[0].session !== target) misrouted++;
+            if (!splitBaseline) {
+              assert.equal(result.responses[0].session, target);
+              assert.equal(result.responses[0].request, `request-${target}`);
+              assert.equal(result.responses[0].decision.behavior, key === 'Escape' ? 'deny' : 'allow');
+              if (key === 'Control+Enter')
+                assert.equal(result.responses[0].decision.decisionClassification, 'user_permanent');
+            }
+            await page.evaluate(() => {
+              window.permissionFocus.responses = [];
+              window.permissionFocus.events = [];
+            });
+          }
+        }
+      }
+    }
+  }
+  if (splitBaseline)
+    assert.ok(misrouted > 0, 'dual-mounted baseline must expose a wrong-request response');
+  else assert.equal(misrouted, 0);
   if (screenshots)
+    fsWrite(
+      path.join(screenshots, `${splitBaseline ? 'before' : 'after'}-split-events.json`),
+      JSON.stringify(splitResults, null, 2),
+    );
+  console.log(
+    `Split panes: ${splitResults.length} pointer/key cases; ${misrouted} wrong-request responses (${splitBaseline ? 'baseline reproduction' : 'must be zero'})`,
+  );
+  const filesResults = [];
+  for (const layout of (baseline || splitOnly) ? [] : ['rows', 'one']) {
+    for (const theme of ['light', 'dark']) {
+      for (const key of ['Enter', 'Control+Enter', 'Escape']) {
+        await page.goto(`http://fixture.local/?files&layout=${layout}&theme=${theme}`);
+        const row = page.locator('[data-session-id="A"]');
+        await row.evaluate((el) => { window.filesRow = el; });
+        assert.equal(await row.getAttribute('aria-current'), 'page');
+        await row.click();
+        await page.waitForFunction(() => window.permissionFocus.route === '/cc-agent/A');
+        assert.ok(await row.evaluate((el) => el === window.filesRow), 'portal row stays mounted');
+        assert.equal(await row.getAttribute('aria-current'), 'page');
+        await page.keyboard.press(key);
+        const result = await page.evaluate(() => window.permissionFocus);
+        filesResults.push({ layout, theme, key, route: result.route, responses: result.responses, events: result.events });
+        if (filesBaseline) assert.equal(result.responses.length, 0);
+        else {
+          assert.equal(result.responses.length, 1);
+          assert.equal(result.responses[0].session, 'A');
+          assert.equal(result.responses[0].request, 'request-A');
+          assert.equal(result.responses[0].decision.behavior, key === 'Escape' ? 'deny' : 'allow');
+        }
+      }
+    }
+  }
+  let filesSafetyCases = 0;
+  if (!baseline && !splitOnly && !filesBaseline) {
+    for (const layout of ['rows', 'one']) {
+      for (const cancel of ['none', 'keyboard', 'focus']) {
+        await page.goto(`http://fixture.local/?files&defer&layout=${layout}`);
+        const row = page.locator('[data-session-id="A"]');
+        await row.click();
+        assert.equal(await page.evaluate(() => window.permissionFocus.route), '/cc-agent/files/A');
+        assert.ok(await row.evaluate((el) => el === document.activeElement));
+        await page.keyboard.press('Escape');
+        assert.equal(await page.evaluate(() => window.permissionFocus.responses.length), 0);
+        if (cancel === 'keyboard') await page.keyboard.press('Enter');
+        if (cancel === 'focus') await page.keyboard.press('Tab');
+        await page.evaluate(() => { window.filesFocus = document.activeElement; window.permissionFocus.finish(); });
+        await page.waitForFunction(() => window.permissionFocus.route === '/cc-agent/A');
+        if (cancel === 'none') {
+          assert.equal(await page.evaluate(() => document.activeElement.tagName), 'BODY');
+          await page.keyboard.press('Enter');
+          assert.deepEqual(await page.evaluate(() => window.permissionFocus.responses.map((r) => [r.session, r.decision.behavior])), [['A', 'allow']]);
+        } else {
+          assert.ok(await page.evaluate(() => document.activeElement === window.filesFocus));
+          assert.equal(await page.evaluate(() => window.permissionFocus.responses.length), 0);
+        }
+        filesSafetyCases++;
+      }
+    }
+  }
+  console.log(`Passed: ${filesSafetyCases} files-return delayed navigation / handoff cancellation cases`);
+  if (screenshots && filesResults.length) fsWrite(
+    path.join(screenshots, `${filesBaseline ? 'before' : 'after'}-files-events.json`),
+    JSON.stringify(filesResults, null, 2),
+  );
+  console.log(`${filesBaseline ? 'Reproduced' : 'Passed'}: ${filesResults.length} files-to-same-task persistent portal cases`);
+  assert.deepEqual(errors, []);
+  if (screenshots && !splitOnly && !filesOnly)
     fsWrite(
       path.join(screenshots, `${baseline ? 'before' : 'after'}-events.json`),
       JSON.stringify(results, null, 2),

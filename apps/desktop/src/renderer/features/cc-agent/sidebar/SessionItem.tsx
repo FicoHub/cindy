@@ -257,6 +257,8 @@ export interface SessionItemProps {
   sharedTaskRole?: 'owned' | 'joined';
   session: Session;
   isActive: boolean;
+  /** Actual chat destination; rail highlighting can also represent a file view. */
+  isNavigationActive?: boolean;
   /** F-SB-7: Whether this session's agent is currently running. */
   isRunning: boolean;
   /** /ctr 接管中: 左侧 vendor icon 切换为 RadioTower 表"被远程接管"。 */
@@ -328,6 +330,7 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
   navigate,
   session,
   isActive,
+  isNavigationActive = isActive,
   isRunning,
   isAttached = false,
   hasAttentionNotification,
@@ -573,7 +576,7 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
   //      imperative 路径(querySelector + scrollIntoNearestView)补一刀
   const rowRef = useRef<HTMLDivElement>(null);
   const { onClick: trackPointerNavigation, cancel: cancelPointerNavigation } =
-    usePointerNavigationFocus(rowRef, isActive);
+    usePointerNavigationFocus(rowRef, isNavigationActive);
   const dragStartTargetRef = useRef<Element | null>(null);
 
   // ── Double-click rename ──

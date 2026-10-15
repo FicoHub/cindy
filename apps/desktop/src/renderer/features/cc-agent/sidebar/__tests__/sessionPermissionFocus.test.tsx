@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { createElement, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { cleanup, render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -77,6 +78,7 @@ vi.mock('@/lib/makerChatStore', () => ({
 
 import { SessionItem, hasSessionSelectionModifier } from '../SessionItem';
 import { SessionCard } from '../SessionCard';
+import { SessionEntryList } from '../SessionEntryList';
 import { PermissionPrompt } from '@/components/new-chat/PermissionPrompt';
 
 afterEach(cleanup);
@@ -112,7 +114,17 @@ const permission = (id: string): PendingPermission => ({
   ],
 });
 let Component: typeof SessionItem | typeof SessionCard = SessionItem;
-function setup({ deferred = false, initiallyPending = true } = {}) {
+function setup({
+  deferred = false,
+  initiallyPending = true,
+  mountedOrder,
+  fromFiles = false,
+}: {
+  deferred?: boolean;
+  initiallyPending?: boolean;
+  mountedOrder?: string[];
+  fromFiles?: boolean;
+} = {}) {
   const respond = vi.fn();
   const select = vi.fn();
   const rename = vi.fn();
@@ -120,42 +132,66 @@ function setup({ deferred = false, initiallyPending = true } = {}) {
   let showPermission = noop;
   function Fixture() {
     const [active, setActive] = useState('A');
+    const [routeReady, setRouteReady] = useState(!fromFiles);
+    const onClick = (id: string, modifiers: Parameters<typeof hasSessionSelectionModifier>[0]) => {
+      select(id, modifiers);
+      if (hasSessionSelectionModifier(modifiers)) return;
+      const navigate = () => {
+        setActive(id);
+        setRouteReady(true);
+      };
+      if (deferred) finishNavigation = navigate;
+      else navigate();
+    };
     const [pending, setPending] = useState(initiallyPending);
     showPermission = () => setPending(true);
     return (
       <>
-        {sessions.map((session) => (
+        {fromFiles ? createPortal(
+          <SessionEntryList
+            sessions={sessions}
+            activeSessionId={active}
+            navigationActiveSessionId={routeReady ? active : null}
+            sessionVariant={Component === SessionCard ? 'list' : 'text'}
+            runningSessionIds={new Set()}
+            attachedSessionIds={new Set()}
+            notifications={new Set()}
+            scheduleSessionIndex={new Map()}
+            onSessionClick={onClick}
+            onAction={noop}
+            onRename={rename}
+            onTogglePin={noop}
+            onScheduleAction={noop}
+          />, document.body,
+        ) : sessions.map((session) => (
           <Component
             key={session.id}
             session={session}
             isActive={active === session.id}
             isRunning={false}
             hasAttentionNotification={false}
-            onClick={(id, modifiers) => {
-              select(id, modifiers);
-              if (hasSessionSelectionModifier(modifiers)) return;
-              if (deferred) finishNavigation = () => setActive(id);
-              else setActive(id);
-            }}
+            onClick={onClick}
             onAction={noop}
             onTogglePin={noop}
             onRename={rename}
           />
         ))}
         <main data-testid="chat">
-          {pending && (
+          {pending && (mountedOrder ?? [active]).map((id) => (
             <PermissionPrompt
-              permission={permission(active)}
-              onRespond={(decision) => respond(active, `request-${active}`, decision)}
+              key={mountedOrder ? id : 'current'}
+              keyboardShortcutsEnabled={active === id}
+              permission={permission(id)}
+              onRespond={(decision) => respond(id, `request-${id}`, decision)}
             />
-          )}
+          ))}
         </main>
       </>
     );
   }
   const view = render(<Fixture />);
   const row = (id: string) =>
-    view.container.querySelector(`[data-session-id="${id}"]`)! as HTMLElement;
+    (fromFiles ? document : view.container).querySelector(`[data-session-id="${id}"]`)! as HTMLElement;
   return {
     ...view,
     respond,
@@ -195,6 +231,68 @@ describe.each([
           }),
         ],
       ]);
+    });
+
+    describe.each([['A', 'B'], ['B', 'A']])('mounted order %s then %s', (first, second) => {
+      it.each([
+        ['{Enter}', 'allow', undefined],
+        ['{Control>}{Enter}{/Control}', 'allow', 'user_permanent'],
+        ['{Escape}', 'deny', 'user_reject'],
+      ])('%s belongs only to the active request with both cards mounted', async (key, behavior, classification) => {
+        const user = userEvent.setup();
+        const f = setup({ mountedOrder: [first, second] });
+        for (const id of ['B', 'A', 'B']) {
+          await user.click(f.row(id));
+          expect(document.activeElement).toBe(document.body);
+          await user.keyboard(key);
+          expect(f.respond.mock.calls).toEqual([
+            [id, `request-${id}`, expect.objectContaining({
+              behavior,
+              ...(classification ? { decisionClassification: classification } : {}),
+            })],
+          ]);
+          f.respond.mockClear();
+        }
+      });
+    });
+
+    it.each(['{Enter}', '{Control>}{Enter}{/Control}', '{Escape}'])(
+      'hands %s over after files returns to the same visually active portal row', async (key) => {
+        const user = userEvent.setup();
+        const f = setup({ fromFiles: true });
+        const row = f.row('A');
+        expect(row.getAttribute('aria-current')).toBe('page');
+        await user.click(row);
+        expect(f.row('A')).toBe(row);
+        expect(row.getAttribute('aria-current')).toBe('page');
+        await user.keyboard(key);
+        expect(f.respond).toHaveBeenCalledExactlyOnceWith('A', 'request-A',
+          expect.objectContaining({ behavior: key === '{Escape}' ? 'deny' : 'allow' }));
+      },
+    );
+
+    it('keeps a visually active files row focused until the real navigation completes', async () => {
+      const user = userEvent.setup();
+      const f = setup({ fromFiles: true, deferred: true });
+      await user.click(f.row('A'));
+      expect(document.activeElement).toBe(f.row('A'));
+      await user.keyboard('{Escape}');
+      expect(f.respond).not.toHaveBeenCalled();
+      f.finish();
+      await user.keyboard('{Enter}');
+      expect(f.respond).toHaveBeenCalledExactlyOnceWith('A', 'request-A', { behavior: 'allow' });
+    });
+
+    it.each(['keyboard', 'focus'])('cancels files return handoff after %s ownership changes', async (kind) => {
+      const user = userEvent.setup();
+      const f = setup({ fromFiles: true, deferred: true });
+      await user.click(f.row('A'));
+      if (kind === 'keyboard') await user.keyboard('{Enter}');
+      else await user.tab();
+      const focus = document.activeElement;
+      f.finish();
+      expect(document.activeElement).toBe(focus);
+      expect(f.respond).not.toHaveBeenCalled();
     });
 
     it('retains the row while navigation is pending, so A cannot receive B’s key', async () => {
