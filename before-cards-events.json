@@ -1,0 +1,6606 @@
+[
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "plan",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "plan",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "plan",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "plan",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "plan",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "plan",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ask",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ask",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ask",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ask",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ask",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ask",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "permission",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "permission",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "permission",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "permission",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "permission",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "permission",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "issue",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "issue",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "issue",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "issue",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "issue",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "issue",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "rename",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "rename",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "rename",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "rename",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "rename",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "rename",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "plan",
+    "b": "plan",
+    "key": "Enter",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "approved": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ask",
+    "b": "ask",
+    "key": "1",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": "Choice"
+        }
+      }
+    ],
+    "events": []
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "permission",
+    "b": "permission",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "allow"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "issue",
+    "b": "issue",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true,
+          "title": "Synthetic title",
+          "body": "Synthetic body",
+          "type": "bug",
+          "submissionIdentity": {
+            "kind": "platform",
+            "login": "synthetic-bot"
+          },
+          "publicName": "匿名",
+          "uiLanguage": "zh-CN"
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true,
+          "title": "Synthetic title",
+          "body": "Synthetic body",
+          "type": "bug",
+          "submissionIdentity": {
+            "kind": "platform",
+            "login": "synthetic-bot"
+          },
+          "publicName": "匿名",
+          "uiLanguage": "zh-CN"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "rename",
+    "b": "rename",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "ghost",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "plan",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "plan",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "plan",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "plan",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "plan",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "plan",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ask",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ask",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ask",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ask",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ask",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ask",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "permission",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "permission",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "permission",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "permission",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "permission",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "permission",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "issue",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "issue",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "issue",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "issue",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "issue",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "issue",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "rename",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "rename",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "rename",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "rename",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "rename",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "rename",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "plan",
+    "b": "plan",
+    "key": "Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "approved": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ask",
+    "b": "ask",
+    "key": "1",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": "Choice"
+        }
+      }
+    ],
+    "events": []
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "permission",
+    "b": "permission",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "allow"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "issue",
+    "b": "issue",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true,
+          "title": "Synthetic title",
+          "body": "Synthetic body",
+          "type": "bug",
+          "submissionIdentity": {
+            "kind": "platform",
+            "login": "synthetic-bot"
+          },
+          "publicName": "匿名",
+          "uiLanguage": "zh-CN"
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true,
+          "title": "Synthetic title",
+          "body": "Synthetic body",
+          "type": "bug",
+          "submissionIdentity": {
+            "kind": "platform",
+            "login": "synthetic-bot"
+          },
+          "publicName": "匿名",
+          "uiLanguage": "zh-CN"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "rename",
+    "b": "rename",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "ghost",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "plan",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "plan",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "plan",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "plan",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "plan",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "plan",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ask",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ask",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ask",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ask",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ask",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ask",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": ""
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "permission",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "permission",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "permission",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "permission",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "permission",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "permission",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "issue",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "issue",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "issue",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "issue",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "issue",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "issue",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "rename",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "rename",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "rename",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "rename",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "rename",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "rename",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "plan",
+    "b": "plan",
+    "key": "Enter",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "approved": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ask",
+    "b": "ask",
+    "key": "1",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "Synthetic question A": "Choice"
+        }
+      }
+    ],
+    "events": []
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "permission",
+    "b": "permission",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "allow"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "issue",
+    "b": "issue",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true,
+          "title": "Synthetic title",
+          "body": "Synthetic body",
+          "type": "bug",
+          "submissionIdentity": {
+            "kind": "platform",
+            "login": "synthetic-bot"
+          },
+          "publicName": "匿名",
+          "uiLanguage": "zh-CN"
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true,
+          "title": "Synthetic title",
+          "body": "Synthetic body",
+          "type": "bug",
+          "submissionIdentity": {
+            "kind": "platform",
+            "login": "synthetic-bot"
+          },
+          "publicName": "匿名",
+          "uiLanguage": "zh-CN"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "rename",
+    "b": "rename",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "A,B",
+    "a": "ghost",
+    "b": "ghost",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true
+        }
+      },
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "plan",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "plan",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "plan",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "plan",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "plan",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "plan",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ask",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ask",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ask",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ask",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ask",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ask",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "permission",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "permission",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "permission",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "permission",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "permission",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "permission",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "issue",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "issue",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "issue",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "issue",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "issue",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "issue",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "rename",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "rename",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "rename",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "rename",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "rename",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "rename",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "plan",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "cancelled": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "ask",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": ""
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "permission",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "deny",
+          "message": "User denied",
+          "decisionClassification": "user_reject"
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "issue",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "rename",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "ghost",
+    "key": "Escape",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": false
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "plan",
+    "b": "plan",
+    "key": "Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "approved": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ask",
+    "b": "ask",
+    "key": "1",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "Synthetic question B": "Choice"
+        }
+      }
+    ],
+    "events": []
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "permission",
+    "b": "permission",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "behavior": "allow"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "issue",
+    "b": "issue",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true,
+          "title": "Synthetic title",
+          "body": "Synthetic body",
+          "type": "bug",
+          "submissionIdentity": {
+            "kind": "platform",
+            "login": "synthetic-bot"
+          },
+          "publicName": "匿名",
+          "uiLanguage": "zh-CN"
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true,
+          "title": "Synthetic title",
+          "body": "Synthetic body",
+          "type": "bug",
+          "submissionIdentity": {
+            "kind": "platform",
+            "login": "synthetic-bot"
+          },
+          "publicName": "匿名",
+          "uiLanguage": "zh-CN"
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "rename",
+    "b": "rename",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "order": "B,A",
+    "a": "ghost",
+    "b": "ghost",
+    "key": "Control+Enter",
+    "responses": [
+      {
+        "session": "B",
+        "request": "request-B",
+        "result": {
+          "confirmed": true
+        }
+      },
+      {
+        "session": "A",
+        "request": "request-A",
+        "result": {
+          "confirmed": true
+        }
+      }
+    ],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "focus": {
+          "tag": "BODY",
+          "role": null,
+          "session": null
+        },
+        "prevented": false,
+        "yield": false
+      }
+    ]
+  }
+]
