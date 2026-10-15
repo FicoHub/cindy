@@ -1,0 +1,902 @@
+[
+  {
+    "theme": "light",
+    "layout": "rows",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "rows",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "rows",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "rail",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "rail",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "rail",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "one",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "one",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "one",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "two",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "two",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "two",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "three",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "three",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "light",
+    "layout": "three",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "rows",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "rows",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "rows",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "rail",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "rail",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "rail",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "one",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "one",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "one",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "two",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "two",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "two",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "three",
+    "key": "Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "three",
+    "key": "Control+Enter",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Enter",
+        "ctrl": true,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": true,
+        "yield": true
+      }
+    ]
+  },
+  {
+    "theme": "dark",
+    "layout": "three",
+    "key": "Escape",
+    "focusAfterClick": {
+      "tag": "DIV",
+      "session": "B"
+    },
+    "responses": [],
+    "events": [
+      {
+        "active": "B",
+        "request": "request-B",
+        "key": "Escape",
+        "ctrl": false,
+        "target": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "focus": {
+          "tag": "DIV",
+          "role": "button",
+          "session": "B"
+        },
+        "prevented": false,
+        "yield": true
+      }
+    ]
+  }
+]
