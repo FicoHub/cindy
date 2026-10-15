@@ -89,9 +89,12 @@ export class FilteredAgent extends BaseAgent<ParsedKey> {
   lastOfferedCount: number | null = null;
   /**
    * Sign outcomes since the last enumeration. An offered key only proves the
-   * agent held it; the remote has rejected it only if the agent also signed
-   * for it. A sign failure (agent locked, hardware-key touch refused, signer
-   * error) is a local problem, not a remote rejection.
+   * agent held it. ssh2 asks the agent to sign only after the server answered
+   * USERAUTH_PK_OK, so a signature means the server was willing to accept that
+   * key — not that it rejected it. These are signature counts, not distinct
+   * identities: ssh2 re-signs the same RSA key once per fallback algorithm.
+   * A sign failure (agent locked, hardware-key touch refused, signer error) is
+   * a local problem, not a remote rejection.
    */
   signedCount = 0;
   signFailureCount = 0;
