@@ -1484,6 +1484,7 @@
         "updateFailed": "ホストの信頼記録を更新できませんでした。接続情報や保存済みの鍵が変更されたか、記録ファイルに書き込めない可能性があります。再接続してフィンガープリントを再取得し、ファイルの権限を確認してください。"
       },
       "authFailure": {
+        "identitySeparator": "、",
         "identitySet": " (IdentityFile: {{identities}})",
         "cause": " (ssh: {{cause}})",
         "agentNotLoaded": "{{target}} の認証に失敗しました。設定された鍵{{identitySet}}はいずれも ssh-agent に登録されていないため、鍵が提示されませんでした。`ssh-add` で登録するか、登録済みの鍵でこのホストを追加し直してください。",

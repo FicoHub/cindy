@@ -15,6 +15,15 @@ const KINDS: Detail['kind'][] = [
   'generic',
 ];
 
+// 列表分隔符随语言：中文与日文用「、」，不混入英文逗号（DESIGN.md §11.2）。
+const IDENTITY_SEPARATOR: Record<string, string> = {
+  en: ', ',
+  'zh-CN': '、',
+  'zh-TW': '、',
+  ja: '、',
+  ko: ', ',
+};
+
 function detail(kind: Detail['kind'], extra: Partial<Detail> = {}): Detail {
   return {
     kind,
@@ -41,7 +50,7 @@ describe('formatRemoteAuthFailure (#4201)', () => {
       expect(text).toContain('All configured authentication methods failed');
       if (d.command) expect(text).toContain(`\`${d.command}\``);
       if (kind !== 'agent-unpinned' && kind !== 'generic') {
-        expect(text).toContain('~/.ssh/id_ed25519_github, b/id_rsa');
+        expect(text).toContain(`~/.ssh/id_ed25519_github${IDENTITY_SEPARATOR[locale]}b/id_rsa`);
       }
     },
   );
@@ -55,6 +64,12 @@ describe('formatRemoteAuthFailure (#4201)', () => {
           .not.toBe(formatRemoteAuthFailure(en, detail(kind)));
       }
     }
+  });
+
+  it.each(['zh-CN', 'zh-TW'])('%s identity list has no ASCII comma', (locale) => {
+    const text = formatRemoteAuthFailure(i18n.getFixedT(locale), detail('agent-pinned', { cause: undefined }));
+    expect(text).toContain('（IdentityFile：~/.ssh/id_ed25519_github、b/id_rsa）');
+    expect(text).not.toContain(',');
   });
 
   it('omits the identity fragment and the cause suffix when they are absent', () => {

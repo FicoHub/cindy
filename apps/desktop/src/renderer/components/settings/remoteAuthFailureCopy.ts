@@ -21,7 +21,9 @@ const MESSAGE_KEYS: Record<AuthFailureDetail['kind'], string> = {
 };
 
 export function formatRemoteAuthFailure(t: Translate, detail: AuthFailureDetail): string {
-  const identities = detail.identities.join(', ');
+  // The list separator is locale copy too (zh / ja use 「、」), so it comes
+  // from the catalog instead of a pre-joined English string.
+  const identities = detail.identities.join(t('settings.remote.authFailure.identitySeparator'));
   const identitySet = identities
     ? t('settings.remote.authFailure.identitySet', { identities })
     : '';

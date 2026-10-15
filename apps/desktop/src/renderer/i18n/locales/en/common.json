@@ -1507,6 +1507,7 @@
         "updateFailed": "Could not update host trust. The connection details or saved key may have changed, or the trust file could not be written. Reconnect to refresh the fingerprints and check the file permissions."
       },
       "authFailure": {
+        "identitySeparator": ", ",
         "identitySet": " (IdentityFile: {{identities}})",
         "cause": " (ssh: {{cause}})",
         "agentNotLoaded": "Authentication failed for {{target}}: none of the configured identities{{identitySet}} is currently loaded in ssh-agent, so no key was offered. Load it with `ssh-add`, or re-add this host with the identity that is loaded.",

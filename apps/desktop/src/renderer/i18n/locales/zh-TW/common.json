@@ -1484,6 +1484,7 @@
         "updateFailed": "無法更新主機信任記錄。連線資訊或已存金鑰可能已變更，也可能無法寫入記錄檔。請重新連線以更新指紋，並檢查檔案權限"
       },
       "authFailure": {
+        "identitySeparator": "、",
         "identitySet": "（IdentityFile：{{identities}}）",
         "cause": "（ssh：{{cause}}）",
         "agentNotLoaded": "{{target}} 認證失敗：設定的身分{{identitySet}}都沒有載入到 ssh-agent，因此沒有提供任何金鑰。請用 `ssh-add` 載入，或用已載入的身分重新新增這台主機。",

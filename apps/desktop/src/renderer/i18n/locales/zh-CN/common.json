@@ -1484,6 +1484,7 @@
         "updateFailed": "无法更新主机信任记录。连接信息或已存密钥可能已变化，也可能无法写入记录文件。请重新连接以刷新指纹，并检查文件权限"
       },
       "authFailure": {
+        "identitySeparator": "、",
         "identitySet": "（IdentityFile：{{identities}}）",
         "cause": "（ssh：{{cause}}）",
         "agentNotLoaded": "{{target}} 认证失败：配置的身份{{identitySet}}都没有加载到 ssh-agent，因此没有提供任何密钥。请用 `ssh-add` 加载，或用已加载的身份重新添加这台主机。",
