@@ -5689,10 +5689,16 @@ export class ClaudeCodeAgent extends BaseAgent {
                 toolName?: unknown,
                 input?: unknown,
                 parentToolUseId?: string,
+                inputStreaming?: boolean,
               ) => {
-                pendingToolIds.add(id);
                 getToolLoopMonitor(parentToolUseId).onToolUse(id, toolName, input);
-                clearUpstreamResponseIdle();
+                // content_block_start precedes input_json_delta: the model still
+                // owns the response until the complete tool input is delivered.
+                // canUseTool independently pauses the watchdog during approval.
+                if (!inputStreaming) {
+                  pendingToolIds.add(id);
+                  clearUpstreamResponseIdle();
+                }
               },
               onToolResultDone: (
                 id: string,

@@ -147,6 +147,7 @@ async function startSessionWithStream(
   model = 'claude-opus-4-6',
   toolLoopReviewer?: ToolLoopReviewer,
   hosted?: { providerId: string; deviceHosted: (workingDir: string) => DeviceHostedSession },
+  resumeSessionId?: string,
 ) {
   const configDir = await makeTempDir();
   process.env.CLAUDE_CONFIG_DIR = configDir;
@@ -154,12 +155,13 @@ async function startSessionWithStream(
 
   const stream = createControlledStream();
   const fakeQuery = createFakeQuery(stream);
+  const acceptedInputs: unknown[] = [];
   sdkMock.query.mockImplementation((options: unknown) => {
     const prompt = (options as { prompt?: AsyncIterable<unknown> } | undefined)?.prompt;
     if (prompt) {
       void (async () => {
         try {
-          for await (const item of prompt) { void item; /* discard — 只对齐 pending 语义 */ }
+          for await (const item of prompt) { acceptedInputs.push(item); }
         } catch { /* end / abort 都算正常收尾 */ }
       })();
     }
@@ -172,6 +174,7 @@ async function startSessionWithStream(
     model,
     workingDir,
     permissionMode: 'acceptEdits',
+    ...(resumeSessionId ? { resumeSessionId } : {}),
     ...(hosted ? { providerId: hosted.providerId, deviceHosted: hosted.deviceHosted(workingDir) } : {}),
   });
 
@@ -182,7 +185,7 @@ async function startSessionWithStream(
     }
   })();
 
-  return { agent, handle, stream, fakeQuery, events, collected };
+  return { agent, handle, stream, fakeQuery, events, collected, acceptedInputs };
 }
 
 function successResult(): Record<string, unknown> {
@@ -373,12 +376,79 @@ describe('upstream-response-idle watchdog suspend awareness', () => {
     await collected;
   });
 
+  it.each([undefined, 'resumed-idle-session'])(
+    'incomplete streamed tool input retains the idle watchdog (resume=%s)',
+    async (resumeSessionId) => {
+      delete process.env.XDT_CC_SSE_IDLE_TIMEOUT_MS;
+      const { handle, stream, events, fakeQuery, collected, acceptedInputs } = await startSessionWithStream(
+        undefined, undefined, undefined, resumeSessionId,
+      );
+      expect((sdkMock.query.mock.calls.at(-1)?.[0] as { options: { resume?: string } }).options.resume)
+        .toBe(resumeSessionId);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      await handle.send({ type: 'user', content: 'synthetic tool input stall' });
+      stream.emit({
+        type: 'stream_event',
+        event: { type: 'content_block_start', index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_partial', name: 'Bash', input: {} } },
+      });
+      await vi.advanceTimersByTimeAsync(5);
+      stream.emit({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"command":"' } },
+      });
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.advanceTimersByTimeAsync(29 * 60_000);
+      expect(idleTimeoutError(events)).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(idleTimeoutError(events)).toBeDefined();
+      expect(fakeQuery.interrupt).toHaveBeenCalledTimes(1);
+      expect(handle.isTurnRunning?.()).toBe(false);
+      expect(acceptedInputs).toHaveLength(1);
+
+      // Acknowledged interruption ends this turn; only an explicit new send runs again.
+      stream.emit(successResult());
+      await vi.advanceTimersByTimeAsync(5);
+      await handle.send({ type: 'user', content: 'next explicit input' });
+      expect(handle.isTurnRunning?.()).toBe(true);
+      stream.emit(successResult());
+      await vi.advanceTimersByTimeAsync(5);
+      expect(handle.isTurnRunning?.()).toBe(false);
+      expect(fakeQuery.interrupt).toHaveBeenCalledTimes(1);
+      expect(acceptedInputs).toHaveLength(2);
+      vi.useRealTimers();
+      stream.end();
+      await handle.close().catch(() => undefined);
+      await collected;
+    },
+  );
+
   it('工具执行期间停表不开火;tool_result 配对完重新起表、走满才开火', async () => {
     process.env.XDT_CC_SSE_IDLE_TIMEOUT_MS = '120000';
     const { handle, stream, events, fakeQuery, collected } = await startSessionWithStream();
 
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     await handle.send({ type: 'user', content: 'run a long tool' });
+
+    // Streaming arguments are upstream work. Progress keeps refreshing its budget,
+    // even when the total argument-generation duration exceeds that budget.
+    stream.emit({
+      type: 'stream_event',
+      event: { type: 'content_block_start', index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_long', name: 'Bash', input: {} } },
+    });
+    await vi.advanceTimersByTimeAsync(5);
+    for (let i = 0; i < 3; i++) {
+      await vi.advanceTimersByTimeAsync(60_000);
+      stream.emit({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0,
+          delta: { type: 'input_json_delta', partial_json: i === 0 ? '{"command":"' : 'x' } },
+      });
+      await vi.advanceTimersByTimeAsync(5);
+      expect(fakeQuery.interrupt).not.toHaveBeenCalled();
+    }
 
     // assistant 发起 tool_use → ball 交回客户端,watchdog 停表。
     stream.emit(assistantToolUse('toolu_long'));
@@ -402,6 +472,35 @@ describe('upstream-response-idle watchdog suspend awareness', () => {
     stream.end();
     await handle.close().catch(() => undefined);
     await collected;
+  });
+
+  it('permission waiting before a complete assistant message pauses the idle watchdog', async () => {
+    process.env.XDT_CC_SSE_IDLE_TIMEOUT_MS = '120000';
+    const { handle, stream, events, fakeQuery, collected } = await startSessionWithStream();
+    type CanUseTool = (tool: string, input: Record<string, unknown>, opts: { toolUseID: string }) => Promise<unknown>;
+    const canUseTool = (sdkMock.query.mock.calls.at(-1)?.[0] as { options: { canUseTool: CanUseTool } }).options.canUseTool;
+    const resolver = vi.fn(() => new Promise<never>(() => {}));
+    handle.setInteractionResolver?.(resolver);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      await handle.send({ type: 'user', content: 'wait for confirmation' });
+      stream.emit({
+        type: 'stream_event',
+        event: { type: 'content_block_start', index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_approval', name: 'Bash', input: {} } },
+      });
+      await vi.advanceTimersByTimeAsync(5);
+      void canUseTool('Bash', { command: 'rm -rf build' }, { toolUseID: 'toolu_approval' });
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(resolver).toHaveBeenCalledOnce();
+      expect(idleTimeoutError(events)).toBeUndefined();
+      expect(fakeQuery.interrupt).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      stream.end();
+      await handle.close().catch(() => undefined);
+      await collected;
+    }
   });
 
   it('turn 正常结束 → 清表,不再开火', async () => {
