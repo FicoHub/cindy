@@ -5516,6 +5516,7 @@ function CCAgentSessionContent({
                       onCancel={() => cancelPlanReview(pendingPlanReview.requestId)}
                     />
                     <PlanActionCard
+                      keyboardShortcutsEnabled={ownsHardwareTaskActions}
                       requestId={pendingPlanReview.requestId}
                       onRespond={respondToPlanReview}
                       onCancel={cancelPlanReview}
@@ -5530,6 +5531,7 @@ function CCAgentSessionContent({
                   />
                 ) : pendingAskUser ? (
                   <AskUserQuestionPrompt
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     sessionId={sessionId}
                     pending={pendingAskUser}
                     onAnswer={answerUserQuestion}
@@ -5551,6 +5553,7 @@ function CCAgentSessionContent({
                   />
                 ) : pendingIssueConfirm && sessionId ? (
                   <IssueConfirmCard
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     key={`${sessionId}:${pendingIssueConfirm.requestId}`}
                     sessionId={sessionId}
                     pending={pendingIssueConfirm}
@@ -5558,11 +5561,13 @@ function CCAgentSessionContent({
                   />
                 ) : pendingRenameSessionsConfirm ? (
                   <RenameSessionsConfirmCard
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     pending={pendingRenameSessionsConfirm}
                     onRespond={respondToRenameSessionsConfirm}
                   />
                 ) : pendingGhostGrantConfirm ? (
                   <GhostGrantConfirmCard
+                    keyboardShortcutsEnabled={ownsHardwareTaskActions}
                     key={pendingGhostGrantConfirm.requestId}
                     pending={pendingGhostGrantConfirm}
                     onRespond={respondToGhostGrantConfirm}

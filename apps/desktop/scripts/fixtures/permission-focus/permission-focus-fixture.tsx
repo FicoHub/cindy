@@ -16,6 +16,7 @@ import {
 import { SessionCard } from '../../../src/renderer/features/cc-agent/sidebar/SessionCard';
 import { SessionEntryList } from '../../../src/renderer/features/cc-agent/sidebar/SessionEntryList';
 import { CardMasonry } from '../../../src/renderer/features/cc-agent/sidebar/CardMasonry';
+import { SyntheticInteraction, type InteractionKind } from './interaction-cards';
 import { PermissionPrompt } from '../../../src/renderer/components/new-chat/PermissionPrompt';
 import { shouldCardShortcutYield } from '../../../src/renderer/lib/editableKeyboardTarget';
 import type { Session } from '../../../src/renderer/lib/ccAgent.types';
@@ -96,6 +97,7 @@ function Fixture() {
   data.pending = active;
   const layout = query.get('layout') ?? 'rows';
   const mountedOrder = query.get('split')?.split(',');
+  const cardKinds = { A: query.get('cardA'), B: query.get('cardB') };
   const width = layout === 'three' ? 466 : layout === 'two' ? 340 : 240;
   const row = (session: Session) => {
     const Component = layout === 'rows' ? SessionItem : SessionCard;
@@ -171,7 +173,11 @@ function Fixture() {
           <section className="fixture-chat">
             <p>两个模拟待授权任务：鼠标切换后直接使用快捷键。</p>
             <div data-permission>
-              {pending && (mountedOrder ?? [active]).map((id) => (
+              {pending && (mountedOrder ?? [active]).map((id) => cardKinds.A ? (
+                <SyntheticInteraction key={id} kind={cardKinds[id as 'A' | 'B'] as InteractionKind}
+                  session={id} enabled={id === active}
+                  onRespond={(session, request, result) => data.responses.push({ session, request, result })} />
+              ) : (
                 <PermissionPrompt
                   key={mountedOrder ? id : 'current'}
                   keyboardShortcutsEnabled={id === active}

@@ -2,6 +2,7 @@
 // Isolated production-component layout regression; no Electron or device connections.
 // Run: node apps/desktop/scripts/check-permission-focus.mjs [Chromium executable] [screenshot directory]
 // --split-only isolates dual-mounted requests; --expect-split-broken checks their pre-fix failure.
+// --cards-only checks all six decision-card consumers; --expect-cards-broken records the baseline.
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync as fsWrite } from 'node:fs';
 import os from 'node:os';
@@ -20,6 +21,8 @@ const screenshots = process.argv[3];
 const baseline = process.argv.includes('--expect-broken');
 const splitOnly = process.argv.includes('--split-only');
 const filesOnly = process.argv.includes('--files-only');
+const cardsOnly = process.argv.includes('--cards-only');
+const cardsBaseline = process.argv.includes('--expect-cards-broken');
 const filesBaseline = process.argv.includes('--expect-files-broken');
 const splitBaseline = process.argv.includes('--expect-split-broken');
 if (screenshots) mkdirSync(screenshots, { recursive: true });
@@ -122,7 +125,7 @@ try {
   );
   page.setDefaultTimeout(8000);
   const results = [];
-  for (const theme of (splitOnly || filesOnly) ? [] : ['light', 'dark']) {
+  for (const theme of (splitOnly || filesOnly || cardsOnly) ? [] : ['light', 'dark']) {
     for (const layout of ['rows', 'rail', 'one', 'two', 'three']) {
       for (const key of ['Enter', 'Control+Enter', 'Escape']) {
         await page.setViewportSize({ width: 1280, height: 760 });
@@ -167,7 +170,7 @@ try {
     }
   }
   let safetyCases = 0;
-  for (const layout of (splitOnly || filesOnly) ? [] : ['rows', 'one']) {
+  for (const layout of (splitOnly || filesOnly || cardsOnly) ? [] : ['rows', 'one']) {
     const open = async (suffix = '') => {
       await page.goto(`http://fixture.local/?layout=${layout}${suffix}`);
       await page.locator('[data-session-id="B"]').waitFor();
@@ -250,7 +253,7 @@ try {
   );
   let misrouted = 0;
   const splitResults = [];
-  for (const theme of (baseline || filesOnly) ? [] : ['light', 'dark']) {
+  for (const theme of (baseline || filesOnly || cardsOnly) ? [] : ['light', 'dark']) {
     for (const layout of ['rows', 'one']) {
       for (const order of ['A,B', 'B,A']) {
         for (const key of ['Enter', 'Control+Enter', 'Escape']) {
@@ -296,7 +299,7 @@ try {
     `Split panes: ${splitResults.length} pointer/key cases; ${misrouted} wrong-request responses (${splitBaseline ? 'baseline reproduction' : 'must be zero'})`,
   );
   const filesResults = [];
-  for (const layout of (baseline || splitOnly) ? [] : ['rows', 'one']) {
+  for (const layout of (baseline || splitOnly || cardsOnly) ? [] : ['rows', 'one']) {
     for (const theme of ['light', 'dark']) {
       for (const key of ['Enter', 'Control+Enter', 'Escape']) {
         await page.goto(`http://fixture.local/?files&layout=${layout}&theme=${theme}`);
@@ -321,7 +324,7 @@ try {
     }
   }
   let filesSafetyCases = 0;
-  if (!baseline && !splitOnly && !filesBaseline) {
+  if (!baseline && !splitOnly && !filesBaseline && !cardsOnly) {
     for (const layout of ['rows', 'one']) {
       for (const cancel of ['none', 'keyboard', 'focus']) {
         await page.goto(`http://fixture.local/?files&defer&layout=${layout}`);
@@ -353,8 +356,44 @@ try {
     JSON.stringify(filesResults, null, 2),
   );
   console.log(`${filesBaseline ? 'Reproduced' : 'Passed'}: ${filesResults.length} files-to-same-task persistent portal cases`);
+  const cardResults = [];
+  let wrongCardResponses = 0;
+  if (cardsOnly) {
+    const kinds = ['plan', 'ask', 'permission', 'issue', 'rename', 'ghost'];
+    for (const theme of ['light', 'dark']) {
+      for (const order of ['A,B', 'B,A']) {
+        const cases = kinds.flatMap((a) => kinds.map((b) => ({ a, b, key: 'Escape' })));
+        cases.push(...kinds.map((kind) => ({ a: kind, b: kind,
+          key: kind === 'plan' ? 'Enter' : kind === 'ask' ? '1' : 'Control+Enter' })));
+        for (const { a, b, key } of cases) {
+          await page.setViewportSize({ width: 1440, height: 1800 });
+          await page.goto(`http://fixture.local/?layout=rows&theme=${theme}&split=${order}&cardA=${a}&cardB=${b}`);
+          if (key === 'Control+Enter' && b === 'issue') {
+            await page.locator('[data-interaction-session="A"]').getByRole('checkbox').check();
+            await page.locator('[data-interaction-session="B"]').getByRole('checkbox').check();
+          }
+          await page.locator('[data-session-id="B"]').click();
+          assert.equal(await page.evaluate(() => document.activeElement.tagName), 'BODY');
+          await page.keyboard.press(key);
+          const result = await page.evaluate(() => window.permissionFocus);
+          const correct = result.responses.length === 1 &&
+            result.responses[0].session === 'B' && result.responses[0].request === 'request-B';
+          cardResults.push({ theme, order, a, b, key, responses: result.responses, events: result.events });
+          if (!correct) wrongCardResponses++;
+          if (!cardsBaseline) assert.ok(correct, `${theme} ${order} ${a}/${b} ${key}: ${JSON.stringify(result.responses)}`);
+        }
+      }
+    }
+    if (cardsBaseline) assert.ok(wrongCardResponses > 0);
+    else assert.equal(wrongCardResponses, 0);
+    if (screenshots) fsWrite(
+      path.join(screenshots, `${cardsBaseline ? 'before' : 'after'}-cards-events.json`),
+      JSON.stringify(cardResults, null, 2),
+    );
+    console.log(`Interaction cards: ${cardResults.length} actual pointer/key cases; ${wrongCardResponses} wrong-request responses`);
+  }
   assert.deepEqual(errors, []);
-  if (screenshots && !splitOnly && !filesOnly)
+  if (screenshots && !splitOnly && !filesOnly && !cardsOnly)
     fsWrite(
       path.join(screenshots, `${baseline ? 'before' : 'after'}-events.json`),
       JSON.stringify(results, null, 2),
