@@ -253,8 +253,14 @@ it('real ticket binary roundtrip, replay isolation, bounded read and symlink rep
   const bounded = vault.take('g', ticket())!;
   await expect(bounded.files[0].read(3)).rejects.toThrow();
   const switched = vault.take('g', ticket())!;
-  await fs.unlink(file);
-  await fs.symlink('/etc/hosts', file);
+  const moved = root + '-moved',
+    replacement = root + '-replacement';
+  dirs.push(moved, replacement);
+  await fs.rename(root, moved);
+  await fs.mkdir(replacement);
+  await fs.writeFile(path.join(replacement, 'a.bin'), 'replacement');
+  // Directory junctions exercise the same boundary on Windows without admin privileges.
+  await fs.symlink(replacement, root, process.platform === 'win32' ? 'junction' : 'dir');
   await expect(switched.files[0].read(100)).rejects.toThrow();
 });
 it('JSON placeholders reject prototype keys, duplicate destinations, invalid template and non-null values', () => {
