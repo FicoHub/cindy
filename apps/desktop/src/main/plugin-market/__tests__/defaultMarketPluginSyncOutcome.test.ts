@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { app } from 'electron';
 
 import type { PluginMarketSnapshot } from '../../../shared/pluginMarket';
 import { defaultMarketPluginSyncOutcome, syncDefaultMarketPlugins } from '../registerIpc';
@@ -74,6 +75,41 @@ describe('startup does not await custom Git network work', () => {
       await startup;
       await new Promise(resolve => setImmediate(resolve));
       service.mockRestore(); owner.mockRestore();
+    }
+  });
+});
+
+describe('background Git refresh respects shared-passive ownership', () => {
+  it.each([
+    { name: 'shared passive preview', packaged: false, sharedPassive: '1', schedulerPassive: '1', refreshes: 0 },
+    { name: 'primary dev instance', packaged: false, sharedPassive: undefined, schedulerPassive: undefined, refreshes: 2 },
+    { name: 'isolated scheduler-passive instance', packaged: false, sharedPassive: undefined, schedulerPassive: '1', refreshes: 2 },
+    { name: 'packaged app with ambient passive flags', packaged: true, sharedPassive: '1', schedulerPassive: '1', refreshes: 2 },
+  ])('$name preserves reconciliation and permits $refreshes background calls', async scenario => {
+    const packagedDescriptor = Object.getOwnPropertyDescriptor(app, 'isPackaged');
+    Object.defineProperty(app, 'isPackaged', { configurable: true, value: scenario.packaged });
+    vi.stubEnv('XDT_PASSIVE_SHARED_USER_DATA', scenario.sharedPassive);
+    vi.stubEnv('XDT_SCHEDULER_PASSIVE', scenario.schedulerPassive);
+    const refresh = vi.fn(async () => null);
+    const reconcile = vi.fn(async () => snapshot(null));
+    const owner = vi.spyOn(sessions, 'getActiveAppSession').mockReturnValue({ mode: 'cloud', dataOwnerId: 'user-1', generation: 1 });
+    const service = vi.spyOn(marketService, 'getPluginMarketService').mockReturnValue({
+      snapshot: reconcile,
+      hasPendingRemovalNotice: vi.fn(() => false),
+      refreshCustomGitSourcesForBackground: refresh,
+    } as never);
+    try {
+      // Focus and the periodic task share this entry without the auth startup gate.
+      expect(await syncDefaultMarketPlugins()).toBe('completed');
+      expect(await syncDefaultMarketPlugins()).toBe('completed');
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      expect(refresh).toHaveBeenCalledTimes(scenario.refreshes);
+    } finally {
+      await new Promise(resolve => setImmediate(resolve));
+      service.mockRestore(); owner.mockRestore();
+      vi.unstubAllEnvs();
+      if (packagedDescriptor) Object.defineProperty(app, 'isPackaged', packagedDescriptor);
+      else Reflect.deleteProperty(app, 'isPackaged');
     }
   });
 });
