@@ -3,7 +3,7 @@ import { act, createContext, useEffect, useImperativeHandle, useRef, useState, t
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
-const state = vi.hoisted(() => ({ focused: true, onTask: true, width: 390, height: 844, native: false, upgrade: false, requireAncestor: false }));
+const state = vi.hoisted(() => ({ focused: true, onTask: true, width: 390, height: 844, native: false, upgrade: false, requireAncestor: false, residentEnabled: true, reduceMotion: true }));
 vi.mock('@/session/NativeResidentHistory', () => {
   const Host = ({ children, surfaceId }: { children: ReactNode; surfaceId: string }) => <div data-host={surfaceId}>{children}</div>;
   const Slot = ({ surfaceId, selected }: { surfaceId: string; selected: boolean }) => <div data-slot={surfaceId} data-selected={selected} />;
@@ -20,8 +20,8 @@ vi.mock('@/platform/AdaptiveWindowContext', () => ({
   PaneViewportProvider: ({ children }: { children: ReactNode }) => children,
 }));
 vi.mock('@/session/useHomeMode', () => ({ useHomeMode: () => ({ mode: 'tasks' }) }));
-vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => true }));
-vi.mock('@/session/sessionPaneLayout', () => ({ sessionPaneLayout: () => ({ persistent: true }) }));
+vi.mock('@/hooks/useReduceMotion', () => ({ useReduceMotionEnabled: () => state.reduceMotion }));
+vi.mock('@/session/sessionPaneLayout', () => ({ sessionPaneLayout: () => ({ persistent: state.residentEnabled }) }));
 vi.mock('@/session/remoteSessionStore', () => ({
   RemoteSessionStoreSubscriptionGate: ({ children, enabled }: { children: ReactNode; enabled: boolean }) =>
     <div data-store-gate={String(enabled)}>{children}</div>,
@@ -29,17 +29,21 @@ vi.mock('@/session/remoteSessionStore', () => ({
 vi.mock('react-native-reanimated', () => ({
   useSharedValue: (value: number) => useRef({ value }).current,
   useAnimatedStyle: (factory: () => unknown) => factory(),
-  cancelAnimation: () => {}, withSpring: (target: number) => target,
+  cancelAnimation: () => {}, withSpring: (target: number) => target, withTiming: (target: number) => target,
+  Easing: { bezier: () => undefined }, runOnJS: (fn: unknown) => fn,
   default: {
-    View: ({ children, pointerEvents, style }: { children: ReactNode; pointerEvents?: string; style?: unknown }) =>
-      <div data-resident-host="true" data-input={pointerEvents} data-layout={JSON.stringify(style)}>{children}</div>,
+    View: ({ children, pointerEvents, style, testID }: { children: ReactNode; pointerEvents?: string; style?: unknown; testID?: string }) =>
+      <div data-resident-host={pointerEvents ? "true" : undefined} data-testid={testID} data-input={pointerEvents} data-layout={JSON.stringify(style)}>{children}</div>,
   },
 }));
 vi.mock('react-native', () => ({
   Platform: { OS: 'android' },
+  AccessibilityInfo: { setAccessibilityFocus: () => {} },
+  BackHandler: { addEventListener: () => ({ remove() {} }) }, findNodeHandle: () => null,
+  Pressable: ({ onPress, testID }: { onPress(): void; testID?: string }) => <button onClick={onPress} data-testid={testID} />,
   StyleSheet: { create: (styles: unknown) => styles },
-  View: ({ children, pointerEvents, accessibilityElementsHidden, ref, style, onLayout }: {
-    children: ReactNode; pointerEvents?: string; accessibilityElementsHidden?: boolean; ref: Ref<unknown>; style?: unknown; onLayout?: () => void;
+  View: ({ children, pointerEvents, accessibilityElementsHidden, ref, style, onLayout, testID }: {
+    children: ReactNode; pointerEvents?: string; accessibilityElementsHidden?: boolean; ref: Ref<unknown>; style?: unknown; onLayout?: () => void; testID?: string;
   }) => {
     const node = useRef<HTMLDivElement>(null);
     useImperativeHandle(ref, () => ({
@@ -53,9 +57,27 @@ vi.mock('react-native', () => ({
       },
     }));
     useEffect(() => { onLayout?.(); }, [onLayout]);
-    return <div ref={node} data-input={pointerEvents} aria-hidden={accessibilityElementsHidden} data-layout={JSON.stringify(style)}>{children}</div>;
+    return <div ref={node} data-testid={testID} data-drawer={testID === 'sessionDrawer.overlay' ? "true" : undefined} data-input={pointerEvents} aria-hidden={accessibilityElementsHidden} data-layout={JSON.stringify(style)}>{children}</div>;
   },
 }));
+vi.mock('@/session/HomeSurface', () => ({ MobileHome: (props: import('@/session/HomeSurface').MobileHomeProps) => {
+  const resident = useResidentHomeList();
+  const row = <button data-drawer-task-list="true" onClick={() => props.runNavigation?.(() => props.onSelectSession?.({ session: { id: 'next' } } as never))}>Demo task</button>;
+  return resident.enabled ? <ResidentHomeList focused top={0} left={0} right={0}>{row}</ResidentHomeList> : row;
+} }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, left: 0, bottom: 0 }) }));
+vi.mock('@/theme', () => ({ useThemedStyles: () => ({}), useTheme: () => ({ colors: {} }) }));
+vi.mock('@/platform/gestureHandler', () => ({
+  GestureDetector: ({ children }: { children: ReactNode }) => children,
+  Gesture: { Pan: () => {
+    const chain = { enabled: () => chain, activeOffsetX: () => chain, failOffsetX: () => chain,
+      failOffsetY: () => chain, onUpdate: () => chain, onEnd: () => chain };
+    return chain;
+  } },
+}));
+import { SessionListDrawerLayer } from '@/session/SessionListDrawerLayer';
+import { motionDuration } from '@/theme/tokens';
 import { RecentMessageHistories, RecentMessageHistoriesProvider, MessageHistoryOverlay, useMessageHistoryActive, useMessageHistoryPositioning } from '@/session/RecentMessageHistories';
 import { ResidentHomeList, ResidentHomeListProvider, useResidentHomeList } from '@/session/ResidentHomeList';
 import { recentTaskKey, rememberRecentTask } from '@/session/recentTasks';
@@ -101,10 +123,11 @@ describe('resident five-task message lists outside route lifetimes', () => {
     setMobileAuthOwner(null); setMobileAuthOwner('one'); state.focused = true; state.onTask = true;
     state.width = 390; state.height = 844;
     state.native = false; state.upgrade = false; state.requireAncestor = false;
+    state.residentEnabled = true; state.reduceMotion = true;
     mounts.clear(); unmounts.length = 0;
     container = document.createElement('div'); root = createRoot(container);
   });
-  afterEach(async () => { await act(async () => root.unmount()); });
+  afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(); });
   it('keeps the exact list instance after its route is destroyed, then publishes fresh props', async () => {
     await show('a');
     const original = container.querySelector<HTMLButtonElement>('[data-task="a"]')!;
@@ -250,7 +273,8 @@ describe('resident five-task message lists outside route lifetimes', () => {
           <ResidentHomeListProvider>
             {home ? <ResidentHomeList focused top={0} left={0} right={0}>
               <button data-home-list="true">Home tasks</button>
-            </ResidentHomeList> : <MessageHistoryOverlay inline><DrawerHomeProbe /></MessageHistoryOverlay>}
+            </ResidentHomeList> : <SessionListDrawerLayer currentSessionId="demo" persistent overlayMounted={false}
+              sidebarWidth={286} width={320} open={false} onClose={() => {}} onSelectSession={() => {}} runNavigation={action => action()} />}
           </ResidentHomeListProvider>
         </RecentMessageHistoriesProvider>,
       ));
@@ -269,18 +293,43 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(drawer.compareDocumentPosition(residentHost!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(drawer.closest('[data-layout*="zIndex"]')).toBeNull();
   });
-  it('removes the outer overlay when a modal becomes a persistent column and restores it on collapse', async () => {
-    const render = async (inline: boolean) => act(async () => root.render(
-      <RecentMessageHistoriesProvider><ResidentHomeListProvider>
-        <MessageHistoryOverlay inline={inline}><DrawerHomeProbe /></MessageHistoryOverlay>
-      </ResidentHomeListProvider></RecentMessageHistoriesProvider>,
+  // Production page composition: the layer owns both the drawer presentation and
+  // its history host. Previously tests passed inline directly and missed wiring.
+  // Unit regression: start closing a modal, widen before exit, then drain timers.
+  it('settles the real modal once before moving its persistent column into the resident host', async () => {
+    vi.useFakeTimers();
+    state.requireAncestor = true; state.reduceMotion = false; state.residentEnabled = false;
+    state.width = 840; state.height = 390;
+    const closed = vi.fn(); const navigate = vi.fn();
+    function Page({ persistent }: { persistent: boolean }) {
+      const [overlayMounted, setOverlayMounted] = useState(true);
+      const [open, setOpen] = useState(true);
+      const pending = useRef<(() => void) | null>(null);
+      return <SessionListDrawerLayer currentSessionId="demo" persistent={persistent} overlayMounted={overlayMounted}
+        sidebarWidth={286} width={320} open={open} onClose={() => setOpen(false)}
+        runNavigation={action => { pending.current = action; setOpen(false); }} onSelectSession={navigate}
+        onClosed={() => { closed(); setOverlayMounted(false); const action = pending.current; pending.current = null; action?.(); }} />;
+    }
+    const render = async (persistent: boolean) => act(async () => root.render(
+      <RecentMessageHistoriesProvider><ResidentHomeListProvider><Page persistent={persistent} /></ResidentHomeListProvider></RecentMessageHistoriesProvider>,
     ));
     const outerDrawers = () => container.querySelectorAll('[data-layout*="zIndex"] [data-drawer="true"]');
-    await render(false); expect(outerDrawers()).toHaveLength(1);
-    await render(true); expect(outerDrawers()).toHaveLength(0);
+    await render(false);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-drawer-task-list="true"]')!.click());
+    state.residentEnabled = true; state.height = 640;
+    await render(true);
+    expect(outerDrawers()).toHaveLength(1);
+    expect(container.querySelector('[data-testid="sessionDrawer.scrim"]')).not.toBeNull();
+    expect(closed).not.toHaveBeenCalled(); expect(navigate).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(motionDuration.exit));
+    expect(closed).toHaveBeenCalledOnce(); expect(navigate).toHaveBeenCalledOnce();
+    expect(outerDrawers()).toHaveLength(0);
+    expect(container.querySelector('[data-testid="sessionDrawer.scrim"]')).toBeNull();
     expect(container.querySelectorAll('[data-drawer="true"]')).toHaveLength(1);
-    await render(false); expect(outerDrawers()).toHaveLength(1);
-    expect(container.querySelectorAll('[data-drawer="true"]')).toHaveLength(1);
+    expect(container.querySelector('[data-resident-host="true"] [data-drawer-task-list="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-resident-host="true"]')?.getAttribute('data-layout')).toContain('"width":286');
+    await act(async () => vi.advanceTimersByTime(motionDuration.enter + motionDuration.exit));
+    expect(closed).toHaveBeenCalledOnce(); expect(navigate).toHaveBeenCalledOnce();
   });
   it('clears all instances at an account boundary', async () => {
     await show('a'); await show('b');
