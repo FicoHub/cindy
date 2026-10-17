@@ -3,7 +3,7 @@ import { act, createContext, useEffect, useImperativeHandle, useRef, useState, t
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setMobileAuthOwner } from '@/auth/authOwnerGeneration';
-const state = vi.hoisted(() => ({ focused: true, onTask: true, width: 390, height: 844, native: false, upgrade: false }));
+const state = vi.hoisted(() => ({ focused: true, onTask: true, width: 390, height: 844, native: false, upgrade: false, requireAncestor: false }));
 vi.mock('@/session/NativeResidentHistory', () => {
   const Host = ({ children, surfaceId }: { children: ReactNode; surfaceId: string }) => <div data-host={surfaceId}>{children}</div>;
   const Slot = ({ surfaceId, selected }: { surfaceId: string; selected: boolean }) => <div data-slot={surfaceId} data-selected={selected} />;
@@ -36,16 +36,24 @@ vi.mock('react-native-reanimated', () => ({
   },
 }));
 vi.mock('react-native', () => ({
+  Platform: { OS: 'android' },
   StyleSheet: { create: (styles: unknown) => styles },
   View: ({ children, pointerEvents, accessibilityElementsHidden, ref, style, onLayout }: {
     children: ReactNode; pointerEvents?: string; accessibilityElementsHidden?: boolean; ref: Ref<unknown>; style?: unknown; onLayout?: () => void;
   }) => {
+    const node = useRef<HTMLDivElement>(null);
     useImperativeHandle(ref, () => ({
+      node: node.current,
       measureInWindow: (fn: (...args: number[]) => void) => fn(0, 0, state.width, state.height),
-      measureLayout: (_host: unknown, fn: (...args: number[]) => void) => fn(0, 0, state.width, state.height),
+      // Fabric measureLayout requires the target to be a native ancestor.
+      measureLayout: (host: { node: HTMLDivElement }, fn: (...args: number[]) => void) => {
+        if (state.requireAncestor && !host.node.contains(node.current)) return;
+        const sidebar = state.requireAncestor && node.current?.closest('[data-drawer="true"]');
+        fn(0, sidebar ? 72 : 0, sidebar ? 286 : state.width, sidebar ? state.height - 72 : state.height);
+      },
     }));
     useEffect(() => { onLayout?.(); }, [onLayout]);
-    return <div data-input={pointerEvents} aria-hidden={accessibilityElementsHidden} data-layout={JSON.stringify(style)}>{children}</div>;
+    return <div ref={node} data-input={pointerEvents} aria-hidden={accessibilityElementsHidden} data-layout={JSON.stringify(style)}>{children}</div>;
   },
 }));
 import { RecentMessageHistories, RecentMessageHistoriesProvider, MessageHistoryOverlay, useMessageHistoryActive, useMessageHistoryPositioning } from '@/session/RecentMessageHistories';
@@ -92,7 +100,7 @@ describe('resident five-task message lists outside route lifetimes', () => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     setMobileAuthOwner(null); setMobileAuthOwner('one'); state.focused = true; state.onTask = true;
     state.width = 390; state.height = 844;
-    state.native = false; state.upgrade = false;
+    state.native = false; state.upgrade = false; state.requireAncestor = false;
     mounts.clear(); unmounts.length = 0;
     container = document.createElement('div'); root = createRoot(container);
   });
@@ -232,6 +240,48 @@ describe('resident five-task message lists outside route lifetimes', () => {
     expect(drawer.closest('[data-layout]')?.getAttribute('data-layout')).toContain('"zIndex":40');
   });
 
+  it.each([false, true])('keeps a persistent sidebar measurable and above its background (home first: %s)', async (homeFirst) => {
+    state.requireAncestor = true;
+    state.width = 840; state.height = 640;
+    const render = async (home: boolean) => {
+      state.onTask = !home;
+      await act(async () => root.render(
+        <RecentMessageHistoriesProvider>
+          <ResidentHomeListProvider>
+            {home ? <ResidentHomeList focused top={0} left={0} right={0}>
+              <button data-home-list="true">Home tasks</button>
+            </ResidentHomeList> : <MessageHistoryOverlay inline><DrawerHomeProbe /></MessageHistoryOverlay>}
+          </ResidentHomeListProvider>
+        </RecentMessageHistoriesProvider>,
+      ));
+    };
+    if (homeFirst) await render(true);
+    await render(false);
+    const drawer = container.querySelector('[data-drawer="true"]')!;
+    const residentHost = container.querySelector('[data-resident-host="true"]');
+    expect(residentHost, 'the measuring slot must remain a native descendant of the resident host').not.toBeNull();
+    expect(residentHost?.querySelector('[data-drawer-task-list="true"]')).not.toBeNull();
+    expect(residentHost?.getAttribute('data-layout')).toContain('"width":286');
+    expect(residentHost?.getAttribute('data-layout')).toContain('"top":72');
+    expect(container.querySelector('[data-home-list="true"]')).toBeNull();
+    // The opaque panel belongs to the route before the resident list, never to
+    // the outer overlay that would paint over that list and retain stale bounds.
+    expect(drawer.compareDocumentPosition(residentHost!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(drawer.closest('[data-layout*="zIndex"]')).toBeNull();
+  });
+  it('removes the outer overlay when a modal becomes a persistent column and restores it on collapse', async () => {
+    const render = async (inline: boolean) => act(async () => root.render(
+      <RecentMessageHistoriesProvider><ResidentHomeListProvider>
+        <MessageHistoryOverlay inline={inline}><DrawerHomeProbe /></MessageHistoryOverlay>
+      </ResidentHomeListProvider></RecentMessageHistoriesProvider>,
+    ));
+    const outerDrawers = () => container.querySelectorAll('[data-layout*="zIndex"] [data-drawer="true"]');
+    await render(false); expect(outerDrawers()).toHaveLength(1);
+    await render(true); expect(outerDrawers()).toHaveLength(0);
+    expect(container.querySelectorAll('[data-drawer="true"]')).toHaveLength(1);
+    await render(false); expect(outerDrawers()).toHaveLength(1);
+    expect(container.querySelectorAll('[data-drawer="true"]')).toHaveLength(1);
+  });
   it('clears all instances at an account boundary', async () => {
     await show('a'); await show('b');
     await act(async () => setMobileAuthOwner('two'));

@@ -10783,8 +10783,8 @@ function SessionScreenContent() {
         onDismiss={dismissTransientNotice}
         top={Math.max(topOverlayHeight, insets.top + 44) + spacing.sm}
       />
-      <MessageHistoryOverlay>
-        {/* Keep the drawer above resident histories, including its closing animation. */}
+      <MessageHistoryOverlay inline={paneLayout.persistent && !sessionListDrawerOverlayMounted}>
+        {/* Only modal drawers cover histories. Keep their closing animation in the overlay. */}
         <SessionListDrawer
           newSessionActionRef={homeNewSessionActionRef}
           newSessionInSystemBar={paneLayout.persistent && Platform.OS === 'ios' && adaptiveWindow.barEdge !== 'none'}
