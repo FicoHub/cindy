@@ -32,6 +32,7 @@ describe('maker:event hot path ordering', () => {
     const cleared = vi.fn();
     const deps = {
       pendingCredentialSwitchHolder: null, deferredCodexRestartHolder: null,
+      gatewayCodexRestartHolder: { onSessionSettled: vi.fn() },
       agentInputCoordinatorHolder: null,
       refreshRemoteCodexMcpOnTurnSettledHolder: () => { throw new Error('App session is switching'); },
       gitSnapshotCoordinator: { onSessionClosed: vi.fn() },
@@ -45,6 +46,7 @@ describe('maker:event hot path ordering', () => {
     };
     const cleanup = new Function(...Object.keys(deps), `${js}; return cleanupClosedSessionRuntime;`)(...Object.values(deps));
     expect(() => cleanup({ id: 'departing-task' })).not.toThrow();
+    expect(deps.gatewayCodexRestartHolder.onSessionSettled).toHaveBeenCalledOnce();
     expect(cleared).toHaveBeenCalledWith('departing-task');
     expect(deps.clearSessionPersistState).toHaveBeenCalledWith('departing-task');
     expect(deps.handleAgentIslandSessionClosedAfterCleanup).toHaveBeenCalledWith('departing-task', 'process-closed');
@@ -495,6 +497,21 @@ describe('maker:event hot path ordering', () => {
       closedBlock,
       'agentInputCoordinatorHolder?.onSessionClosed(session.id, options);',
       'gitSnapshotCoordinator?.onSessionClosed(session.id);',
+    );
+  });
+
+  it('wakes queued input only for runtime self-closes, not direct product closes', () => {
+    const closedBlock = extractSessionCloseAdaptersSource();
+
+    // 'unexpected' only means no Maker reason was recorded; IM /new and archive
+    // sync close sessions directly and must not resurrect the old task's queue.
+    expect(closedBlock).toContain(
+      "wakeQueuedInput: context.closeReason === 'unexpected' && session.wasClosedByRuntime(),",
+    );
+    expectOrder(
+      closedBlock,
+      'wakeQueuedInput:',
+      'agentInputCoordinatorHolder?.onSessionClosed(session.id, options);',
     );
   });
 
