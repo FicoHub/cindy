@@ -1,17 +1,18 @@
 // @vitest-environment jsdom
 /**
  * 工作台「一眼」：真实的 BotWorkbench + botGlance（读取、订阅、按电脑改写、允许），只隔离宿主
- * IPC、设备清单、路由与 toast。依据：伙伴自主跟进方案的工作台合同——两块（等你 / 在做）+ 一行
+ * IPC、设备清单、路由目标解析与 toast，保留真实 React Router。依据：伙伴自主跟进方案的工作台合同——两块（等你 / 在做）+ 一行
  * 页脚 + 两块都空时的安静状态；「允许」只回应那一行的那条权限请求，请求不在了改为打开任务，
  * 别的电脑离线时不能替主人操作。
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { ReactElement, ReactNode } from 'react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { BotGlance, GlanceRow } from '../../../../shared/botAutonomy';
 
 const m = vi.hoisted(() => ({
-  navigate: vi.fn(),
   toastWarning: vi.fn(),
   toastError: vi.fn(),
   remoteApi: { getPendingInteractions: vi.fn(), resolveInteraction: vi.fn() },
@@ -29,7 +30,6 @@ function deviceList(studio: Record<string, unknown> = {}) {
     { deviceId: 'dev-2', name: 'Studio', isSelf: false, ...controllable, ...studio },
   ];
 }
-vi.mock('react-router-dom', () => ({ useNavigate: () => m.navigate }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, values?: Record<string, unknown>) =>
@@ -41,7 +41,6 @@ vi.mock('@/features/device-link/useDeviceLinkDeviceList', () => ({
   useDeviceLinkDeviceList: () => m.devices,
 }));
 vi.mock('@/lib/remoteDataOwnerPushFence', () => ({ isDeviceLinkRemotePushCurrent: () => true }));
-vi.mock('@/lib/sidebarWindow', () => ({ isSidebarWindow: () => false }));
 vi.mock('@/lib/orcaSessionIdentity', () => ({ resolveSessionRoute: m.resolveRoute }));
 vi.mock('@/features/device-link/remoteProjectsStore', () => ({
   remoteProjectsStore: { pinSessionOrigin: m.pinSessionOrigin, getMergedRemoteSessions: () => m.mirrored },
@@ -82,6 +81,18 @@ function permission(requestId: string) {
   return { request: { kind: 'permission', requestId } };
 }
 
+function RouteLocation() {
+  return <output data-testid="route">{useLocation().pathname}</output>;
+}
+
+function MainWindow({ children }: { children: ReactNode }) {
+  return <MemoryRouter initialEntries={['/bots/bot-1']}>{children}<RouteLocation /></MemoryRouter>;
+}
+
+function renderWorkbench(element: ReactElement) {
+  return render(element, { wrapper: MainWindow });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   listeners = [];
@@ -104,11 +115,52 @@ beforeEach(() => {
   };
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.history.replaceState(null, '', '/');
+});
+
+// #6446：旧测试 mock useNavigate 且固定主窗口，漏掉无 Router 首次渲染崩溃。
+// 最小失败输入：真实 BotWorkbench、?sidebarWindow=1、无 Router。tier：renderer unit。
+// 通过内容 / 空态、允许回执及重挂载后的导航结果验证，不把组件重挂载等同于原生窗口验收。
+it('renders a detached workbench without a Router and keeps the quiet state after reopening', async () => {
+  window.history.replaceState(null, '', '/?sidebarWindow=1');
+  glanceApi.mockResolvedValue(glance());
+  const view = render(<BotWorkbench botId="bot-1" />);
+  expect(await screen.findByText('bots.workbench.glance.quiet')).toBeTruthy();
+
+  view.unmount();
+  expect(listeners).toHaveLength(0);
+  render(<BotWorkbench botId="bot-1" />);
+  expect(await screen.findByText('bots.workbench.glance.quiet')).toBeTruthy();
+});
+
+it('keeps detached content and permission actions, then restores navigation when docked', async () => {
+  window.history.replaceState(null, '', '/?sidebarWindow=1');
+  glanceApi.mockResolvedValue(glance({
+    waiting: [row({ question: '允许读取吗？', waitingFor: 'permission', requestId: 'r-1' })],
+    working: [row({ sessionId: 's2', title: '检查结果', kind: 'working' })],
+  }));
+  localMaker.getPendingInteractions.mockResolvedValue([permission('r-1')]);
+  localMaker.resolveInteraction.mockResolvedValue({ accepted: true });
+  const view = render(<BotWorkbench botId="bot-1" />);
+  expect(await screen.findByText('允许读取吗？')).toBeTruthy();
+  expect(screen.getByText('检查结果')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'bots.workbench.glance.look' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'bots.workbench.glance.allow' }));
+  await waitFor(() => expect(localMaker.resolveInteraction)
+    .toHaveBeenCalledWith('r-1', { kind: 'permission', behavior: 'allow' }));
+
+  view.unmount();
+  window.history.replaceState(null, '', '/');
+  renderWorkbench(<BotWorkbench botId="bot-1" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'bots.workbench.glance.look' }));
+  await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('/cc-agent/s1'));
+});
 
 it('shows one quiet sentence when nothing waits or runs, and the follow-everything tag for the scheduler', async () => {
   glanceApi.mockResolvedValue(glance({ scope: 'all', doneToday: 3, offlineDevices: ['Studio'] }));
-  render(<BotWorkbench botId="bot-1" />);
+  renderWorkbench(<BotWorkbench botId="bot-1" />);
 
   expect(await screen.findByText('bots.workbench.glance.quiet')).toBeTruthy();
   expect(screen.getByText('bots.autonomy.title')).toBeTruthy();
@@ -130,7 +182,7 @@ it('allows only the permission request the row points at, and opens the task whe
   }));
   localMaker.getPendingInteractions.mockResolvedValue([permission('r-1'), permission('r-2')]);
   localMaker.resolveInteraction.mockResolvedValue({ accepted: true });
-  render(<BotWorkbench botId="bot-1" />);
+  renderWorkbench(<BotWorkbench botId="bot-1" />);
 
   const waiting = (await screen.findByText('要删掉旧迁移吗？')).closest('li')!;
   expect(within(waiting).getByText(/修登录超时 · bots.workbench.glance.waitedFor/)).toBeTruthy();
@@ -139,12 +191,12 @@ it('allows only the permission request the row points at, and opens the task whe
   await waitFor(() => expect(localMaker.resolveInteraction).toHaveBeenCalledTimes(1));
   expect(localMaker.getPendingInteractions).toHaveBeenCalledWith('s1');
   expect(localMaker.resolveInteraction).toHaveBeenCalledWith('r-2', { kind: 'permission', behavior: 'allow' });
-  expect(m.navigate).not.toHaveBeenCalled();
+  expect(screen.getByTestId('route').textContent).toBe('/bots/bot-1');
 
   // 同一行的请求已被处理或换掉：不替主人批准别的请求，改为打开那件任务。
   localMaker.getPendingInteractions.mockResolvedValue([permission('r-9')]);
   fireEvent.click(within(waiting).getByRole('button', { name: 'bots.workbench.glance.allow' }));
-  await waitFor(() => expect(m.navigate).toHaveBeenCalledWith('/cc-agent/s1'));
+  await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('/cc-agent/s1'));
   expect(localMaker.resolveInteraction).toHaveBeenCalledTimes(1);
 });
 
@@ -156,13 +208,13 @@ it('opens a task on another computer through the device-aware route, not a same-
     ],
     working: [row({ sessionId: 'dev-3::s9', deviceId: 'dev-3', deviceName: 'Mini', online: false, title: '整理日志', kind: 'working' })],
   }));
-  render(<BotWorkbench botId="bot-1" />);
+  renderWorkbench(<BotWorkbench botId="bot-1" />);
 
   const answer = (await screen.findByText('用哪个分支？')).closest('li')!;
   expect(within(answer).queryByRole('button', { name: 'bots.workbench.glance.allow' })).toBeNull();
   m.mirrored = [{ id: 's7' }];
   fireEvent.click(within(answer).getByRole('button', { name: 'bots.workbench.glance.answer' }));
-  await waitFor(() => expect(m.navigate).toHaveBeenCalledWith('/cc-agent/s7'));
+  await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('/cc-agent/s7'));
   // 先登记这件任务属于 Studio，再按远程镜像里的那一行解析——与会话链接打开远程任务同一路径。
   expect(m.pinSessionOrigin).toHaveBeenCalledWith('dev-2', 's7');
   expect(m.resolveRoute).toHaveBeenCalledWith('s7', { id: 's7' });
@@ -176,7 +228,7 @@ it('opens a task on another computer through the device-aware route, not a same-
 
 it('re-reads only on changes for this teammate', async () => {
   glanceApi.mockResolvedValueOnce(glance()).mockResolvedValueOnce(glance({ waiting: [row({ question: '新问题' })] }));
-  render(<BotWorkbench botId="bot-1" />);
+  renderWorkbench(<BotWorkbench botId="bot-1" />);
   await screen.findByText('bots.workbench.glance.quiet');
 
   act(() => listeners.forEach((cb) => cb({ botIds: ['bot-2'] })));
@@ -191,7 +243,7 @@ it('reads a teammate on another computer from that computer and answers its own 
   }));
   m.remoteApi.getPendingInteractions.mockResolvedValue([permission('r-5')]);
   m.remoteApi.resolveInteraction.mockResolvedValue({ accepted: true });
-  render(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
+  renderWorkbench(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
 
   const waiting = (await screen.findByText('覆盖配置吗？')).closest('li')!;
   expect(remoteInvoke).toHaveBeenCalledWith('dev-2', 'local-db:bots:autonomy:glance', ['bot-1']);
@@ -213,7 +265,7 @@ it('greys out a remote teammate\'s rows once that computer stops answering, keep
   remoteInvoke.mockResolvedValueOnce(glance({
     waiting: [row({ sessionId: 's7', question: '删掉旧分支吗？', waitingFor: 'permission', requestId: 'r-7' })],
   }));
-  render(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
+  renderWorkbench(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
   const allow = () => within(screen.getByText('删掉旧分支吗？').closest('li')!)
     .getByRole('button', { name: 'bots.workbench.glance.allow' }) as HTMLButtonElement;
   await screen.findByText('删掉旧分支吗？');
@@ -229,7 +281,7 @@ it('greys out a remote teammate\'s rows when remote control to that computer is 
   remoteInvoke.mockResolvedValue(glance({
     waiting: [row({ sessionId: 's8', question: '合并到主干吗？', waitingFor: 'permission', requestId: 'r-8' })],
   }));
-  const view = render(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
+  const view = renderWorkbench(<BotWorkbench botId="bot-1" hostDeviceId="dev-2" />);
   const allow = () => within(screen.getByText('合并到主干吗？').closest('li')!)
     .getByRole('button', { name: 'bots.workbench.glance.allow' }) as HTMLButtonElement;
   await screen.findByText('合并到主干吗？');
@@ -245,12 +297,12 @@ it('never approves a confirmation that carries no request id; it opens the task 
   const confirmRow = row({ sessionId: 's3', question: '确认要发布吗？', waitingFor: 'permission', requestId: null });
   glanceApi.mockResolvedValue(glance({ waiting: [confirmRow] }));
   localMaker.getPendingInteractions.mockResolvedValue([permission('r-other')]);
-  render(<BotWorkbench botId="bot-1" />);
+  renderWorkbench(<BotWorkbench botId="bot-1" />);
 
   const waiting = (await screen.findByText('确认要发布吗？')).closest('li')!;
   expect(within(waiting).queryByRole('button', { name: 'bots.workbench.glance.allow' })).toBeNull();
   fireEvent.click(within(waiting).getByRole('button', { name: 'bots.workbench.glance.look' }));
-  await waitFor(() => expect(m.navigate).toHaveBeenCalledWith('/cc-agent/s3'));
+  await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('/cc-agent/s3'));
   expect(m.pinSessionOrigin).not.toHaveBeenCalled();
   await expect(allowGlanceRow(confirmRow)).resolves.toBe('gone');
   expect(localMaker.getPendingInteractions).not.toHaveBeenCalled();

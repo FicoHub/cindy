@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useInRouterContext, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
@@ -74,17 +74,34 @@ interface RowContext {
   onOpen: (row: GlanceRow) => void;
 }
 
-export function BotWorkbench({
-  botId,
-  hostDeviceId = null,
-}: {
+interface BotWorkbenchProps {
   botId: string;
   sessionId?: string;
   /** 伙伴所在电脑；null = 这台。 */
   hostDeviceId?: string | null;
+}
+
+export function BotWorkbench(props: BotWorkbenchProps) {
+  const inRouter = useInRouterContext();
+  // 分离侧栏没有 Router；只在主窗口挂导航适配，读取与「允许」不依赖路由。
+  return inRouter && !isSidebarWindow()
+    ? <RoutedBotWorkbench {...props} />
+    : <BotWorkbenchContent {...props} />;
+}
+
+function RoutedBotWorkbench(props: BotWorkbenchProps) {
+  const navigate = useNavigate();
+  return <BotWorkbenchContent {...props} navigate={navigate} />;
+}
+
+function BotWorkbenchContent({
+  botId,
+  hostDeviceId = null,
+  navigate,
+}: BotWorkbenchProps & {
+  navigate?: (route: string) => void;
 }) {
   const { t, i18n } = useTranslation();
-  const navigate = useNavigate();
   const devices = useDeviceLinkDeviceList();
   const self = devices?.find((device) => device.isSelf) ?? null;
   const hostDevice = hostDeviceId ? (devices?.find((device) => device.deviceId === hostDeviceId) ?? null) : null;
@@ -104,11 +121,11 @@ export function BotWorkbench({
     [raw, host, hostOnline],
   );
   const now = useNow(30_000);
-  const canNavigate = !isSidebarWindow();
+  const canNavigate = Boolean(navigate);
 
   const onOpen = useCallback(
     (row: GlanceRow) => {
-      if (!canNavigate) return;
+      if (!navigate) return;
       const owner = getDataOwnerGeneration();
       void glanceSessionRoute(row)
         .then((route) => {
@@ -116,7 +133,7 @@ export function BotWorkbench({
         })
         .catch(() => undefined);
     },
-    [canNavigate, navigate],
+    [navigate],
   );
 
   if (!glance) {
