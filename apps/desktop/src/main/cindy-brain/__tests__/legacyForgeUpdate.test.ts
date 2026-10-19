@@ -208,6 +208,7 @@ async function fixture(expandedPermissions = false, membershipKind = 'personal')
     getGhostErrandSlot: () => ({ clearGhost: vi.fn() }),
     getGhostOauthAccountManager: () => ({ prepareAccountsForChangedClients: prepareAccounts }),
     ghostSourceStateArchiveId: () => 'arch_' + 'a'.repeat(32),
+    bindPluginUsage: vi.fn(async () => undefined),
     getLayoutStore: () => ({ getLayout: () => ({}), setLayout: vi.fn() }),
     layoutWithGhostPanel: () => null,
     spawnIfResident: vi.fn(),

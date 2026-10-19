@@ -30,7 +30,7 @@ import type { ExecutorWorkspace } from '../executor/workspace';
 import { isProviderShareCredentialSessionApproval } from '../../../shared/providerShareCredentialConsent';
 import { encodeSendOptions, encodeUserMessage } from '../wire';
 import { RemoteAgentRemoteError, type RemoteAgentRunClient } from './runClient';
-import { RemoteEventProjection } from './eventProjection';
+import { localPlanReview, RemoteEventProjection } from './eventProjection';
 
 const MAX_REMEMBERED_SEND_CALLBACKS = 64;
 
@@ -178,6 +178,8 @@ export interface RemoteHandleDeps {
   started: RemoteStartedInfo;
   workspace: ExecutorWorkspace;
   recordApproval(action: ExecutorAction): void;
+  /** 用户停止或关闭时立即收起本机确认，不等远端 RPC 返回。 */
+  cancelPendingConfirmations?(): void;
   onInvalidResumeSession?: (expectedSdkSessionId: string) => Promise<boolean>;
   /** 读本机图片(随消息带给对方)。 */
   readImage?: (path: string) => Promise<Buffer>;
@@ -211,7 +213,7 @@ export interface RemoteAgentHandleController {
    * 本机自己发起的确认(不是 Agent 发来的)：走与 Agent 确认同一个确认卡通道，桌面、手机远控与 IM 都能
    * 处理。只有本机提供了凭证授权建议的确认卡能返回会话级允许；交互还没接上或任务已结束时按拒绝处理。
    */
-  confirm(request: LocalConfirmation): Promise<ExecutorConfirmation>;
+  confirm(request: LocalConfirmation, signal?: AbortSignal): Promise<ExecutorConfirmation>;
 }
 
 export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHandleController {
@@ -298,9 +300,11 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     send: (message, opts) => sendLike('send', message, opts),
     steer: (message, opts) => sendLike('steer', message, opts),
     abort: async () => {
+      deps.cancelPendingConfirmations?.();
       await call('abort');
     },
     close: async (opts?: AgentSessionTeardownOptions) => {
+      deps.cancelPendingConfirmations?.();
       try {
         await client.close('close', opts?.reason ?? 'navigation');
       } finally {
@@ -308,6 +312,7 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       }
     },
     detach: async (opts?: AgentSessionTeardownOptions) => {
+      deps.cancelPendingConfirmations?.();
       try {
         await client.close('detach', opts?.reason ?? 'navigation');
       } finally {
@@ -402,10 +407,17 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
           : { kind: 'permission', behavior: 'deny', reason: 'interaction_unavailable' };
       return { type: 'interaction', result: decision };
     }
-    const decision = await resolver(request);
+    let decision = await resolver(localPlanReview(request, deps.workspace));
     if (decision.kind === 'permission' && decision.behavior === 'allow') {
       const effective = decision.updatedInput ? { ...request, input: decision.updatedInput } : request;
       for (const action of approvalActionsFor(effective, deps.workspace)) deps.recordApproval(action);
+    }
+    // 用户改过的计划按本机路径展示，交回 Agent 前换回它那边的写法。
+    if (decision.kind === 'plan_review') {
+      decision = { ...decision,
+        ...(typeof decision.editedPlan === 'string' ? { editedPlan: deps.workspace.mapTextForAgent(decision.editedPlan) } : {}),
+        ...(!decision.dismissed && typeof decision.reason === 'string' ? { reason: deps.workspace.mapTextForAgent(decision.reason) } : {}),
+      };
     }
     return { type: 'interaction', result: JSON.parse(JSON.stringify(decision)) };
   }
@@ -414,7 +426,11 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
     handle,
     onEvent(event) {
       if (!event || typeof event !== 'object' || typeof (event as AgentEvent).type !== 'string') return;
-      const typed = event as AgentEvent;
+      let typed = event as AgentEvent;
+      if (typed.type === 'image' && typed.source === 'codex'
+        && (typed.data as { kind?: unknown } | null)?.kind === 'generation') {
+        typed = { ...typed, data: { ...(typed.data as object), pathOrigin: 'remote-agent' } };
+      }
       for (const projected of projection.project(deps.mapEvent ? deps.mapEvent(typed) : typed)) queue.push(projected);
     },
     onState(next) {
@@ -445,10 +461,10 @@ export function createRemoteAgentHandle(deps: RemoteHandleDeps): RemoteAgentHand
       }
       return null;
     },
-    async confirm(request) {
-      if (!resolver || disposed) return false;
-      const decision = await resolver({ ...request, kind: 'permission', requestId: deps.newId() });
-      if (disposed || decision.kind !== 'permission' || decision.behavior !== 'allow') return false;
+    async confirm(request, signal) {
+      if (!resolver || disposed || signal?.aborted) return false;
+      const decision = await resolver({ ...request, kind: 'permission', requestId: deps.newId() }, signal);
+      if (disposed || signal?.aborted || decision.kind !== 'permission' || decision.behavior !== 'allow') return false;
       // 只能从本机生成的凭证确认卡建立授权；对方的 interaction 回包不经过这里。
       if (request.metadata?.hostOwnedConfirmation === 'shared_provider_credential'
         && isProviderShareCredentialSessionApproval(request.suggestions)

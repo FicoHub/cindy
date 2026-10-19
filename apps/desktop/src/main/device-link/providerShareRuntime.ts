@@ -1,3 +1,6 @@
+import { isRemoteAgentLimitsPatch } from '../../shared/remoteAgentLimits.js';
+import { readRemoteAgentLimitsState, saveRemoteAgentLimits } from '../remote-agent/host/limitsStore.js';
+import { remoteAgentLimitUsage } from './dispatch.js';
 /**
  * 供应商分享的本机接线：分享者与受邀者两侧运行时的起停、推送给 Renderer、系统通知，以及
  * Renderer 的命令通道。账号操作只接受本机应用窗口，不能经设备互联从别的电脑调用。
@@ -8,6 +11,7 @@ import {
   PROVIDER_SHARE_LINK_TTL_MS,
   PROVIDER_SHARE_NEUTRAL_DEVICE_NAME,
   PROVIDER_SHARE_RECEIVED_CATALOGS_CHANNEL,
+  MAX_FRAME_BYTES,
   parseProviderSharePeer,
   scrubProviderShareLabel,
   scrubSharedProviderCatalog,
@@ -27,6 +31,8 @@ import {
   type ProviderShareUsageRange,
   type ProviderOwnUsageView,
   type ProviderPartyUsageView,
+  type ProviderUsageDayView,
+  type ProviderUsageHistoryView,
 } from '../../shared/providerShare.js';
 import { getDeviceId } from '../authManager.js';
 import { isDataOwnerPushStamp } from '../../shared/dataOwnerPush.js';
@@ -40,8 +46,14 @@ import { getGatewayModelPricing, getModelPriceQuote } from '../usage/modelPricin
 import { computePriceQuoteTurnMoney, normalizeModelIdForPricing } from '../usage/turnCostCalculator.js';
 import { rememberIssuedClipboardText } from '../textClipboard.js';
 import { ownerScopedUserDataPath } from '../appSessionState.js';
+import { normalizeProviderShareMemberNote, PROVIDER_SHARE_MEMBER_NOTE_MAX_LENGTH } from '../../shared/providerShareMemberNote.js';
+import { providerShareMemberNotes } from './providerShareMemberNotes.js';
+import { captureProviderManagementScope } from '../provider-group/managementScope.js';
+import { readProviderManagementShares } from '../provider-group/managementClient.js';
+import type { ProviderShareManagementCommand } from '../../shared/providerManagement.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
 import {
+  abortProviderShareReshareRuns,
   getControllerDisplayName,
   providerShareActiveControllers,
   revokeProviderShareControllers,
@@ -49,6 +61,7 @@ import {
 } from './dispatch.js';
 import { getDeviceLinkInvokeContext } from './invoke-context.js';
 import { fetchIdentityCard, providerShareApi, providerShareLinkFor, sha256Hex } from './providerShareApi.js';
+import { configureProviderShareApprovalWindows } from './providerShareApprovalWindows.js';
 import {
   findReceivedShare,
   getReceivedShares,
@@ -72,17 +85,30 @@ import { setProviderShareCredentialConsentFromIpc } from './providerShareGuestPr
 import {
   applyLocalMemberChange,
   applyLocalRequestDecision,
+  clearProviderShareRequestQuiet,
   ensureProviderSharePeerKnown,
   getProviderShareHostSnapshot,
+  getProviderShareQuietRequestIds,
+  getProviderShareWatchedRequests,
   markProviderShareHostActive,
   providerShareGuestAccess,
   providerShareGuestDenial,
   providerShareMemberMatcher,
+  quietProviderShareRequests,
   refreshProviderShareHost,
   startProviderShareHost,
   stopProviderShareHost,
 } from './providerShareHost.js';
-import { getProviderShareUsageStore } from './providerShareUsageStore.js';
+import {
+  decideProviderShareReshare,
+  listProviderShareReshares,
+  pruneProviderShareReshares,
+  setProviderShareReshareEvents,
+  type ProviderShareResharePeer,
+  type ProviderShareReshareEvents,
+  type ProviderShareReshareRecord,
+} from './providerShareReshare.js';
+import { getProviderShareUsageStore, providerUsageLocalDay } from './providerShareUsageStore.js';
 import { readDeviceLinkSettings, readLastKnownDeviceNames } from './settings-store.js';
 import { currentProviderPartyUsageStore, type ProviderPartyUsage } from '../usage/providerPartyUsageStore.js';
 
@@ -90,7 +116,7 @@ const log = createLogger('provider-share');
 
 type Broadcast = (channel: string, payload: unknown) => void;
 /** 经设备互联读分享者电脑的目录(index.ts 注入 remoteBackgroundInvoke，避免循环依赖)。 */
-type ShareInvoke = (agentDeviceId: string, channel: string, args: unknown[]) => Promise<InvokeResultPayload>;
+type ShareInvoke = (agentDeviceId: string, channel: string, args: unknown[], options?: { preSend?: () => void }) => Promise<InvokeResultPayload>;
 
 let broadcastFn: Broadcast | null = null;
 let shareInvoke: ShareInvoke | null = null;
@@ -151,29 +177,103 @@ function revoke(match: (controller: string) => boolean, purge: boolean): void {
   });
 }
 
+/** 转分享记录所属的那台组所在电脑(受邀者对端)。 */
+function reshareControllerMatcher(record: ProviderShareResharePeer): (controller: string) => boolean {
+  return (controller) => {
+    const peer = parseProviderSharePeer(controller);
+    return peer?.role === 'guest' && peer.shareId === record.shareId && peer.memberId === record.memberId
+      && peer.deviceId === record.deviceId;
+  };
+}
+
+/** 撤回了对这些人的同意：结束受邀者的组替他们转来的任务(provider-sharing.md §4.3)。 */
+function abortReshares(records: readonly ProviderShareReshareRecord[]): void {
+  for (const record of records) {
+    void abortProviderShareReshareRuns(reshareControllerMatcher(record), record.key).catch((error) => {
+      log.warn('provider share reshare abort failed', { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+}
+
+/** 删掉成员(或已不在这台的分享)名下的转分享记录；删了就让管理页重读。 */
+function pruneReshares(match: (record: ProviderShareReshareRecord) => boolean): void {
+  void pruneProviderShareReshares(match).then((removed) => {
+    if (removed.length > 0) emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+  }).catch((error: unknown) => {
+    log.warn('provider share reshare cleanup failed', { error: error instanceof Error ? error.message : String(error) });
+  });
+}
+
+const reshareEvents: ProviderShareReshareEvents = {
+  requested(records) {
+    emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+    emit(PROVIDER_SHARE_IPC.RESHARE_REQUESTED, null);
+    const first = records[0];
+    if (!first) return;
+    const share = getProviderShareHostSnapshot().find((item) => item.shareId === first.shareId);
+    const owner = share?.members.find((member) => member.memberId === first.memberId)?.displayName ?? '';
+    if (!share) return;
+    void notify(
+      t('providerShare.notification.reshareTitle'),
+      format(t('providerShare.notification.reshareBody'), { owner, name: first.name, provider: share.providerLabel }),
+      () => emit(PROVIDER_SHARE_IPC.OPEN_MANAGE, { providerId: share.providerId }),
+    );
+  },
+  changed() {
+    emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+  },
+  revoked(records) {
+    abortReshares(records);
+  },
+};
+
 /** 设备互联连上(本实例持有连接)时启动；断开、登出或失去持有权时停止。 */
 export function startProviderShareRuntime(broadcast: Broadcast, options: { invoke?: ShareInvoke } = {}): void {
+  // 启动仲裁可能早于 IPC 注册；必须在 host 的第一轮快照前配置持久归属。
+  configureProviderShareApprovalWindows({
+    filePath: () => ownerScopedUserDataPath('provider-share-approval-windows.json'),
+    scopeKey: () => {
+      captureProviderManagementScope();
+      return ownerScopedUserDataPath();
+    },
+  });
   invalidateProviderShareGuestPrefsCache();
   broadcastFn = broadcast;
   shareInvoke = options.invoke ?? null;
+  const readInvoke = options.invoke;
   running = true;
+  setProviderShareReshareEvents(reshareEvents);
   startProviderShareHost({
     changed() {
       emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
     },
-    requested(request, share) {
+    requested(request, share, quiet) {
       emit(PROVIDER_SHARE_IPC.REQUESTED, {
         request,
         share: { shareId: share.shareId, providerId: share.providerId, providerLabel: share.providerLabel },
+        ...(quiet ? { quiet: true } : {}),
       });
+      // 链接由另一台电脑生成：那台弹窗并发通知，这里只进管理页与提示点。
+      if (quiet) return;
       void notify(
         t('providerShare.notification.requestTitle'),
         format(t('providerShare.notification.requestBody'), { name: request.displayName, provider: share.providerLabel }),
         () => emit(PROVIDER_SHARE_IPC.OPEN_MANAGE, { providerId: share.providerId }),
       );
     },
+    watchedRequested(item) {
+      emit(PROVIDER_SHARE_IPC.REQUESTED, item);
+      // 审批弹窗已在排队：点通知只把窗口拉到前台。
+      void notify(
+        t('providerShare.notification.requestTitle'),
+        format(t('providerShare.notification.requestBody'), { name: item.request.displayName, provider: item.share.providerLabel }),
+        () => undefined,
+      );
+    },
     revoked(member, purge) {
       revoke(providerShareMemberMatcher(member), purge);
+      // 成员被删除或退出：他报上来的转分享请求一并删掉(暂停时保留，恢复后照旧)。
+      if (purge) pruneReshares((record) => record.shareId === member.shareId && record.memberId === member.memberId);
     },
     reconcile(owned) {
       // 分享者电脑离线期间被删除或退出的成员：清理他们留在本机的会话数据。
@@ -183,8 +283,10 @@ export function startProviderShareRuntime(broadcast: Broadcast, options: { invok
         const members = owned.get(peer.shareId);
         return !!members && !members.has(peer.memberId);
       }, true);
+      // 转分享记录按账号存放，只会属于这台电脑上的分享：已不在快照里的成员与分享一并删掉。
+      pruneReshares((record) => !owned.get(record.shareId)?.has(record.memberId));
     },
-  });
+  }, { readWatchedShares: readInvoke ? (hostDeviceId) => readProviderManagementShares(readInvoke, hostDeviceId) : undefined });
   startProviderShareGuest({
     changed(received) {
       emit(PROVIDER_SHARE_IPC.RECEIVED_CHANGED, received);
@@ -207,6 +309,7 @@ export function stopProviderShareRuntime(): void {
   invalidateProviderShareGuestPrefsCache();
   running = false;
   shareInvoke = null;
+  setProviderShareReshareEvents(null);
   stopProviderShareHost();
   stopProviderShareGuest();
   emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
@@ -229,14 +332,22 @@ function usageRange(range: unknown): ProviderShareUsageRange {
   return range;
 }
 
-function parseCommand(raw: unknown): ProviderShareCommand {
+export function parseProviderShareCommand(raw: unknown): ProviderShareCommand {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throwIpcError('INVALID_PARAMS', 'Invalid command');
   const value = raw as Record<string, unknown>;
   switch (value.action) {
+    case 'get-run-limits':
+    case 'reset-run-limits':
+      return { action: value.action };
+    case 'set-run-limits':
+      if (!isRemoteAgentLimitsPatch(value.limits)) throwIpcError('INVALID_PARAMS', 'Invalid remote task limits');
+      return { action: value.action, limits: { ...value.limits } };
     case 'owned':
       return { action: 'owned', range: usageRange(value.range) };
     case 'own-usage':
       return { action: 'own-usage', providerId: text(value.providerId, 'providerId'), range: usageRange(value.range) };
+    case 'usage-history':
+      return { action: 'usage-history', providerId: text(value.providerId, 'providerId') };
     case 'create-link':
       return { action: 'create-link', providerId: text(value.providerId, 'providerId') };
     case 'approve':
@@ -246,6 +357,17 @@ function parseCommand(raw: unknown): ProviderShareCommand {
       const status = value.status;
       if (status !== 'pause' && status !== 'resume' && status !== 'remove') throwIpcError('INVALID_PARAMS', 'Invalid status');
       return { action: 'set-member', memberId: text(value.memberId, 'memberId', 128), status };
+    }
+    case 'set-member-note': {
+      if (typeof value.note !== 'string' || value.note.length > PROVIDER_SHARE_MEMBER_NOTE_MAX_LENGTH) {
+        throwIpcError('INVALID_PARAMS', 'Invalid member note');
+      }
+      return { action: 'set-member-note', memberId: text(value.memberId, 'memberId', 128), note: normalizeProviderShareMemberNote(value.note) };
+    }
+    case 'reshare-decide': {
+      const decision = value.decision;
+      if (decision !== 'approve' && decision !== 'reject') throwIpcError('INVALID_PARAMS', 'Invalid decision');
+      return { action: 'reshare-decide', id: text(value.id, 'id', 64), decision };
     }
     case 'received':
       return { action: 'received' };
@@ -292,6 +414,8 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
   if (!running) return { ready: false, shares: [] };
   const shares = getProviderShareHostSnapshot();
   const usage = getProviderShareUsageStore()?.query(new Set(shares.map((share) => share.shareId)), range) ?? [];
+  const reshares = listProviderShareReshares();
+  const notes = providerShareMemberNotes.read();
   const runningTasks = new Map<string, number>();
   for (const controller of providerShareActiveControllers()) {
     const peer = parseProviderSharePeer(controller);
@@ -311,8 +435,19 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
         const record = usage.find((item) => item.shareId === share.shareId && item.memberId === member.memberId);
         return {
           ...member,
+          note: notes[member.memberId] ?? null,
           lastUsedAt: record?.lastUsedAt ?? null,
           runningTasks: runningTasks.get(`${share.shareId}\u0000${member.memberId}`) ?? 0,
+          reshares: reshares
+            .filter((item) => item.shareId === share.shareId && item.memberId === member.memberId)
+            .map((item) => ({
+              id: item.id,
+              name: item.name,
+              avatarUrl: item.avatar,
+              state: item.state,
+              requestedAt: item.requestedAt,
+              decidedAt: item.decidedAt ?? null,
+            })),
           models: await Promise.all((record?.models ?? []).map(async (model) => ({
             kind: model.kind,
             providerId: model.providerId,
@@ -328,6 +463,8 @@ async function ownerState(range: ProviderShareUsageRange): Promise<ProviderShare
         };
       })),
     }))),
+    quietRequestIds: getProviderShareQuietRequestIds(),
+    watchedRequests: getProviderShareWatchedRequests(),
   };
 }
 
@@ -362,17 +499,170 @@ async function ownUsage(providerId: string, range: ProviderShareUsageRange): Pro
   };
 }
 
-async function createLink(providerId: string): Promise<ProviderShareLinkCreated> {
+/**
+ * 按天明细的预算：远程管理时整份经设备互联回包(单帧 2MB)。行数预算先保留最新的行，
+ * 再按实际 UTF-8 JSON 大小预留 invoke 信封空间；两种裁剪都会通过 coverageStart 告知界面。
+ */
+const USAGE_HISTORY_MAX_ROWS = 5_000;
+const USAGE_HISTORY_FRAME_SAFETY_BYTES = 1_024;
+const USAGE_HISTORY_MAX_BYTES = MAX_FRAME_BYTES - USAGE_HISTORY_FRAME_SAFETY_BYTES;
+
+type UsageHistoryRowRef =
+  | { group: 'self'; row: number; day: string; order: number }
+  | { group: 'relay'; party: number; row: number; day: string; order: number }
+  | { group: 'member'; party: number; row: number; day: string; order: number };
+
+/**
+ * 让 usage-history 回包同时满足行数和物理帧预算。按日期从新到旧选行；同一天保持 self、relay、member
+ * 及各自账本的既有顺序。二分查找保留前 N 行，避免每删一行都重新序列化整份历史。
+ */
+export function trimProviderUsageHistory(history: ProviderUsageHistoryView): ProviderUsageHistoryView {
+  const refs: UsageHistoryRowRef[] = [];
+  let order = 0;
+  history.self.days.forEach((row, index) => refs.push({ group: 'self', row: index, day: row.day, order: order++ }));
+  history.relays.forEach((party, partyIndex) => {
+    party.days.forEach((row, rowIndex) => refs.push({ group: 'relay', party: partyIndex, row: rowIndex, day: row.day, order: order++ }));
+  });
+  history.members.forEach((party, partyIndex) => {
+    party.days.forEach((row, rowIndex) => refs.push({ group: 'member', party: partyIndex, row: rowIndex, day: row.day, order: order++ }));
+  });
+  refs.sort((a, b) => b.day.localeCompare(a.day) || a.order - b.order);
+
+  const materialize = (count: number): ProviderUsageHistoryView => {
+    const kept = refs.slice(0, count);
+    const selfRows = new Set(kept.filter((ref) => ref.group === 'self').map((ref) => ref.row));
+    const relayRows = new Map<number, Set<number>>();
+    const memberRows = new Map<number, Set<number>>();
+    for (const ref of kept) {
+      if (ref.group === 'relay') {
+        const rows = relayRows.get(ref.party) ?? new Set<number>();
+        rows.add(ref.row);
+        relayRows.set(ref.party, rows);
+      } else if (ref.group === 'member') {
+        const rows = memberRows.get(ref.party) ?? new Set<number>();
+        rows.add(ref.row);
+        memberRows.set(ref.party, rows);
+      }
+    }
+    const truncated = count < refs.length;
+    // 二次裁剪(估价后)若没有再删行，保留第一次裁剪已经记录的覆盖起点。
+    const coverageStart = truncated && kept.length > 0
+      ? kept.reduce((day, ref) => day < ref.day ? day : ref.day, kept[0]!.day)
+      : history.coverageStart;
+    return {
+      ...history,
+      coverageStart,
+      self: { ...history.self, days: history.self.days.filter((_, index) => selfRows.has(index)) },
+      relays: history.relays.map((party, partyIndex) => ({
+        ...party,
+        days: party.days.filter((_, rowIndex) => relayRows.get(partyIndex)?.has(rowIndex) ?? false),
+      })),
+      members: history.members.map((party, partyIndex) => ({
+        ...party,
+        days: party.days.filter((_, rowIndex) => memberRows.get(partyIndex)?.has(rowIndex) ?? false),
+      })),
+    };
+  };
+
+  const fits = (count: number): boolean => Buffer.byteLength(JSON.stringify(materialize(count)), 'utf8') <= USAGE_HISTORY_MAX_BYTES;
+  let count = Math.min(refs.length, USAGE_HISTORY_MAX_ROWS);
+  if (!fits(count)) {
+    let low = 0;
+    let high = count;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (fits(middle)) low = middle;
+      else high = middle - 1;
+    }
+    count = low;
+  }
+  return materialize(count);
+}
+
+/**
+ * 这个供应商的用量按天明细(provider-groups.md §7)：你自己与经其他电脑转来的读本机账本，分享的人读分享账本
+ * (只含这个供应商的分享里现在的成员)。时间段、人与组内电脑由界面筛选。
+ */
+async function usageHistory(providerId: string): Promise<ProviderUsageHistoryView> {
+  const own = currentProviderPartyUsageStore().history(providerId);
+  const shares = running ? getProviderShareHostSnapshot().filter((share) => share.providerId === providerId) : [];
+  const memberKeys = new Set(shares.flatMap((share) => share.members.map((member) => JSON.stringify([share.shareId, member.memberId]))));
+  // 多取一行作为裁剪哨兵，使上层知道历史未完整展开；删除的成员在展开前就排除。
+  const members = getProviderShareUsageStore()?.history(new Set(shares.map((share) => share.shareId)), {
+    maxRows: USAGE_HISTORY_MAX_ROWS + 1,
+    memberKeys,
+  }) ?? [];
+  const lastKnownNames = readLastKnownDeviceNames();
+  const history = trimProviderUsageHistory({
+    providerId,
+    todayKey: providerUsageLocalDay(Date.now()),
+    coverageStart: null,
+    self: {
+      ...own.self,
+      days: own.self.days.map((row) => ({ ...row, providerId, amount: null })),
+    },
+    relays: own.relays.map((relay) => ({
+      ...relay,
+      deviceName: getControllerDisplayName(relay.deviceId) ?? lastKnownNames[relay.deviceId] ?? null,
+      days: relay.days.map((row) => ({ ...row, providerId, amount: null })),
+    })),
+    members: members.map((member) => ({
+      ...member,
+      days: member.days.map((row) => ({ ...row, amount: null })),
+    })),
+  });
+
+  const days = async (
+    rows: ReadonlyArray<ProviderUsageDayView & { sdkCostUsd?: number }>,
+  ): Promise<ProviderUsageDayView[]> =>
+    Promise.all(rows.map(async (row) => {
+      const usage = { ...row, sdkCostUsd: row.sdkCostUsd ?? 0 };
+      return {
+        day: usage.day,
+        kind: usage.kind,
+        providerId: usage.providerId,
+        memberKey: usage.memberKey,
+        model: usage.model,
+        turns: usage.turns,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        cacheCreateTokens: usage.cacheCreateTokens,
+        amount: await estimate(usage),
+      };
+    }));
+  return trimProviderUsageHistory({
+    ...history,
+    self: { ...history.self, days: await days(history.self.days) },
+    relays: await Promise.all(history.relays.map(async (relay) => ({
+      ...relay,
+      days: await days(relay.days),
+    }))),
+    members: await Promise.all(history.members.map(async (member) => ({
+      ...member,
+      days: await days(member.days),
+    }))),
+  });
+}
+
+async function createLink(
+  providerId: string,
+  assertCurrent: () => void = () => undefined,
+  requireLinkId = false,
+): Promise<ProviderShareLinkCreated> {
+  assertCurrent();
   requireRunning();
   // 逐级开启：允许远程控制 → 允许被远程调用 → 分享。
   if (!readDeviceLinkSettings().remoteControlEnabled) throwIpcError('PRECONDITION_FAILED', 'Remote control is off');
   if (!isRemoteProviderInvocationAllowed(providerId)) throwIpcError('PRECONDITION_FAILED', 'Remote invocation is off for this provider');
   const providers = await getDesktopProviderService().listProviders({ allowSideEffects: false });
+  assertCurrent();
   const provider = providers.find((item) => item.id === providerId);
   if (!provider || !provider.connected || provider.agents.length === 0) throwIpcError('PRECONDITION_FAILED', 'Provider is not available');
   const hostDeviceId = getDeviceId();
   if (!hostDeviceId) throwIpcError('DEVICE_LINK_NOT_CONNECTED', 'Device is not registered');
   const identityCard = await fetchIdentityCard('share-link', sha256Hex(`${hostDeviceId}:${providerId}`));
+  assertCurrent();
   const created = await providerShareApi.createLink({
     providerId,
     // 名称可能自动带上登录身份(如「OpenAI · 邮箱」)，分享出去前去掉。
@@ -381,38 +671,82 @@ async function createLink(providerId: string): Promise<ProviderShareLinkCreated>
     deviceName: PROVIDER_SHARE_NEUTRAL_DEVICE_NAME,
     identityCard,
   });
+  assertCurrent();
+  if (requireLinkId && !created.linkId) {
+    throwIpcError('UNSUPPORTED_CAPABILITY', 'Remote share links require an update to the provider share server');
+  }
   markProviderShareHostActive();
   void refreshProviderShareHost('link');
   // 倒计时按本机收到响应的时刻计算：链接刚签发，服务端从签发起算 5 分钟。不拿服务端的绝对时间
   // 和本机时钟相减(两边时钟可能有偏差，偏快会一生成就显示已过期)，并留出请求往返的余量。
   const expiresAt = new Date(Date.now() + PROVIDER_SHARE_LINK_TTL_MS - LINK_TTL_SAFETY_MS).toISOString();
   const link = providerShareLinkFor(created.invitation);
-  rememberIssuedClipboardText(link, expiresAt);
-  return { link, expiresAt };
+  return { link, expiresAt, ...(created.linkId ? { linkId: created.linkId } : {}) };
 }
 
-async function execute(command: ProviderShareCommand): Promise<unknown> {
+async function execute(command: ProviderShareCommand, assertCurrent: () => void = () => undefined): Promise<unknown> {
+  assertCurrent();
   switch (command.action) {
+    case 'get-run-limits':
+    case 'set-run-limits':
+    case 'reset-run-limits': {
+      if (command.action !== 'get-run-limits') {
+        await saveRemoteAgentLimits(command.action === 'reset-run-limits' ? null : command.limits);
+        assertCurrent();
+      }
+      return { ...readRemoteAgentLimitsState(), usage: remoteAgentLimitUsage() };
+    }
     case 'owned':
       if (running) markProviderShareHostActive(60_000);
       return ownerState(command.range);
     case 'own-usage':
       return ownUsage(command.providerId, command.range);
-    case 'create-link':
-      return createLink(command.providerId);
+    case 'usage-history':
+      return usageHistory(command.providerId);
+    case 'create-link': {
+      const created = await createLink(command.providerId, assertCurrent);
+      await clearProviderShareRequestQuiet(command.providerId);
+      assertCurrent();
+      rememberIssuedClipboardText(created.link, created.expiresAt);
+      return created;
+    }
     case 'approve':
     case 'reject':
       requireRunning();
       if (command.action === 'approve') await providerShareApi.approve(command.requestId);
       else await providerShareApi.reject(command.requestId);
+      assertCurrent();
       applyLocalRequestDecision(command.requestId);
       void refreshProviderShareHost(command.action);
       return { ok: true };
     case 'set-member': {
       requireRunning();
       const result = await providerShareApi.setMember(command.memberId, command.status);
+      assertCurrent();
       applyLocalMemberChange(command.memberId, result.status);
       void refreshProviderShareHost('member');
+      return { ok: true };
+    }
+    case 'set-member-note': {
+      const assertOwner = captureProviderManagementScope();
+      requireRunning();
+      // 本机 IPC 与同账号管理共用刷新，避免用旧名单给已退出的成员保存备注。
+      await refreshProviderShareHost('management');
+      assertCurrent();
+      assertOwner();
+      const member = getProviderShareHostSnapshot().some((share) => share.members.some((item) => item.memberId === command.memberId));
+      if (!member) throwIpcError('NOT_FOUND', 'This shared provider member is no longer available');
+      await providerShareMemberNotes.set(command.memberId, command.note, () => { assertCurrent(); assertOwner(); });
+      emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
+      return { ok: true };
+    }
+    case 'reshare-decide': {
+      // 只改本机记录(不经服务端)；撤回立即结束这个人经组转来的任务。
+      const decided = await decideProviderShareReshare(command.id, command.decision, Date.now(), assertCurrent);
+      assertCurrent();
+      if (!decided) throwIpcError('NOT_FOUND', 'This request is no longer pending');
+      if (decided.previous === 'approved' && decided.record.state !== 'approved') abortReshares([decided.record]);
+      emit(PROVIDER_SHARE_IPC.OWNED_CHANGED, null);
       return { ok: true };
     }
     case 'received':
@@ -442,6 +776,39 @@ async function execute(command: ProviderShareCommand): Promise<unknown> {
       return { skip: isProviderShareCredentialConsentSkipped(command.shareId) };
     }
   }
+}
+
+/**
+ * 同账号管理只执行分享者操作；申请和成员必须属于这台电脑的分享。经管理生成的链接由发起的那台电脑
+ * 弹审批窗，本机在窗口期内静默；返回的 owned 只含这台电脑的分享，不带本机自己的弹窗安排。
+ */
+export async function executeProviderShareManagementCommand(command: ProviderShareManagementCommand): Promise<unknown> {
+  const assertCurrent = captureProviderManagementScope();
+  if (command.action === 'approve' || command.action === 'reject' || command.action === 'set-member') {
+    requireRunning();
+    await refreshProviderShareHost('management');
+    assertCurrent();
+    const shares = getProviderShareHostSnapshot();
+    const found = command.action === 'set-member'
+      ? shares.some((share) => share.members.some((member) => member.memberId === command.memberId))
+      : shares.some((share) => share.requests.some((request) => request.requestId === command.requestId));
+    if (!found) throwIpcError('NOT_FOUND', 'The share request or member is no longer on this computer');
+  }
+  if (command.action === 'create-link') {
+    const created = await createLink(command.providerId, assertCurrent, true);
+    assertCurrent();
+    await quietProviderShareRequests(command.providerId, created.linkId);
+    assertCurrent();
+    rememberIssuedClipboardText(created.link, created.expiresAt);
+    return created;
+  }
+  const result = await execute(command, assertCurrent);
+  assertCurrent();
+  if (command.action === 'owned') {
+    const { ready, shares } = result as ProviderShareOwnerState;
+    return { ready, shares } satisfies ProviderShareOwnerState;
+  }
+  return result;
 }
 
 const CATALOG_READ_TIMEOUT_MS = 10_000;
@@ -518,7 +885,7 @@ export function registerProviderShareIpc(): void {
     // 账号级操作：只接受本机应用窗口，不经设备互联代理。
     if (getDeviceLinkInvokeContext()) throwIpcError('PERMISSION_DENIED', 'Provider sharing is local only');
     assertTrustedAppRendererEvent(event);
-    return execute(parseCommand(raw));
+    return execute(parseProviderShareCommand(raw));
   });
 }
 

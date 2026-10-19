@@ -32,6 +32,7 @@ import {
   DEFAULT_AGENT_ISLAND_STRINGS,
   type AgentIslandActivityLine,
   type AgentIslandActivityLineKind,
+  type AgentIslandCompanionSnapshot,
   type AgentIslandDisplayPolicy,
   type AgentIslandDisplaySurface,
   type AgentIslandDisplayState,
@@ -109,6 +110,8 @@ interface AgentIslandSessionMeta {
   workingDir?: string | null;
   title?: string | null;
   workspaceKind?: string | null;
+  /** undefined = not resolved yet; null = not a companion's Session. */
+  companion?: AgentIslandCompanionSnapshot | null;
 }
 
 interface ApplyAgentIslandEventOptions {
@@ -123,6 +126,7 @@ interface AgentIslandSessionState {
   pendingDeviceCompletionNotification?: boolean;
   sessionId: string;
   title: string | null;
+  companion: AgentIslandCompanionSnapshot | null;
   projectName: string | null;
   detail: string;
   detailSource: 'tool' | 'status' | 'interaction' | null;
@@ -171,6 +175,12 @@ interface AgentIslandSessionState {
    */
   sortActivityAt: number;
   lastActivityAt: number;
+  /**
+   * 无碰撞的卡片身份代数(全局单调不复用):只在真正换卡(新一轮 / 新失败 / 新完成)时
+   * 推进,记账 / 样式事件不推进 —— 毫秒时间戳同毫秒会撞(review P1),无差别推进又会把
+   * 收尾记账当成换卡(review P1 后续)。
+   */
+  activityGeneration: number;
   /**
    * 非 null = 镜像另一台设备(device-link「我控制它」)上运行的任务,生命周期由
    * {@link syncAgentIslandDeviceSessions} 的输入决定;本机 Maker 事件不会触达它。
@@ -234,6 +244,25 @@ export interface AgentIslandRemoteUnreadTerminal {
   sessionId: string;
   phase: 'completed' | 'error';
   lastActivityAt: number;
+}
+
+// 卡片身份的无碰撞活动代数:全局单调递增、不复用。不要退回毫秒时间戳 —— 重试在同一
+// 毫秒内再落新终态时时间戳会撞上(review P1),旧点击会误处置新提醒。
+let agentIslandActivityGeneration = 0;
+
+function nextActivityGeneration(): number {
+  return ++agentIslandActivityGeneration;
+}
+
+/** 活动时间戳照常推进;卡片身份不动 —— 记账 / 样式事件不得驱逐被点击的卡(review P1)。 */
+function touchSessionActivity(session: AgentIslandSessionState, now: number): void {
+  session.lastActivityAt = now;
+}
+
+/** 新一轮 / 新失败 / 新完成真正换卡时推进身份代数,被点击的旧卡随之失效。 */
+function replaceAgentIslandCard(session: AgentIslandSessionState, now: number): void {
+  session.lastActivityAt = now;
+  session.activityGeneration = nextActivityGeneration();
 }
 
 export function createAgentIslandState(): AgentIslandState {
@@ -479,10 +508,12 @@ export function patchAgentIslandMetadata(
   const session = state.sessions.get(meta.sessionId);
   if (!session) return false;
   const previousTitle = session.title;
+  const previousCompanion = session.companion;
   const previousProjectName = session.projectName;
   const previousAgentKind = session.agentKind;
   applyMeta(session, meta);
   return previousTitle !== session.title
+    || previousCompanion !== session.companion
     || previousProjectName !== session.projectName
     || previousAgentKind !== session.agentKind;
 }
@@ -511,7 +542,7 @@ export function applyAgentIslandUserPrompt(
   const line = appendActivityLine(session, 'user', text);
   if (line) enqueueMessagePreview(session, line, now);
   session.sortActivityAt = now;
-  session.lastActivityAt = now;
+  replaceAgentIslandCard(session, now);
   return true;
 }
 
@@ -600,7 +631,7 @@ export function applyAgentIslandEvent(
   if (event.type === 'compact_boundary') {
     if (!foreground || !session.running || session.workingPhase !== 'compacting') return false;
     session.workingPhase = 'thinking';
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return true;
   }
   if (event.type === 'thinking') {
@@ -608,13 +639,13 @@ export function applyAgentIslandEvent(
     // public status nor wake the roster/resource subscribers.
     if (!session.running || session.workingPhase === 'thinking' || session.workingPhase?.startsWith('reviewing-')) return false;
     session.workingPhase = 'thinking';
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return true;
   }
   if (event.type !== 'error') {
     session.reconnectStatus = null;
   }
-  session.lastActivityAt = now;
+  touchSessionActivity(session, now);
 
   if (event.type === 'text') {
     if (foreground) session.workingPhase = 'replying';
@@ -750,7 +781,7 @@ export function applyAgentIslandEvent(
         : session.detail;
       session.detailSource = 'interaction';
       session.completedUntil = null;
-      session.lastActivityAt = now;
+      replaceAgentIslandCard(session, now);
       return true;
     }
     session.permissionRequestId = null;
@@ -814,6 +845,8 @@ export function applyAgentIslandEvent(
     // 真实展示给用户)清除,否则条目会在 errorUntil 过期后被 prune 静默删除。
     requestAttentionReveal(state, session, now, AGENT_ISLAND_ERROR_REVEAL_DWELL_MS, { forceUnread: true });
     syncRemoteUnreadTerminal(state, session);
+    // 新失败真正换卡:被点击的旧卡随之失效。
+    replaceAgentIslandCard(session, now);
     return true;
   }
 
@@ -848,7 +881,7 @@ export function applyAgentIslandInteractionRequest(
     session.pendingPermissionCanAllowForSession.delete(request.requestId);
   }
   if (!activateRequest) {
-    session.lastActivityAt = now;
+    touchSessionActivity(session, now);
     return;
   }
   session.phase = 'needs-interaction';
@@ -864,7 +897,7 @@ export function applyAgentIslandInteractionRequest(
   deferActiveTransientReveal(state, 'queued');
   requestAttentionReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
   syncVisibleInteractionSuppression(state, now);
-  session.lastActivityAt = now;
+  replaceAgentIslandCard(session, now);
 }
 
 export function applyAgentIslandInteractionDismissed(
@@ -897,7 +930,7 @@ function dismissPendingInteraction(
   if (session.permissionRequestId === requestId) {
     restorePendingPermissionAction(session);
   }
-  session.lastActivityAt = now;
+  touchSessionActivity(session, now);
   if (session.pendingInteractionIds.size > 0) {
     restorePendingInteractionKind(session);
     return;
@@ -953,6 +986,22 @@ function dismissPendingInteraction(
  *   - 'error-immune' 未读 error 对 passive ack 免疫,state 未动。
  */
 export type AgentIslandSessionReadAckResult = 'cleared' | 'noop' | 'not-found' | 'error-immune';
+
+/**
+ * 灵动岛上一张未读完成 / 报错卡的身份。点击时记下,导航落地后再比对:新一轮、新的失败
+ * 或新的完成(真正换卡)都会改变它,旧点击因此不会处置后来的提醒;失败 turn 的收尾记账
+ * 事件保留同一张卡、不改身份。身份用无碰撞的活动代数而非毫秒时间戳,同毫秒内的新终态
+ * 也拉得开。
+ * 只认本机会话当前展示的未读终态;运行中、等待交互或只剩远程账本时返回 null。
+ */
+export function readAgentIslandUnreadTerminalStamp(
+  state: AgentIslandState,
+  sessionId: string,
+): string | null {
+  const session = state.sessions.get(sessionId);
+  if (!session || session.sourceDeviceId !== null || !isUnreadTerminalLedger(session)) return null;
+  return `${session.phase}:${session.activityGeneration}`;
+}
 
 export function acknowledgeAgentIslandSessionRead(
   state: AgentIslandState,
@@ -1104,6 +1153,8 @@ export function syncAgentIslandDeviceSessions(
   state: AgentIslandState,
   inputs: readonly AgentIslandRemoteSessionInput[],
   now: number,
+  /** Display identity of a remote companion chat; must return a stable object per identity. */
+  resolveCompanion: (input: AgentIslandRemoteSessionInput) => AgentIslandCompanionSnapshot | null = () => null,
 ): AgentIslandDeviceSessionSyncResult {
   const result: AgentIslandDeviceSessionSyncResult = { changed: false, baselineSessionIds: [], events: [] };
   const incoming = new Map(inputs.map((input) => [input.sessionId, input]));
@@ -1124,7 +1175,7 @@ export function syncAgentIslandDeviceSessions(
       result.baselineSessionIds.push(input.sessionId);
       result.changed = true;
     }
-    if (applyDeviceSessionMeta(session, input)) result.changed = true;
+    if (applyDeviceSessionMeta(session, input, resolveCompanion(input))) result.changed = true;
     const waitingForCompletionNotification = session.pendingDeviceCompletionNotification === true;
     const transition = applyDeviceSessionPhase(state, session, input, previous, now);
     if (input.phase === 'completed') {
@@ -1151,14 +1202,20 @@ export function syncAgentIslandDeviceSessions(
 function applyDeviceSessionMeta(
   session: AgentIslandSessionState,
   input: AgentIslandRemoteSessionInput,
+  companion: AgentIslandCompanionSnapshot | null,
 ): boolean {
-  const project = projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
+  // A companion's home folder on that computer is not a project; its group is the context.
+  const project = companion
+    ? companion.groupName ?? null
+    : projectNameFromWorkingDir(input.workingDir, input.workspaceKind);
   const projectName = [project, input.deviceName].filter(Boolean).join(' · ') || null;
   const agentKind = dbToMakerAgentKind(input.agentKind);
   const changed = session.title !== input.title
+    || session.companion !== companion
     || session.projectName !== projectName
     || session.agentKind !== agentKind;
   session.title = input.title;
+  session.companion = companion;
   session.projectName = projectName;
   session.agentKind = agentKind;
   return changed;
@@ -1186,7 +1243,7 @@ function applyDeviceSessionPhase(
       session.workingPhase = workingPhase;
       session.detail = input.detail;
       session.detailSource = input.detail ? 'status' : null;
-      if (changed) session.lastActivityAt = now;
+      if (changed) touchSessionActivity(session, now);
       return { changed, event: null };
     }
     case 'needs-interaction': {
@@ -1196,7 +1253,7 @@ function applyDeviceSessionPhase(
         markSessionRunning(state, session, now);
         session.pendingInteractionIds.add(DEVICE_SESSION_INTERACTION_ID);
         session.phase = 'needs-interaction';
-        session.lastActivityAt = now;
+        touchSessionActivity(session, now);
         if (previous !== null) {
           deferActiveTransientReveal(state, 'queued');
           requestAttentionReveal(state, session, now, AGENT_ISLAND_REVEAL_DWELL_MS);
@@ -1221,7 +1278,7 @@ function applyDeviceSessionPhase(
       }
       clearDeviceSessionInteraction(session);
       session.running = false;
-      session.lastActivityAt = now;
+      touchSessionActivity(session, now);
       // 先换掉上一轮的摘要,且必须先于 complete:有摘要可显示时就不再补「完成」占位。
       session.activityLines = [];
       mirrorDeviceSessionSummary(session, input.detail);
@@ -1240,7 +1297,7 @@ function applyDeviceSessionPhase(
       session.detail = input.detail;
       session.detailSource = input.detail ? 'status' : null;
       session.completedUntil = null;
-      session.lastActivityAt = now;
+      touchSessionActivity(session, now);
       if (observed) {
         session.errorUntil = now + AGENT_ISLAND_ERROR_DWELL_MS;
         requestAttentionReveal(state, session, now, AGENT_ISLAND_ERROR_REVEAL_DWELL_MS, { forceUnread: true });
@@ -1690,7 +1747,11 @@ function markSessionRunning(
   session: AgentIslandSessionState,
   now: number,
 ): void {
-  if (!session.running) session.startedAt = now;
+  if (!session.running) {
+    // 新一轮真正换卡:被点击的旧卡随之失效(记账 / 样式事件不走这条路)。
+    replaceAgentIslandCard(session, now);
+    session.startedAt = now;
+  }
   session.completionNotification = undefined;
   session.running = true;
   session.completedUntil = null;
@@ -1721,6 +1782,9 @@ function completeAgentIslandSession(
   // terminal error belongs to a verified flow that intentionally pairs a done.
   if (session.phase === 'error' && !session.completionAllowedAfterTerminalError) return;
 
+  // 旧卡被真正的完成替换才换身份;失败 turn 的收尾记账 done / 重复 done 保留同一张
+  // 卡,不得驱逐被点击的那张(review P1)。
+  if (session.phase !== 'completed') replaceAgentIslandCard(session, now);
   session.phase = 'completed';
   session.completionNotification = options.suppressAttention ? 'silent' : undefined;
   session.interactionKind = undefined;
@@ -2242,8 +2306,9 @@ function isStackableTransientSession(session: AgentIslandSessionState, now: numb
     || Boolean(session.errorUntil && session.errorUntil > now);
 }
 
-function isCompactActiveSession(session: AgentIslandSessionState): boolean {
-  return session.phase === 'running' || session.phase === 'needs-interaction' || session.pendingInteractionIds.size > 0;
+// 徽标里「运行中」与「需要关注」互斥:等用户回答的任务只算需要关注,不重复计入运行中。
+function isBadgeRunningSession(session: AgentIslandSessionState): boolean {
+  return session.phase === 'running' && !isBlockingSession(session);
 }
 
 function isBlockingSession(session: AgentIslandSessionState): boolean {
@@ -2347,14 +2412,14 @@ function buildPillSnapshot(
   sessions: AgentIslandSessionState[],
   current: AgentIslandSessionState | null,
 ): AgentIslandPillSnapshot {
-  let activeSessionCount = 0;
+  let runningSessionCount = 0;
   let pendingInteractionCount = 0;
   let unreadCompletedCount = 0;
   let deferredRevealCount = 0;
   let attentionCount = 0;
   for (const session of sessions) {
-    if (isCompactActiveSession(session)) activeSessionCount += 1;
-    if (session.pendingInteractionIds.size > 0) pendingInteractionCount += 1;
+    if (isBadgeRunningSession(session)) runningSessionCount += 1;
+    if (isBlockingSession(session)) pendingInteractionCount += 1;
     if (session.unread && (session.phase === 'completed' || session.phase === 'error')) {
       unreadCompletedCount += 1;
     }
@@ -2367,7 +2432,7 @@ function buildPillSnapshot(
     priorityMicroTitle: current ? pillTitle(current, 'micro') : '',
     priorityCompactTitle: current ? pillTitle(current, 'compact') : '',
     sessionCount: sessions.length,
-    activeSessionCount,
+    runningSessionCount,
     pendingInteractionCount,
     unreadCompletedCount,
     deferredRevealCount,
@@ -2376,7 +2441,9 @@ function buildPillSnapshot(
 }
 
 function pillTitle(session: AgentIslandSessionState, mode: 'micro' | 'compact'): string {
-  const title = meaningfulSessionTitle(session)
+  // A companion is named by its owner; never filter it like a generic agent title.
+  const title = normalizeInlineText(session.companion?.name ?? '')
+    || meaningfulSessionTitle(session)
     || session.projectName
     || latestUserActivityTitle(session)
     || session.sessionId.slice(0, 8);
@@ -2478,6 +2545,7 @@ function getOrCreateSession(
   session = {
     sessionId: meta.sessionId,
     title: meta.title?.trim() || null,
+    companion: null,
     projectName: projectNameFromWorkingDir(meta.workingDir, meta.workspaceKind),
     detail: '',
     detailSource: null,
@@ -2514,6 +2582,7 @@ function getOrCreateSession(
     startedAt: now,
     sortActivityAt: now,
     lastActivityAt: now,
+    activityGeneration: nextActivityGeneration(),
     sourceDeviceId: null,
   };
   state.sessions.set(meta.sessionId, session);
@@ -2580,7 +2649,11 @@ function applyMeta(session: AgentIslandSessionState, meta: AgentIslandSessionMet
   if (meta.agentKind) session.agentKind = meta.agentKind;
   const title = meta.title?.trim();
   if (title) session.title = title;
-  if (meta.workingDir !== undefined || meta.workspaceKind !== undefined) {
+  if (meta.companion !== undefined) session.companion = meta.companion;
+  if (session.companion) {
+    // A companion's working directory is its private home, not a project the user chose.
+    session.projectName = session.companion.groupName ?? null;
+  } else if (meta.workingDir !== undefined || meta.workspaceKind !== undefined) {
     session.projectName = projectNameFromWorkingDir(meta.workingDir, meta.workspaceKind);
   }
 }
@@ -2590,7 +2663,8 @@ function toSnapshot(session: AgentIslandSessionState): AgentIslandSessionSnapsho
   return {
     ...(session.phase === 'completed' && session.completionNotification ? { completionNotification: session.completionNotification } : {}),
     sessionId: session.sessionId,
-    title: session.title || session.projectName || session.sessionId.slice(0, 8),
+    title: session.companion?.name || session.title || session.projectName || session.sessionId.slice(0, 8),
+    ...(session.companion ? { companion: session.companion } : {}),
     projectName: session.projectName,
     detail: reconnectStatus ?? session.detail,
     compactDetail: compactDetailForSession(session),
