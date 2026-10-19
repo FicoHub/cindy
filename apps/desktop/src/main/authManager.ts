@@ -404,7 +404,8 @@ function isOwnerChangeShellPending(): boolean {
  */
 const deviceId = process.env.XDT_DEVICE_ID_OVERRIDE?.trim() || machineIdSync();
 
-let loginFlowState: DesktopLoginState | null = null;
+// The offline entry is a renderer landing page, not an auth-server flow step.
+let loginFlowState: Exclude<DesktopLoginState, { step: 'entry' }> | null = null;
 let providerConfig: ProviderConfig | null = null;
 let discoveredMethods: LoginMethod[] = [];
 // These live only within the current fresh-login flow; no credentials reach Renderer.
@@ -3317,9 +3318,9 @@ function scheduleNonXdOrgBetaDefault(input: {
  */
 let coldStartAuthInFlight: Promise<AuthState> | null = null;
 
-function scheduleRefreshRetryAfterTransientFailure(epoch: number, retryAt?: number): void {
+function scheduleRefreshRetryAfterTransientFailure(epoch: number, retryAt?: number, networkFailure = false): void {
   if (epoch !== authStateEpoch) return;
-  const delay = refreshBackoff.defer(epoch, retryAt);
+  const delay = refreshBackoff.defer(epoch, retryAt, networkFailure);
   if (refreshTimer !== null) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
@@ -5270,7 +5271,9 @@ async function finishFreshLogin(
   return completeLogin(outcome, expectedLoginFlowEpoch);
 }
 
-async function runLoginAction(action: DesktopLoginAction): Promise<DesktopLoginActionResult> {
+async function runLoginAction(
+  action: Exclude<DesktopLoginAction, { type: 'back' }>,
+): Promise<DesktopLoginActionResult> {
   const actionLoginFlowEpoch = loginFlowEpoch;
   const startsBuildRealmFlow =
     action.type === 'discover' ||
@@ -5676,6 +5679,24 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
   if (!parsedAction) {
     return { success: false, code: 'INVALID_AUTH_ACTION', state: loginFlowState };
   }
+  if (parsedAction.type === 'back') {
+    // Navigation must not wait for the provider request it is abandoning.
+    // Keep an accepted credential commit atomic, just like cancelAddAccountLogin.
+    if (isLoginFlowCommitSealed(loginFlowEpoch)) {
+      return { success: false, code: 'LOGIN_BUSY', state: loginFlowState };
+    }
+    if (!accessToken && credentialStoreHealth.unavailable) return getLoginState();
+    const providers = providerConfig;
+    loginFlowEpoch += 1;
+    browserAuthorizationSlot.cancelActive();
+    resetLoginFlowState();
+    if (providers) {
+      providerConfig = providers;
+      loginFlowState = reduceAuthFlow(null, { type: 'providers-loaded', providers });
+      return { success: true, state: loginFlowState };
+    }
+    return { success: true, state: { step: 'entry' } };
+  }
   if (parsedAction.type === 'cancel-browser') {
     const pendingAction = loginActionPromiseEpoch === loginFlowEpoch ? loginActionPromise : null;
     const cancelled = browserAuthorizationSlot.cancelActive();
@@ -5702,12 +5723,24 @@ export async function dispatchLoginAction(action: unknown): Promise<DesktopLogin
   }
 }
 
-export async function refresh(): Promise<boolean> {
+export async function refresh(options?: { networkRecovered?: boolean }): Promise<boolean> {
   if (getActiveAppSession().mode === 'local') {
     log.debug('runtime refresh skipped in local mode');
     return false;
   }
-  if (refreshPromise !== null) return refreshPromise;
+  if (refreshPromise !== null) {
+    if (!options?.networkRecovered) return refreshPromise;
+    const recoveryEpoch = authStateEpoch;
+    const refreshed = await refreshPromise;
+    if (refreshed || authStateEpoch !== recoveryEpoch) return refreshed;
+    // Another recovery caller may already have started the next single flight.
+    if (refreshPromise !== null) return refreshPromise;
+    if (!refreshBackoff.networkRecovered(recoveryEpoch)) return false;
+    // Consume this hint once, including when the old network failure arrived
+    // after it. A failure of the new attempt must retain its own cooldown.
+    return refresh();
+  }
+  if (options?.networkRecovered) refreshBackoff.networkRecovered(authStateEpoch);
   // Explicit callers (including chat polling and resume) share the same wait
   // as the retry timer; skipped calls must not move the deadline forward.
   if (refreshBackoff.remaining(authStateEpoch) > 0) return false;
@@ -5833,12 +5866,12 @@ export async function refresh(): Promise<boolean> {
           log.warn(
             `runtime refresh failed for a stale token after replacement retries status=${result.status} code=${code ?? '<none>'} — retrying no sooner than ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
           );
-          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt);
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt, result.status === 0);
         } else {
           log.warn(
             `runtime refresh failed transiently status=${result.status} code=${code ?? '<none>'} — retrying no sooner than ${RUNTIME_REFRESH_RETRY_MS / 1000}s`,
           );
-          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt);
+          scheduleRefreshRetryAfterTransientFailure(refreshEpoch, result.retryAt, result.status === 0);
         }
         return false;
       }

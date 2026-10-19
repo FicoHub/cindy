@@ -5,9 +5,13 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SyntheticInteraction, interactionKinds, type InteractionKind } from '../../../scripts/fixtures/permission-focus/interaction-cards';
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({
-  t: (key: string) => key, i18n: { language: 'zh-CN' },
-}) }));
+vi.mock('react-i18next', async (importOriginal) => ({
+  // Question file references load the shared i18n initializer transitively.
+  ...await importOriginal<typeof import('react-i18next')>(),
+  useTranslation: () => ({
+    t: (key: string) => key, i18n: { language: 'zh-CN' },
+  }),
+}));
 afterEach(cleanup);
 
 function setup(a: InteractionKind, b: InteractionKind, reversed: boolean) {
