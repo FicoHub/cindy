@@ -356,6 +356,70 @@ export function createOverrideSettingsFile<T>(options: {
   }
 }
 
+/**
+ * Narrow handle for new-computer setup (docs/product-rules/new-device-setup-migration.md):
+ * read only the values the user changed here, and apply another computer's changed values
+ * through this store's own normalize/merge rules and atomic write. Excluded keys (absolute
+ * paths, device-bound values) are neither exported nor accepted.
+ */
+export interface PortableOverrideSettings {
+  /** Values the user changed on this computer (normalized), minus excluded keys. */
+  readCustomized(): Record<string, unknown>;
+  /** Writes another computer's changed values; the store still normalizes every key. */
+  applyPatch(patch: Record<string, unknown>): Promise<void>;
+}
+
+const PORTABLE_SETTINGS_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
+
+export function portableOverrideSettings<T>(
+  file: OverrideSettingsFile<T> | (() => OverrideSettingsFile<T>),
+  options: {
+    omitKeys?: readonly string[];
+    /** Drops values that only make sense on the source computer. */
+    filter?: (values: Record<string, unknown>) => Record<string, unknown>;
+  } = {},
+): PortableOverrideSettings {
+  const resolve = typeof file === 'function' ? file : () => file;
+  const omitted = new Set(options.omitKeys ?? []);
+  const keep = (values: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(values)) {
+      if (!omitted.has(key) && PORTABLE_SETTINGS_KEY_RE.test(key) && value !== undefined) {
+        out[key] = clone(value);
+      }
+    }
+    return options.filter ? options.filter(out) : out;
+  };
+  return {
+    readCustomized() {
+      const state = resolve().readState();
+      const value = state.value as Record<string, unknown>;
+      const changed: Record<string, unknown> = {};
+      for (const key of state.customizedKeys) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) changed[key] = value[key];
+      }
+      return keep(changed);
+    },
+    async applyPatch(patch) {
+      const store = resolve();
+      const state = store.readState();
+      // Keys this version does not know would normalize to nothing yet still mark the
+      // store as customized; only accept keys this store can represent.
+      const known = new Set([
+        ...Object.keys(state.defaults as Record<string, unknown>),
+        ...Object.keys(state.value as Record<string, unknown>),
+      ]);
+      const values = keep(
+        Object.fromEntries(Object.entries(patch).filter(([key]) => known.has(key))),
+      );
+      if (Object.keys(values).length === 0) return;
+      // An explicit choice on the other computer stays explicit here, even when it equals
+      // this version's default.
+      await store.writePatchAtomic(values as Partial<T>, { preserveDefaults: true });
+    },
+  };
+}
+
 function pathDirname(filePath: string): string {
   const slash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
   return slash < 0 ? '.' : filePath.slice(0, slash);
