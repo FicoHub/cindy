@@ -52,6 +52,7 @@ export interface PreparedRemoteMcp {
 }
 
 export interface StartRemoteAgentDeps {
+  readImageDeliveryEpoch?(sessionId: string): Promise<number>;
   invoke: RemoteAgentInvoke;
   /** 这台电脑的共享拉取器(同一台电脑上的任务共用一个 poll)；缺省时本任务单独一个。 */
   poller?: RemoteAgentPoller;
@@ -96,7 +97,12 @@ export interface StartRemoteAgentDeps {
    * 同账号任务不提供。`grant` 是这个任务在这个分享上的「本任务总是允许」记录，Agent 实例被系统回收
    * 重建后据此恢复；缺省时授权只在本次启动的执行器内有效。
    */
-  credentialConsent?: { description: string; grant?: CredentialGrantRecord };
+  credentialConsent?: {
+    description: string;
+    grant?: CredentialGrantRecord;
+    /** 受邀者把这个分享切成了「信任 {分享者}」：每次操作前问一遍，true 时与本机任务一样不弹卡。 */
+    skip?: () => boolean;
+  };
   /** 改写来自对方的事件(如工具名)。 */
   mapEvent?: (kind: RemoteAgentKind) => ((event: AgentEvent) => AgentEvent) | undefined;
   /** 本机 Codex 程序(给对方的 Codex 提供 exec-server 执行环境)；缺省时不提供。 */
@@ -219,6 +225,7 @@ export async function startRemoteAgentSession(
   deps: StartRemoteAgentDeps,
 ): Promise<AgentSessionHandle> {
   if (!opts.sessionId) throw new Error('remote agent sessions require a session id');
+  const imageDeliveryEpoch = await deps.readImageDeliveryEpoch?.(opts.sessionId);
   // 附加目录(只读引用)与可写目录分开跟踪，运行中任一侧变化都重算执行器根目录：
   // 否则新授予的目录过不了本机 shell/root 判定，撤掉的还被本机上限当可信根。
   let extraDirs = [...new Set(opts.extraDirs ?? [])];
@@ -229,12 +236,12 @@ export async function startRemoteAgentSession(
   let planMode = opts.planMode === true;
   const credentialConsent = deps.credentialConsent;
   const gate = new ExecutorGate(workspace, executorGateModeFor(permissionMode, planMode), Date.now, {
-    confirmCredentials: credentialConsent !== undefined,
+    confirmCredentials: credentialConsent ? () => credentialConsent.skip?.() !== true : false,
   });
   // 同一任务、同一分享、原始权限档未变时恢复之前的「本任务总是允许」(Orca Worker 等会在两轮之间被回收重建)。
   const grant = credentialConsent?.grant;
   const grantPermission = () => credentialGrantPermission(permissionMode, planMode);
-  if (grant?.restore(grantPermission())) gate.allowCredentialsForSession();
+  if (grant?.restore(grantPermission())) gate.restoreCredentialsForSession();
   let controller: RemoteAgentHandleController | null = null;
   const executor = new RemoteExecutor({
     workspace,
@@ -246,8 +253,8 @@ export async function startRemoteAgentSession(
     ...(kind === 'claude-code' && deps.webFetch ? { webFetch: deps.webFetch } : {}),
     ...(credentialConsent
       ? {
-          confirm: async (action: ExecutorAction) =>
-            controller?.confirm(credentialConfirmation(action, credentialConsent.description)) ?? false,
+          confirm: async (action: ExecutorAction, signal: AbortSignal) =>
+            controller?.confirm(credentialConfirmation(action, credentialConsent.description), signal) ?? false,
           gitCredentials: sharedGitCredentials,
           ...(grant
             ? {
@@ -360,6 +367,8 @@ export async function startRemoteAgentSession(
     : [];
   const payload: RemoteAgentOpenPayload = {
     sessionId: opts.sessionId,
+    acceptsImageDeliveryReceipts: true,
+    ...(imageDeliveryEpoch !== undefined ? { imageDeliveryEpoch } : {}),
     virtualWorkspace: true,
     options: encodeStartOptions(opts),
     workspace: {
@@ -407,6 +416,7 @@ export async function startRemoteAgentSession(
     started,
     workspace,
     recordApproval: (action) => executor.recordApproval(action),
+    cancelPendingConfirmations: () => executor.cancelPendingConfirmations(),
     onInvalidResumeSession: opts.onInvalidResumeSession,
     mapEvent: deps.mapEvent?.(kind),
     newId: deps.newId,

@@ -40,6 +40,7 @@ import { RemoteAgentPoller, remoteAgentInvoker } from './runClient';
 import { startRemoteAgentSession, type PreparedRemoteMcp } from './startRemote';
 
 export interface DeviceAgentServiceDeps {
+  readImageDeliveryEpoch?(sessionId: string): Promise<number>;
   remoteInvoke(deviceId: string, channel: string, args: unknown[]): Promise<{ ok: boolean; result?: unknown; error?: { code?: string; message?: string } }>;
   rgPath(): string;
   /** 本机 codex 程序(给对方的 Codex 提供 exec-server 执行环境)。 */
@@ -72,6 +73,8 @@ export interface DeviceAgentServiceDeps {
   };
   /** 任务的「Agent 所在电脑」是不是分享来的供应商(受邀者任务)。 */
   isSharedProviderDevice?(deviceId: string): boolean;
+  /** 受邀者在设置里把这个分享切成了「信任 {分享者}」(每次操作前问一遍)。 */
+  skipSharedProviderCredentialConsent?(deviceId: string): boolean;
   /** 受邀者任务在本机抓取网页的出站通道(WebFetch)。 */
   webFetch?: GuardedFetch;
   /** 受邀者任务里凭证类操作确认卡上的说明(按界面语言)。 */
@@ -177,6 +180,7 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
     const webFetch = deps.webFetch && shared ? deps.webFetch : undefined;
     const collect = { skipCredentials: shared };
     return startRemoteAgentSession(input.agentKind, opts, {
+      readImageDeliveryEpoch: deps.readImageDeliveryEpoch,
       invoke: poller.invoke,
       poller,
       rgPath: deps.rgPath(),
@@ -196,6 +200,8 @@ export function createDeviceAgentStarter(deps: DeviceAgentServiceDeps) {
         ? {
             credentialConsent: {
               description: deps.sharedProviderCredentialNotice?.() ?? SHARED_PROVIDER_CREDENTIAL_NOTICE,
+              // 受邀者在设置里对这个分享选了「信任 {分享者}」：实时读，运行中切换下一步就生效。
+              skip: () => deps.skipSharedProviderCredentialConsent?.(input.deviceId) === true,
               ...(sessionId ? { grant: credentialGrantFor(sessionId, input.deviceId) } : {}),
             },
           }
