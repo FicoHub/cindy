@@ -30,7 +30,7 @@ if (screenshots) mkdirSync(screenshots, { recursive: true });
 // and theme styles are production code; the surrounding page is a synthetic shell.
 const stubs = {
   '@/contexts/AuthContext':
-    'export const useAuth=()=>({dataOwnerId:"synthetic",isAuthenticated:true});',
+    'export const useAuth=()=>({dataOwnerId:"synthetic",isAuthenticated:true});export const useOptionalAuthDeviceId=()=>null;',
   '@/contexts/PrRefsContext':
     'const empty=[];const actions={registerPrConsumer:()=>()=>{}};export const usePrRefsForSession=()=>empty;export const usePrActions=()=>actions;export const usePrStatus=()=>undefined;export const usePrStatuses=()=>({statuses:new Map(),fetchStatusesForSession(){}});',
   '@/features/scheduler/lib/scheduleSessionBinding':
@@ -74,7 +74,10 @@ try {
     platform: 'browser',
     jsx: 'automatic',
     tsconfig: path.join(desktop, 'tsconfig.json'),
-    loader: { '.svg': 'dataurl', '.png': 'dataurl' },
+    loader: {
+      '.svg': 'dataurl', '.png': 'dataurl',
+      '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl',
+    },
     define: { 'import.meta.env.PROD': 'true', 'import.meta.env.DEV': 'false' },
     plugins: [
       {

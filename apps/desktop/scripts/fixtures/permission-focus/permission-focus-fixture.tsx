@@ -12,6 +12,7 @@ import { cindyDark } from '../../../src/renderer/themes/builtin/cindy-dark';
 import {
   SessionItem,
   hasSessionSelectionModifier,
+  type SessionClickModifiers,
 } from '../../../src/renderer/features/cc-agent/sidebar/SessionItem';
 import { SessionCard } from '../../../src/renderer/features/cc-agent/sidebar/SessionCard';
 import { SessionEntryList } from '../../../src/renderer/features/cc-agent/sidebar/SessionEntryList';
@@ -25,9 +26,11 @@ const query = new URLSearchParams(location.search);
 const dark = query.get('theme') === 'dark';
 new ThemeService().applyTheme(dark ? cindyDark : cindyLight);
 document.documentElement.classList.toggle('dark', dark);
+// MarkdownRenderer imports the real i18n bootstrap before this module body runs.
+// Keep this fixture's real Chinese resources in the same common namespace.
 await i18next
   .use(initReactI18next)
-  .init({ lng: 'zh-CN', resources: { 'zh-CN': { translation: zh } } });
+  .init({ lng: 'zh-CN', defaultNS: 'common', resources: { 'zh-CN': { common: zh } } });
 const noop = () => {};
 const sessions = ['A', 'B', 'C', 'D', 'E', 'F'].map(
   (id) =>
@@ -45,7 +48,29 @@ const sessions = ['A', 'B', 'C', 'D', 'E', 'F'].map(
       _count: { messages: 1 },
     }) as unknown as Session,
 );
-const data = ((window as any).permissionFocus = {
+interface PermissionFocusData {
+  responses: Array<{ session: string; request: string } & (
+    { result: unknown } | { decision: CCAgentPermissionResult }
+  )>;
+  events: Array<{
+    active: string;
+    request: string;
+    key: KeyboardEvent['key'];
+    ctrl: boolean;
+    target: ReturnType<typeof describe>;
+    focus: ReturnType<typeof describe>;
+    prevented: boolean;
+    yield: boolean;
+  }>;
+  active: string;
+  pending: string;
+  selections: Array<{ id: string; modifiers?: SessionClickModifiers }>;
+  route?: string;
+  next?: string;
+  finish?: () => void;
+  arrive?: () => void;
+}
+const data: PermissionFocusData = ((window as Window & { permissionFocus?: PermissionFocusData }).permissionFocus = {
   responses: [],
   events: [],
   active: 'A',
