@@ -68,8 +68,8 @@ export interface SetupPlanInputs {
   catalog: ReadonlyMap<string, TargetCatalogFact>;
   /** Custom markets already added on this computer, by market name. */
   marketNames: ReadonlySet<string>;
-  /** Global skills already installed here, by name. */
-  skillNames: ReadonlySet<string>;
+  /** Global skills already installed here, by name, with their on/off state. */
+  localSkills: ReadonlyMap<string, { enabled: boolean }>;
   settings: TargetSettingsFact[];
   mcpIds: ReadonlySet<string>;
   providerIds: ReadonlySet<string>;
@@ -157,7 +157,9 @@ export function buildSetupPlan(input: SetupPlanInputs): SetupMigrationPlan {
       catalogScope: skill.catalogScope,
       enabledOnSource: skill.enabled,
     };
-    if (input.skillNames.has(skill.name)) return { ...base, state: 'present' as const };
+    const local = input.localSkills.get(skill.name);
+    // Already here: only an on/off difference is worth copying, as for plugins.
+    if (local) return { ...base, state: local.enabled === skill.enabled ? ('present' as const) : ('ready' as const) };
     if (skill.origin !== 'installed' && skill.origin !== 'published') {
       addChecklist({ id: `skill-manual:${skill.name}`, kind: 'skill-manual', label: skill.name, ref: skill.name });
       return { ...base, state: 'unavailable' as const, reason: 'local-only' as const };

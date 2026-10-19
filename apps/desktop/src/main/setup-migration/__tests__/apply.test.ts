@@ -34,6 +34,7 @@ function harness(overrides: Partial<SetupApplyDeps> = {}) {
     }),
     installSkill: vi.fn(async (name: string) => ({ absolutePath: `/home/u/.agents/skills/${name}` })),
     setSkillEnabled: vi.fn(async () => {}),
+    findSkill: vi.fn(async () => null),
     settingsGroup: vi.fn(() => null),
     pluginSetupMissing: vi.fn(() => null),
     assertCurrent: vi.fn(),
@@ -172,6 +173,24 @@ describe('applySetupPlan', () => {
       { key: 'skill:deploy', outcome: 'done' },
       { key: 'skill:review', outcome: 'failed', code: 'SKILL_NETWORK' },
     ]);
+  });
+
+  it('copies only the on/off choice of a skill that is already installed here', async () => {
+    const source = snapshot({
+      skills: [{ name: 'deploy', version: '1.0.0', catalogScope: 'market', origin: 'installed', enabled: false }],
+    });
+    const plan = buildSetupPlan(
+      planInputs({ snapshot: source, localSkills: new Map([['deploy', { enabled: true }]]) }),
+    );
+    expect(plan.skills[0].state).toBe('ready');
+    const { deps } = harness({ findSkill: vi.fn(async () => ({ absolutePath: '/s/deploy', enabled: true })) });
+    const result = await applySetupPlan(
+      { plan, snapshot: source, keys: new Set(['skill:deploy']), approvedPluginKeys: new Set(), emit: () => {} },
+      deps,
+    );
+    expect(deps.installSkill).not.toHaveBeenCalled();
+    expect(deps.setSkillEnabled).toHaveBeenCalledWith('/s/deploy', false);
+    expect(result.results).toEqual([{ key: 'skill:deploy', outcome: 'done' }]);
   });
 
   it('stops writing once the account changes', async () => {

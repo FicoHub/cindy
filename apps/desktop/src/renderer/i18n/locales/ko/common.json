@@ -16717,6 +16717,7 @@
       "present_other": "그 밖의 {{count}}개 항목은 이 컴퓨터와 같아 옮기지 않아도 됩니다",
       "start_one": "{{count}}개 항목 옮기기",
       "start_other": "{{count}}개 항목 옮기기",
+      "continue": "계속",
       "version": "버전 {{version}}",
       "pluginDisabled": "그 컴퓨터에서 꺼져 있으며, 옮긴 뒤에도 꺼진 상태로 유지됩니다",
       "pluginConsentLater": "플러그인 마켓 ‘{{market}}’에서 가져옵니다. 설치할 때 권한을 따로 확인합니다",
@@ -16733,7 +16734,7 @@
       "toolOn": "기본 제공 도구 ‘{{name}}’ 켜기",
       "toolOff": "기본 제공 도구 ‘{{name}}’ 끄기",
       "mcp": "MCP · {{url}}",
-      "mcpToken": "MCP · {{url}} · 액세스 토큰은 이 컴퓨터에서 다시 입력해야 합니다",
+      "mcpToken": "MCP · {{url}} · 인증 정보는 이 컴퓨터에서 다시 입력해야 합니다",
       "checklistTitle": "옮긴 뒤 이 컴퓨터에서 할 일",
       "checklistDescription": "로그인 상태, 키, 시스템 권한은 원래 컴퓨터를 벗어나지 않습니다. 옮긴 뒤 이 목록에 따라 하나씩 완료하세요.",
       "groups": {
@@ -16837,7 +16838,7 @@
         "action": "제공자 열기"
       },
       "mcp-token": {
-        "title": "MCP ‘{{name}}’의 액세스 토큰 입력",
+        "title": "MCP ‘{{name}}’의 인증 정보 입력",
         "action": "입력하기"
       },
       "builtin-key": {

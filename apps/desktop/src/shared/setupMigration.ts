@@ -53,7 +53,8 @@ export const SETUP_MIGRATION_RENDERER_PREF_KEYS: readonly string[] = [
 ];
 export const SETUP_MIGRATION_RENDERER_PREF_PREFIXES: readonly string[] = [
   'experimental.',
-  'userPrompt.value',
+  // Per-account personal prompt (`userPrompt.value.<owner>`); only the signed-in account's moves.
+  'userPrompt.value.',
 ];
 
 export function isPortableRendererPrefKey(key: string): boolean {

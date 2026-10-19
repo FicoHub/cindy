@@ -18,6 +18,7 @@ import { ErrorNotice } from '@/components/ui/error-notice';
 import { Spinner } from '@/components/ui/spinner';
 import { GhostInstallConsentContent } from '@/cindy-brain/GhostInstallConsentHost';
 import { useDialogExit } from '@/hooks/useDialogExit';
+import { getDataOwnerGeneration, isDataOwnerIdCurrent } from '@/contexts/dataOwnerGeneration';
 import { createCustomProvider } from '@/lib/customProviders';
 import { cn } from '@/lib/utils';
 import { extractIpcError } from '@/utils/ipcError';
@@ -60,10 +61,6 @@ const READ_ERROR_CODES = new Set([
   'SETUP_SNAPSHOT_INVALID',
   'SETUP_PLAN_EXPIRED',
 ]);
-
-function isMainOwnedKey(key: string): boolean {
-  return key.startsWith('plugin:') || key.startsWith('skill:') || key.startsWith('settings:');
-}
 
 function SelectionCheckbox({
   checked,
@@ -227,23 +224,38 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
     });
     const collected: SetupMigrationResult[] = [];
     let nextChecklist = plan.checklist;
-    const mainKeys = keys.filter(isMainOwnedKey);
+    // The dialog lives outside the owner-scoped routes, so the account it previewed for is
+    // pinned here; Main re-checks the same plan (account, window, expiry, single use).
+    const owner = getDataOwnerGeneration();
+    let planRejected: string | null = null;
     try {
-      if (mainKeys.length > 0 || plan.checklist.length > 0) {
-        const response = await api.apply({ planId: plan.planId, keys, approvedPluginKeys });
-        collected.push(...response.results);
-        nextChecklist = response.checklist;
-      }
+      // Always through Main, even for renderer-only items: it is the one check that this
+      // plan is still valid for this account and window.
+      const response = await api.apply({ planId: plan.planId, keys, approvedPluginKeys });
+      collected.push(...response.results);
+      nextChecklist = response.checklist;
     } catch (error) {
-      setApplyError(extractIpcError(error)?.code ?? 'FAILED');
-      for (const key of mainKeys) collected.push({ key, outcome: 'failed', code: 'FAILED' });
+      planRejected = extractIpcError(error)?.code ?? 'FAILED';
+      setApplyError(planRejected);
     } finally {
       stop();
+    }
+    if (planRejected) {
+      // Nothing else is written from a plan Main refused.
+      for (const key of keys) collected.push({ key, outcome: 'failed', code: planRejected });
+      setResults(collected);
+      setPrefsChanged(false);
+      setChecklist(nextChecklist);
+      busyRef.current = false;
+      setPhase('done');
+      notifySetupMigrationStateChanged();
+      return;
     }
     const renderer = await applyRendererItems(
       plan,
       keySet,
       {
+        isCurrent: () => isDataOwnerIdCurrent(owner),
         createProvider: (config) => createCustomProvider(config, {}),
         createMcpServer: (config) => window.electronAPI.maker.createCustomMcpServer(config),
         setBuiltinTool: (id, enabled) => window.electronAPI.maker.plugins.setEnabled(id, enabled),
@@ -649,10 +661,13 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
                   variant="cta"
                   size="lg"
                   type="button"
-                  disabled={selectedCount === 0}
+                  // A checklist alone still continues, so it reaches the done page and Settings.
+                  disabled={selectedCount === 0 && plan?.checklist.length === 0}
                   onClick={startApply}
                 >
-                  {t('setupMigration.review.start', { count: selectedCount })}
+                  {selectedCount === 0
+                    ? t('setupMigration.review.continue')
+                    : t('setupMigration.review.start', { count: selectedCount })}
                 </Button>
               ) : null}
               {phase === 'permissions' ? (

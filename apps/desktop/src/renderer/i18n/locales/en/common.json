@@ -16756,8 +16756,8 @@
       "readAgain": "Read Again",
       "unavailable": {
         "offline": "Offline. Open Cindy on that computer to move from it",
-        "remote-control-off": "Turn on “Allow same-account devices to control this machine” on that computer first",
-        "control-disabled": "Control of that computer is turned off here. Turn it back on in Remote Connection"
+        "remote-control-off": "Enable “Allow same-account devices to control this machine” on that computer first",
+        "control-disabled": "Control of that computer is disabled here. Enable it again in Remote Connection"
       }
     },
     "reading": "Reading settings on “{{name}}”…",
@@ -16776,6 +16776,7 @@
       "present_other": "{{count}} more items are already the same here",
       "start_one": "Move {{count}} Item",
       "start_other": "Move {{count}} Items",
+      "continue": "Continue",
       "version": "Version {{version}}",
       "pluginDisabled": "Turned off on that computer; stays off here",
       "pluginConsentLater": "From the “{{market}}” marketplace; you'll confirm its permissions when it installs",
@@ -16789,10 +16790,10 @@
       "kept": "Keeps this computer's setting",
       "rendererPrefs": "Interface Preferences",
       "rendererPrefsHint": "Theme, language, notifications and chat display",
-      "toolOn": "Turn on built-in tool “{{name}}”",
-      "toolOff": "Turn off built-in tool “{{name}}”",
+      "toolOn": "Enable built-in tool “{{name}}”",
+      "toolOff": "Disable built-in tool “{{name}}”",
       "mcp": "MCP · {{url}}",
-      "mcpToken": "MCP · {{url}} · Enter its access token again on this computer",
+      "mcpToken": "MCP · {{url}} · Enter its access credentials again on this computer",
       "checklistTitle": "To Finish on This Computer",
       "checklistDescription": "Sign-ins, keys and system permissions stay on the original computer. After moving, finish them one by one from this list.",
       "groups": {
@@ -16818,7 +16819,7 @@
       },
       "access": {
         "remote-control": "Allow same-account devices to control this machine",
-        "remote-controlHint": "Same as on “{{name}}”. You can turn it off anytime in Remote Connection",
+        "remote-controlHint": "Same as on “{{name}}”. You can disable it anytime in Remote Connection",
         "keep-awake": "Keep computer awake",
         "keep-awakeHint": "Same as on “{{name}}”. This computer won't go to sleep"
       }
@@ -16896,8 +16897,8 @@
         "action": "Open Providers"
       },
       "mcp-token": {
-        "title": "Enter the access token for MCP “{{name}}”",
-        "action": "Enter Token"
+        "title": "Enter the access credentials for MCP “{{name}}”",
+        "action": "Enter Credentials"
       },
       "builtin-key": {
         "title": "Enter the API key for “{{name}}”",
@@ -16909,14 +16910,14 @@
         "action": "Connect"
       },
       "computer-use": {
-        "title": "Turn on Automation",
+        "title": "Enable Automation",
         "detail": "Grant Accessibility and Screen Recording permissions on this computer",
-        "action": "Turn On"
+        "action": "Enable"
       },
       "remote-desktop": {
-        "title": "Turn on Remote Desktop",
-        "detail": "Turn it on separately on this computer and grant Screen Recording permission",
-        "action": "Turn On"
+        "title": "Enable Remote Desktop",
+        "detail": "Enable it separately on this computer and grant Screen Recording permission",
+        "action": "Enable"
       },
       "ssh": {
         "title_one": "Copy SSH keys and config for {{count}} remote host",

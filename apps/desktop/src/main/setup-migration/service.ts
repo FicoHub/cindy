@@ -71,7 +71,7 @@ export interface SetupMigrationServiceDeps {
   /** Market facts for the source plugins this computer could install. */
   catalog(plugins: SetupSnapshotPlugin[]): Promise<Map<string, TargetCatalogFact>>;
   marketNames(): Promise<Set<string>>;
-  skillNames(): Promise<Set<string>>;
+  localSkills(): Promise<Map<string, { enabled: boolean }>>;
   mcpIds(): Promise<Set<string>>;
   providerIds(): Promise<Set<string>>;
   builtinTools(): Promise<Map<string, { enabled: boolean; userSet: boolean }>>;
@@ -194,10 +194,10 @@ export function createSetupMigrationService(deps: SetupMigrationServiceDeps) {
     if (!device) setupError('NOT_FOUND', 'This computer is no longer on your account');
     const snapshot = await readSnapshot(deviceId);
     const installable = snapshot.plugins.filter((plugin) => plugin.pluginId !== null);
-    const [catalog, marketNames, skillNames, mcpIds, providerIds, builtinTools] = await Promise.all([
+    const [catalog, marketNames, localSkills, mcpIds, providerIds, builtinTools] = await Promise.all([
       deps.catalog(installable).catch(() => new Map<string, TargetCatalogFact>()),
       deps.marketNames().catch(() => new Set<string>()),
-      deps.skillNames().catch(() => new Set<string>()),
+      deps.localSkills().catch(() => new Map<string, { enabled: boolean }>()),
       deps.mcpIds().catch(() => new Set<string>()),
       deps.providerIds().catch(() => new Set<string>()),
       deps.builtinTools().catch(() => new Map<string, { enabled: boolean; userSet: boolean }>()),
@@ -222,7 +222,7 @@ export function createSetupMigrationService(deps: SetupMigrationServiceDeps) {
       ghosts: deps.targetGhosts(),
       catalog,
       marketNames,
-      skillNames,
+      localSkills,
       settings,
       mcpIds,
       providerIds,

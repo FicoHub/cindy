@@ -154,6 +154,47 @@ describe('SetupMigrationDialog', () => {
     );
   });
 
+  it('writes no renderer-owned item when Main refuses the plan', async () => {
+    const { setupMigration, deviceLink } = installApi();
+    setupMigration.apply.mockRejectedValueOnce(
+      Object.assign(new Error('[SETUP_PLAN_EXPIRED] account changed'), { code: 'SETUP_PLAN_EXPIRED' }),
+    );
+    createCustomProvider.mockClear();
+    render(<SetupMigrationDialog />);
+    act(() => openSetupMigration('d1'));
+
+    await screen.findByText('Gmail');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Gmail' }));
+    fireEvent.click(screen.getByRole('button', { name: 'setupMigration.review.start' }));
+
+    await screen.findByText('setupMigration.done.applyFailed');
+    expect(createCustomProvider).not.toHaveBeenCalled();
+    expect(deviceLink.setEnabled).not.toHaveBeenCalled();
+    expect(screen.getAllByText('setupMigration.failure.SETUP_PLAN_EXPIRED')).toHaveLength(3);
+  });
+
+  it('continues with only a checklist so it is saved and shown on the done page', async () => {
+    const { setupMigration } = installApi();
+    setupMigration.preview.mockResolvedValueOnce({
+      ...plan,
+      plugins: [],
+      settings: [],
+      providers: [],
+      access: [],
+      checklist: [{ id: 'skill-manual:notes', kind: 'skill-manual', label: 'notes', ref: 'notes' }],
+    });
+    setupMigration.apply.mockResolvedValueOnce({
+      results: [],
+      checklist: [{ id: 'skill-manual:notes', kind: 'skill-manual', label: 'notes', ref: 'notes' }],
+    });
+    render(<SetupMigrationDialog />);
+    act(() => openSetupMigration('d1'));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'setupMigration.review.continue' }));
+    await waitFor(() => expect(setupMigration.apply).toHaveBeenCalledWith({ planId: 'plan-1', keys: [], approvedPluginKeys: [] }));
+    await screen.findByText('setupMigration.checklist.skill-manual.title');
+  });
+
   it('explains why another computer cannot be read and lets the user try again', async () => {
     const { setupMigration } = installApi();
     setupMigration.preview.mockRejectedValueOnce(

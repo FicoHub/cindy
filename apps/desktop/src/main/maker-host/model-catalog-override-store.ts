@@ -62,4 +62,6 @@ export function readModelCatalogOverrides(): ModelCatalogOverrides {
 }
 
 /** New-computer setup: values the user changed here (docs/product-rules/new-device-setup-migration.md). */
-export const modelCatalogOverridePortableSettings = portableOverrideSettings(store);
+export const modelCatalogOverridePortableSettings = portableOverrideSettings(store, {
+  optionalKeys: ['baseModels', 'localModels'],
+});

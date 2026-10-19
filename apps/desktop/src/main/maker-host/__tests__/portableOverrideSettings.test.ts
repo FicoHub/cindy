@@ -10,6 +10,8 @@ interface Settings {
   enabled: boolean;
   limit: number;
   folder: string;
+  /** Optional: absent from defaults, kept by normalize when supplied. */
+  note?: string;
 }
 
 const DEFAULTS: Settings = { enabled: true, limit: 5, folder: '' };
@@ -28,6 +30,7 @@ function store() {
         enabled: typeof r.enabled === 'boolean' ? r.enabled : DEFAULTS.enabled,
         limit: typeof r.limit === 'number' ? Math.min(20, r.limit) : DEFAULTS.limit,
         folder: typeof r.folder === 'string' ? r.folder : DEFAULTS.folder,
+        ...(typeof r.note === 'string' ? { note: r.note } : {}),
       };
     },
     log: { info: vi.fn(), warn: vi.fn() },
@@ -63,6 +66,14 @@ describe('portableOverrideSettings', () => {
     await portable.applyPatch({ folder: '/Users/other', futureKey: 1, 'bad key': true });
     expect(fs.existsSync(file)).toBe(false);
     expect(settings.readState().isCustomized).toBe(false);
+  });
+
+  it('accepts optional keys a store declares even though a fresh store has none of them', async () => {
+    const { settings, file } = store();
+    await portableOverrideSettings(settings).applyPatch({ note: 'dropped' });
+    expect(fs.existsSync(file)).toBe(false);
+    await portableOverrideSettings(settings, { optionalKeys: ['note'] }).applyPatch({ note: 'kept' });
+    expect(settings.read().note).toBe('kept');
   });
 
   it('lets a store drop values that only mean something on the source computer', () => {

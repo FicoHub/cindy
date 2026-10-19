@@ -7,6 +7,7 @@ import {
   fitSetupSnapshotBudget,
   projectPlugins,
   type SetupSnapshotSourceDeps,
+  type SourceMcpFact,
 } from '../snapshot.js';
 import { snapshot } from './fixtures.js';
 
@@ -74,8 +75,11 @@ describe('collectSetupSnapshot', () => {
           { id: 'byok_org', name: 'Org', runtimes: {} },
         ],
         isUserProvider: (id) => id !== 'byok_org',
-        readMcpServers: async () => [
-          { id: 'docs', name: 'Docs', transport: 'http', url: 'https://mcp.example.com', headers: { 'X-Team': 'a' }, hasToken: true },
+        readMcpServers: async (): Promise<SourceMcpFact[]> => [
+          { id: 'docs', name: 'Docs', transport: 'http', url: 'https://mcp.example.com', headers: {}, hasToken: true },
+          { id: 'keyed', name: 'Keyed', transport: 'http', url: 'https://mcp.example.com/k', headers: { Authorization: 'Bearer secret' }, hasToken: false },
+          { id: 'userinfo', name: 'U', transport: 'sse', url: 'https://me:secret@mcp.example.com/sse?api_key=secret#secret', headers: {}, hasToken: false },
+          { id: 'plain', name: 'Plain', transport: 'http', url: 'https://mcp.example.com/p', headers: {}, hasToken: false },
         ],
       }),
     );
@@ -89,6 +93,13 @@ describe('collectSetupSnapshot', () => {
     ]);
     expect(JSON.stringify(result)).not.toContain('secret');
     expect(result.mcpServers[0]).not.toHaveProperty('token');
+    // Credentials in headers or the URL are dropped and listed to be entered again.
+    expect(result.mcpServers.map(({ id, url, headers, hasToken }) => ({ id, url, headers, hasToken }))).toEqual([
+      { id: 'docs', url: 'https://mcp.example.com', headers: {}, hasToken: true },
+      { id: 'keyed', url: 'https://mcp.example.com/k', headers: {}, hasToken: true },
+      { id: 'userinfo', url: 'https://mcp.example.com/sse', headers: {}, hasToken: true },
+      { id: 'plain', url: 'https://mcp.example.com/p', headers: {}, hasToken: false },
+    ]);
   });
 
   it('exports only credential-free Git marketplaces', async () => {

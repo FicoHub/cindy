@@ -47,6 +47,7 @@ function plan(overrides: Partial<SetupMigrationPlan> = {}): SetupMigrationPlan {
 
 function api() {
   return {
+    isCurrent: vi.fn(() => true),
     createProvider: vi.fn(async () => ({ ok: true })),
     createMcpServer: vi.fn(async () => ({ ok: true })),
     setBuiltinTool: vi.fn(async () => ({})),
@@ -106,6 +107,23 @@ describe('applyRendererItems', () => {
     ]);
   });
 
+  it('writes nothing more once the account that previewed the plan is no longer signed in', async () => {
+    const target = plan({
+      builtinTools: [
+        { key: 'builtin-tool:browser', id: 'browser', enabled: false, state: 'ready' },
+        { key: 'builtin-tool:docs', id: 'docs', enabled: true, state: 'ready' },
+      ],
+    });
+    const calls = api();
+    calls.isCurrent.mockReturnValueOnce(true).mockReturnValue(false);
+    const result = await applyRendererItems(target, new Set(['builtin-tool:browser', 'builtin-tool:docs']), calls, () => {}, { completed: 0, total: 2 });
+    expect(calls.setBuiltinTool).toHaveBeenCalledTimes(1);
+    expect(result.results).toEqual([
+      { key: 'builtin-tool:browser', outcome: 'done' },
+      { key: 'builtin-tool:docs', outcome: 'failed', code: 'SETUP_PLAN_EXPIRED' },
+    ]);
+  });
+
   it('turns on access switches only, and reports whether interface preferences changed', async () => {
     const target = plan({
       access: [
@@ -129,20 +147,45 @@ describe('applyRendererItems', () => {
 });
 
 describe('portable renderer preferences', () => {
-  it('reads and writes only the whitelist', () => {
+  it('reads only the whitelist and the signed-in account\'s own prompt', () => {
     const storage = new MemoryStorage();
     storage.setItem('theme', 'dark');
     storage.setItem('language', 'ja');
     storage.setItem('sidebar-collapsed', 'true');
     storage.setItem('experimental.lsp', '1');
-    expect(readPortableRendererPrefs(storage)).toEqual({ theme: 'dark', language: 'ja', 'experimental.lsp': '1' });
+    storage.setItem('userPrompt.value.owner-a', 'mine');
+    // Another account that once signed in on this computer keeps its prompt here.
+    storage.setItem('userPrompt.value.owner-b', 'not mine');
+    storage.setItem('userPrompt.value', 'legacy');
+    expect(readPortableRendererPrefs(storage, 'owner-a')).toEqual({
+      theme: 'dark',
+      language: 'ja',
+      'experimental.lsp': '1',
+      'userPrompt.value.owner-a': 'mine',
+    });
+    expect(readPortableRendererPrefs(storage, null)).not.toHaveProperty('userPrompt.value.owner-a');
+  });
 
+  it('writes only whitelisted values this computer has not set itself', () => {
     const target = new MemoryStorage();
-    target.setItem('theme', 'dark');
+    target.setItem('theme', 'light');
     expect(
-      applyPortableRendererPrefs({ theme: 'dark', language: 'ko', 'cc-agent.sidebar.selectedMachines': 'x' }, target),
-    ).toBe(1);
+      applyPortableRendererPrefs(
+        {
+          theme: 'dark',
+          language: 'ko',
+          'cc-agent.sidebar.selectedMachines': 'x',
+          'userPrompt.value.owner-a': 'mine',
+          'userPrompt.value.owner-b': 'not mine',
+        },
+        target,
+        'owner-a',
+      ),
+    ).toBe(2);
+    expect(target.getItem('theme')).toBe('light');
     expect(target.getItem('language')).toBe('ko');
+    expect(target.getItem('userPrompt.value.owner-a')).toBe('mine');
+    expect(target.getItem('userPrompt.value.owner-b')).toBeNull();
     expect(target.getItem('cc-agent.sidebar.selectedMachines')).toBeNull();
   });
 });

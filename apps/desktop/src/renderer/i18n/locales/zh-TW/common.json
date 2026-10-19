@@ -16717,6 +16717,7 @@
       "present_other": "另有 {{count}} 項與這台電腦相同，無需遷移",
       "start_one": "遷移 {{count}} 項",
       "start_other": "遷移 {{count}} 項",
+      "continue": "繼續",
       "version": "版本 {{version}}",
       "pluginDisabled": "在那台電腦上已停用，遷移後保持停用",
       "pluginConsentLater": "來自插件市場「{{market}}」，安裝時單獨確認權限",
@@ -16733,7 +16734,7 @@
       "toolOn": "開啟內建工具「{{name}}」",
       "toolOff": "關閉內建工具「{{name}}」",
       "mcp": "MCP · {{url}}",
-      "mcpToken": "MCP · {{url}} · 存取權杖需要在這台電腦上重新填寫",
+      "mcpToken": "MCP · {{url}} · 存取憑證需要在這台電腦上重新填寫",
       "checklistTitle": "遷移後需要在這台電腦上完成",
       "checklistDescription": "登入狀態、金鑰和系統權限不會離開原來的電腦。遷移完成後，可以依這份清單逐項補上。",
       "groups": {
@@ -16837,7 +16838,7 @@
         "action": "開啟供應商"
       },
       "mcp-token": {
-        "title": "為 MCP「{{name}}」填寫存取權杖",
+        "title": "為 MCP「{{name}}」填寫存取憑證",
         "action": "前往填寫"
       },
       "builtin-key": {

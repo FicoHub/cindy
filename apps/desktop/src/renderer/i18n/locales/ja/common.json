@@ -16717,6 +16717,7 @@
       "present_other": "ほかに {{count}} 件はこのパソコンと同じため、移行は不要です",
       "start_one": "{{count}} 件を移行",
       "start_other": "{{count}} 件を移行",
+      "continue": "続行",
       "version": "バージョン {{version}}",
       "pluginDisabled": "そのパソコンでオフになっています。移行後もオフのままです",
       "pluginConsentLater": "プラグインマーケット「{{market}}」から。インストール時に権限を個別に確認します",
@@ -16733,7 +16734,7 @@
       "toolOn": "組み込みツール「{{name}}」をオン",
       "toolOff": "組み込みツール「{{name}}」をオフ",
       "mcp": "MCP · {{url}}",
-      "mcpToken": "MCP · {{url}} · アクセストークンはこのパソコンで入力し直します",
+      "mcpToken": "MCP · {{url}} · 認証情報はこのパソコンで入力し直します",
       "checklistTitle": "移行後にこのパソコンで行うこと",
       "checklistDescription": "ログイン状態、キー、システムの権限は元のパソコンから出ません。移行後、このリストに沿って一つずつ設定してください。",
       "groups": {
@@ -16837,7 +16838,7 @@
         "action": "プロバイダーを開く"
       },
       "mcp-token": {
-        "title": "MCP「{{name}}」のアクセストークンを入力",
+        "title": "MCP「{{name}}」の認証情報を入力",
         "action": "入力する"
       },
       "builtin-key": {

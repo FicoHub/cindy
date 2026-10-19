@@ -16717,6 +16717,7 @@
       "present_other": "另有 {{count}} 项与这台电脑相同，无需迁移",
       "start_one": "迁移 {{count}} 项",
       "start_other": "迁移 {{count}} 项",
+      "continue": "继续",
       "version": "版本 {{version}}",
       "pluginDisabled": "在那台电脑上已停用，迁移后保持停用",
       "pluginConsentLater": "来自插件市场「{{market}}」，安装时单独确认权限",
@@ -16733,7 +16734,7 @@
       "toolOn": "开启内置工具「{{name}}」",
       "toolOff": "关闭内置工具「{{name}}」",
       "mcp": "MCP · {{url}}",
-      "mcpToken": "MCP · {{url}} · 访问令牌需要在这台电脑上重新填写",
+      "mcpToken": "MCP · {{url}} · 访问凭证需要在这台电脑上重新填写",
       "checklistTitle": "迁移后需要在这台电脑上完成",
       "checklistDescription": "登录状态、密钥和系统权限不会离开原来的电脑。迁移完成后，可以按这份清单逐项补上。",
       "groups": {
@@ -16837,7 +16838,7 @@
         "action": "打开供应商"
       },
       "mcp-token": {
-        "title": "为 MCP「{{name}}」填写访问令牌",
+        "title": "为 MCP「{{name}}」填写访问凭证",
         "action": "去填写"
       },
       "builtin-key": {

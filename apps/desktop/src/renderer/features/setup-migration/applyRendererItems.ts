@@ -15,6 +15,8 @@ import type {
 import { extractIpcError } from '@/utils/ipcError';
 
 export interface RendererApplyApi {
+  /** Still the account that previewed this plan; once false, nothing more is written. */
+  isCurrent(): boolean;
   createProvider(config: CustomProviderConfig): Promise<{ ok: boolean }>;
   createMcpServer(config: CustomMcpConfig): Promise<unknown>;
   setBuiltinTool(id: string, enabled: boolean): Promise<unknown>;
@@ -55,10 +57,14 @@ export async function applyRendererItems(
     if (!keys.has(key)) return;
     emit({ planId: plan.planId, key, phase: 'running', completed, total: offset.total });
     let result: SetupMigrationResult;
-    try {
-      result = { key, outcome: await task() };
-    } catch (error) {
-      result = { key, outcome: 'failed', code: failureCode(error) };
+    if (!api.isCurrent()) {
+      result = { key, outcome: 'failed', code: 'SETUP_PLAN_EXPIRED' };
+    } else {
+      try {
+        result = { key, outcome: await task() };
+      } catch (error) {
+        result = { key, outcome: 'failed', code: failureCode(error) };
+      }
     }
     completed += 1;
     results.push(result);

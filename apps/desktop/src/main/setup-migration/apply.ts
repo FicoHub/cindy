@@ -51,6 +51,8 @@ export interface SetupApplyDeps {
   /** Installs into the default global skill folder; returns where it landed. */
   installSkill(name: string, catalogScope: 'market' | 'team' | null): Promise<{ absolutePath: string }>;
   setSkillEnabled(absolutePath: string, enabled: boolean): Promise<void>;
+  /** The global skill already installed here under this name, if any. */
+  findSkill(name: string): Promise<{ absolutePath: string; enabled: boolean } | null>;
   settingsGroup(id: string): PortableOverrideSettings | null;
   /** Missing account/key labels for an installed plugin; null when ready or unknown. */
   pluginSetupMissing(instanceKey: string): string[] | null;
@@ -183,6 +185,13 @@ export async function applySetupPlan(
 
   for (const item of skills) {
     await run(item.key, async () => {
+      const local = await deps.findSkill(item.name);
+      if (local) {
+        // Already here: copy only the on/off choice.
+        if (local.enabled === item.enabledOnSource) return 'skipped';
+        await deps.setSkillEnabled(local.absolutePath, item.enabledOnSource);
+        return 'done';
+      }
       const installed = await deps.installSkill(item.name, item.catalogScope);
       if (!item.enabledOnSource) await deps.setSkillEnabled(installed.absolutePath, false);
       return 'done';

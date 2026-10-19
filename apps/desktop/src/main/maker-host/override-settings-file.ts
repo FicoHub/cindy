@@ -375,6 +375,11 @@ export function portableOverrideSettings<T>(
   file: OverrideSettingsFile<T> | (() => OverrideSettingsFile<T>),
   options: {
     omitKeys?: readonly string[];
+    /**
+     * Keys this store accepts that its defaults leave out (optional fields). Without them a
+     * fresh computer would not recognize, and would drop, these values.
+     */
+    optionalKeys?: readonly string[];
     /** Drops values that only make sense on the source computer. */
     filter?: (values: Record<string, unknown>) => Record<string, unknown>;
   } = {},
@@ -408,6 +413,7 @@ export function portableOverrideSettings<T>(
       const known = new Set([
         ...Object.keys(state.defaults as Record<string, unknown>),
         ...Object.keys(state.value as Record<string, unknown>),
+        ...(options.optionalKeys ?? []),
       ]);
       const values = keep(
         Object.fromEntries(Object.entries(patch).filter(([key]) => known.has(key))),

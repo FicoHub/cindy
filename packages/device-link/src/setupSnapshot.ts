@@ -94,8 +94,12 @@ export interface SetupSnapshotMcpServer {
   name: string;
   transport: 'http' | 'sse';
   url: string;
-  /** Non-secret request headers; the bearer token is never exported. */
+  /**
+   * Request headers can carry credentials, so sources leave this empty; kept for the shape the
+   * target applies.
+   */
   headers: Record<string, string>;
+  /** Credentials (token, request headers, URL user or query) must be entered again on the target. */
   hasToken: boolean;
 }
 

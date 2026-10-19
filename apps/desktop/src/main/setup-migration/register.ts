@@ -284,8 +284,13 @@ export function registerSetupMigration(options: RegisterSetupMigrationOptions): 
       return out;
     },
     marketNames: async () => new Set((await market().listSources()).map((source) => source.name)),
-    skillNames: async () =>
-      new Set((await globalSkills()).map((skill) => skill.registrySkillName ?? skill.name)),
+    localSkills: async () =>
+      new Map(
+        (await globalSkills()).map((skill) => [
+          skill.registrySkillName ?? skill.name,
+          { enabled: skill.cindyEnabled !== false },
+        ]),
+      ),
     mcpIds: async () => new Set((await listCustomMcpServers()).map((server) => server.id)),
     providerIds: async () => new Set((await listCustomProviders()).map((provider) => provider.id)),
     builtinTools: async () => {
@@ -356,6 +361,12 @@ export function registerSetupMigration(options: RegisterSetupMigrationOptions): 
           release();
         }
         broadcastSkillsChanged();
+      },
+      findSkill: async (name) => {
+        const skill = (await globalSkills()).find(
+          (candidate) => (candidate.registrySkillName ?? candidate.name) === name,
+        );
+        return skill ? { absolutePath: skill.absolutePath, enabled: skill.cindyEnabled !== false } : null;
       },
       pluginSetupMissing,
     },

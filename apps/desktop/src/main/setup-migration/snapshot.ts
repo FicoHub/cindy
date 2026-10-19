@@ -117,7 +117,9 @@ export async function collectSetupSnapshot(deps: SetupSnapshotSourceDeps): Promi
   );
   const skills = await guard('skills', [] as SetupSnapshotSkill[], () => deps.readSkills());
   const mcpServers = await guard('mcpServers', [] as SetupSnapshotMcpServer[], async () =>
-    (await deps.readMcpServers()).slice(0, SETUP_SNAPSHOT_LIMITS.mcpServers).map(projectMcpServer),
+    (await deps.readMcpServers())
+      .slice(0, SETUP_SNAPSHOT_LIMITS.mcpServers)
+      .flatMap((server) => projectMcpServer(server) ?? []),
   );
   const providers = await guard('providers', [] as SetupSnapshotProvider[], async () =>
     (await deps.readProviders())
@@ -244,14 +246,32 @@ export function projectMarketSources(sources: SourceMarketSourceFact[]): SetupSn
     .slice(0, SETUP_SNAPSHOT_LIMITS.pluginSources);
 }
 
-function projectMcpServer(server: SourceMcpFact): SetupSnapshotMcpServer {
+/**
+ * Besides the stored token, request headers (`Authorization`, `x-api-key`…) and the URL's user
+ * and query parts can carry credentials, so none of them leave this computer. A server that
+ * had any of them is marked as needing its credentials entered again on the other computer.
+ */
+function projectMcpServer(server: SourceMcpFact): SetupSnapshotMcpServer | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(server.url);
+  } catch {
+    return null;
+  }
+  const urlCarriesSecrets = Boolean(parsed.username || parsed.password || parsed.search || parsed.hash);
+  if (urlCarriesSecrets) {
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
+  }
   return {
     id: server.id,
     name: server.name,
     transport: server.transport,
-    url: server.url,
-    headers: { ...server.headers },
-    hasToken: server.hasToken,
+    url: urlCarriesSecrets ? parsed.toString() : server.url,
+    headers: {},
+    hasToken: server.hasToken || urlCarriesSecrets || Object.keys(server.headers).length > 0,
   };
 }
 

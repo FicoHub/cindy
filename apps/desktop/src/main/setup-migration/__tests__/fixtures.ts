@@ -58,7 +58,7 @@ export function planInputs(overrides: Partial<SetupPlanInputs> = {}): SetupPlanI
     ghosts: [],
     catalog: new Map(),
     marketNames: new Set(),
-    skillNames: new Set(),
+    localSkills: new Map(),
     settings: [],
     mcpIds: new Set(),
     providerIds: new Set(),
