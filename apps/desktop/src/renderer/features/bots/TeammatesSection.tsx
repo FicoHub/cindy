@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  Users,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -15,13 +14,14 @@ import {
   Settings,
   Trash2,
 } from 'lucide-react';
-import { matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { matchPath, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { Tip } from '@/components/ui/tooltip';
 import { SectionCollapse } from '@/features/cc-agent/sidebar/SectionCollapse';
+import { useCollapsibleShowAll } from '@/features/cc-agent/sidebar/hooks/useCollapsibleShowAll';
 import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { getDataOwnerGeneration, isDataOwnerGenerationCurrent } from '@/contexts/dataOwnerGeneration';
 import type { BotGroupSummary } from '../../../shared/botGroupChat';
@@ -35,7 +35,7 @@ import {
 import { useAgentIslandActivityMap } from '@/state/agentIslandActivity';
 import { useRemoteBots } from './useRemoteBots';
 import { useCompanionCloud } from './companionCloudStore';
-import { cloudRemoteBots, isCloudHomeOffline, withoutShadowedBots } from './companionCloudPresentation';
+import { cloudRemoteBots, isCloudCompanionRemote, withoutCloudCompanions, withoutShadowedBots } from './companionCloudPresentation';
 import { useDeviceLinkDeviceList } from '@/features/device-link/useDeviceLinkDeviceList';
 import { remoteBotKey, isRemoteBotUnread } from './remoteBotRoster';
 import { BotConnectionStatus } from './BotConnectionStatus';
@@ -43,6 +43,7 @@ import { CindyDeviceRow } from './CindyDeviceRow';
 import { cindyDeviceKey, cindyDeviceOptions, isCindyDeviceBot } from './cindyDeviceRoster';
 import { BotAvatar } from './BotAvatar';
 import { BotCreateMenu } from './BotCreateMenu';
+import { useBotMarketEntryHint } from './botMarketEntryHint';
 import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotGroupSidebarRow } from './BotGroupSidebarRow';
 import { BotGroupSidebarAvatar } from './BotGroupAvatars';
@@ -50,7 +51,7 @@ import { refreshBotGroups, useBotGroupList } from './botGroupStore';
 import { BOT_GROUP_SETTINGS_PARAM } from './botGroupPresentation';
 import { chatErrorKey } from './chatError';
 import { subscribeBotReadState, getBotLastReadAtMap, isBotGroupUnread } from './botReadState';
-import { withoutBotGroupLanes } from './botGroupLane';
+import { withoutBotHiddenLanes } from './botGroupLane';
 import {
   botListSubtitle,
   botListTimestampAt,
@@ -92,6 +93,7 @@ const HEADER_ICON_BUTTON_CLASS =
 
 /** 收起态头像行:28px 头像 + 8px 间距。 */
 const AVATAR_SLOT_PX = 36;
+const CHAT_PREVIEW_LIMIT = 5;
 
 /**
  * 收起态只占一行:按内容宽度算出能放几个头像(含末尾「+N」),伙伴再多也不换行。
@@ -123,15 +125,26 @@ export function TeammatesSection() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { dataOwnerId } = useAuth();
-  const { botId, deviceId, groupId } = useParams();
-  // The registered sidebar slot can sit outside the group's route context.
+  const marketHint = useBotMarketEntryHint(dataOwnerId);
+  // The sidebar lives in the shell, outside the child route's params context.
+  const remoteRoute = matchPath('/bots/remote/:deviceId/:botId', pathname);
+  const localRoute = [
+    '/bots/:botId',
+    '/bots/:botId/session/:sessionId',
+    '/bots/:botId/history/:sessionId',
+    '/bots/:botId/direct/:threadId',
+  ].map(pattern => matchPath(pattern, pathname)).find(Boolean);
+  const botId = remoteRoute?.params.botId ?? localRoute?.params.botId;
+  const deviceId = remoteRoute?.params.deviceId;
   const selectedGroupId = matchPath('/bots/groups/:groupId', pathname)?.params.groupId;
   const [collapsed, setCollapsed] = useState(() => readTeammatesSectionCollapsed(dataOwnerId));
+  const [showAllChats, setShowAllChats] = useCollapsibleShowAll(collapsed);
   const avatarRowRef = useRef<HTMLDivElement>(null);
   const avatarCapacity = useAvatarRowCapacity(avatarRowRef, collapsed);
   useEffect(() => {
     setCollapsed(readTeammatesSectionCollapsed(dataOwnerId));
-  }, [dataOwnerId]);
+    setShowAllChats(false);
+  }, [dataOwnerId, setShowAllChats]);
   const toggleCollapsed = () => {
     const next = !collapsed;
     setCollapsed(next);
@@ -224,13 +237,16 @@ export function TeammatesSection() {
     const canonicalSessionId = canonicalBotSessionId(bot);
     const canonicalActivity = canonicalSessionId ? islandActivity.get(canonicalSessionId) : undefined;
     if (canonicalActivity?.phase === 'running') return canonicalActivity;
-    // 群专线在群聊行上显示运行中,不让这位伙伴自己的行也跟着「正在输入…」。
-    return withoutBotGroupLanes(bot.sessions).map((session) => islandActivity.get(session.id))
+    // 群专线在群聊行上显示运行中,不让这位伙伴自己的行也跟着「正在输入…」;
+    // IM 专线在 IM 里回复,同样不点亮这一行。
+    return withoutBotHiddenLanes(bot.sessions).map((session) => islandActivity.get(session.id))
       .find((activity) => activity?.phase === 'running');
   };
   // 伙伴搜索并入侧栏总搜索(TeammateSearchResults),段内不再单独筛选。
   const roster = partitionBotRoster(rosterBots, { query: '', showHidden });
-  const cindyOptions = cindyDeviceOptions(bots, remoteBots, devices ?? [], unreadByBotId, t('bots.devicePicker.local'));
+  // A cloud companion is one row wherever it runs; only per-computer Cindys still merge into one entry.
+  const cindyOptions = cindyDeviceOptions(withoutCloudCompanions(bots, cloud), withoutCloudCompanions(remoteBots, cloud),
+    devices ?? [], unreadByBotId, t('bots.devicePicker.local'));
   const hasMultipleCindys = cindyOptions.length > 1;
   const routeCindy = cindyOptions.find(option => option.key === cindyDeviceKey({ id: botId ?? '', deviceId }));
   // Follow the open Cindy chat; otherwise the local-first roster is the default.
@@ -322,6 +338,17 @@ export function TeammatesSection() {
     ...(showCindy && currentCindy ? [{ kind: 'cindy' as const, pinned: cindyOptions.some(option => 'pinnedAt' in option.bot && Boolean(option.bot.pinnedAt)),
       activityAt: Math.max(...cindyOptions.map(option => 'activityAt' in option.bot ? option.bot.activityAt : option.bot.lastMessageAt ?? option.bot.createdAt)) }] : []),
   ].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.activityAt - a.activityAt);
+
+  // Keep the open chat in the five-row preview without growing the section.
+  const selectedChat = visibleChats.find(entry => entry.kind === 'group'
+    ? entry.group.id === selectedGroupId
+    : entry.kind === 'cindy' ? Boolean(routeCindy)
+      : entry.bot.id === botId && ('deviceId' in entry.bot ? entry.bot.deviceId === deviceId : !deviceId));
+  const previewChats = visibleChats.slice(0, CHAT_PREVIEW_LIMIT);
+  if (selectedChat && !previewChats.includes(selectedChat)) {
+    previewChats[CHAT_PREVIEW_LIMIT - 1] = selectedChat;
+  }
+  const displayedChats = showAllChats ? visibleChats : previewChats;
 
   useEffect(() => {
     if (roster.visible.length + remoteBots.length + groups.length === 0) return;
@@ -419,7 +446,7 @@ export function TeammatesSection() {
 
   const renderGroupRow = (group: BotGroupSummary) => (
     <BotGroupSidebarRow key={'group:' + group.id} group={group} bots={bots}
-      islandActivity={islandActivity} now={now} selected={group.id === groupId}
+      islandActivity={islandActivity} now={now} selected={group.id === selectedGroupId}
       onOpenGroup={id => navigate('/bots/groups/' + encodeURIComponent(id))}
       onContextMenu={event => {
         event.preventDefault(); event.stopPropagation();
@@ -476,18 +503,21 @@ export function TeammatesSection() {
             </Tip>
           </div>
         </div>
-        <div className={cn(HEADER_HOVER_ACTION_CLASS, 'flex items-center gap-0.5')}>
+        {/* 发现伙伴入口没看过时「+」常驻可见(带蓝点),其余动作仍只在悬停时浮现。 */}
+        <div className={cn('flex items-center gap-0.5', !marketHint.unseen && HEADER_HOVER_ACTION_CLASS)}>
           {roster.showHiddenSection && !collapsed ? (
-            <button
-              type="button"
-              onClick={() => setShowHidden((value) => !value)}
-              className={HEADER_ICON_BUTTON_CLASS}
-              aria-label={t(showHidden ? 'bots.list.hideHidden' : 'bots.list.showHidden')}
-            >
-              {showHidden ? <EyeOff size={13} strokeWidth={2} /> : <Eye size={13} strokeWidth={2} />}
-            </button>
+            <span className={cn('flex', marketHint.unseen && HEADER_HOVER_ACTION_CLASS)}>
+              <button
+                type="button"
+                onClick={() => setShowHidden((value) => !value)}
+                className={HEADER_ICON_BUTTON_CLASS}
+                aria-label={t(showHidden ? 'bots.list.hideHidden' : 'bots.list.showHidden')}
+              >
+                {showHidden ? <EyeOff size={13} strokeWidth={2} /> : <Eye size={13} strokeWidth={2} />}
+              </button>
+            </span>
           ) : null}
-          <BotCreateMenu variant="header" />
+          <BotCreateMenu variant="header" entryHint={marketHint} />
         </div>
       </div>
 
@@ -501,7 +531,7 @@ export function TeammatesSection() {
                   : 'deviceId' in entry.bot ? remoteBotKey(entry.bot) : entry.bot.id;
               const name = entry.kind === 'group' ? entry.group.name
                 : entry.kind === 'cindy' ? currentCindy?.bot.name ?? '' : entry.bot.name;
-              const selected = entry.kind === 'group' ? entry.group.id === groupId
+              const selected = entry.kind === 'group' ? entry.group.id === selectedGroupId
                 : entry.kind === 'cindy' ? Boolean(routeCindy)
                   : 'deviceId' in entry.bot ? entry.bot.id === botId && entry.bot.deviceId === deviceId
                     : !deviceId && entry.bot.id === botId;
@@ -547,7 +577,7 @@ export function TeammatesSection() {
                   <Tip text={t('bots.list.sectionExpand')} side="bottom">
                     <button
                       type="button"
-                      onClick={toggleCollapsed}
+                      onClick={() => { toggleCollapsed(); setShowAllChats(true); }}
                       aria-label={`${t('bots.list.sectionExpand')} · +${hidden.length}`}
                       className="relative flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full bg-[var(--surface-chip)] px-1.5 text-11 font-medium tabular-nums text-[var(--sidebar-nav-text)] outline-none hover:bg-sidebar-item-hover focus-visible:ring-2 focus-visible:ring-ring"
                     >
@@ -576,7 +606,7 @@ export function TeammatesSection() {
           </div>
         ) : (
           <div className="flex flex-col gap-1">
-            {visibleChats.map(entry => {
+            {displayedChats.map(entry => {
               if (entry.kind === 'group') return renderGroupRow(entry.group);
               if (entry.kind === 'cindy') {
                 if (!currentCindy) return null;
@@ -617,11 +647,11 @@ export function TeammatesSection() {
                   <button key={remoteBotKey(bot)} type="button" aria-current={selected ? 'page' : undefined}
                     onClick={() => navigate(`/bots/remote/${encodeURIComponent(bot.deviceId)}/${encodeURIComponent(bot.id)}`)}
                     className={cn('flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring', selected ? 'bg-sidebar-item-active text-sidebar-item-active-foreground' : 'text-[var(--sidebar-nav-text)] hover:bg-sidebar-item-hover')}>
-                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} homeOffline={isCloudHomeOffline(cloud, bot)} /></span>
+                    <span className="relative shrink-0"><BotAvatar bot={bot} size="md" /><BotConnectionStatus online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} quiet={isCloudCompanionRemote(cloud, bot)} /></span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="flex min-w-0 items-baseline gap-2">
                         <span className="min-w-0 truncate text-14 leading-5">{bot.name}</span>
-                        <BotConnectionStatus inline online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} homeOffline={isCloudHomeOffline(cloud, bot)} className={selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]'} />
+                        <BotConnectionStatus inline online={bot.online} connectionKnown={bot.connectionKnown} deviceName={deviceName} quiet={isCloudCompanionRemote(cloud, bot)} className={selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]'} />
                       </span>
                       <span className={cn('truncate text-12 leading-4', selected ? 'opacity-70' : 'text-[var(--sidebar-list-muted)]')}>{bot.online && bot.generation ? <BotGenerationLabel sessionId={bot.sessionId ?? undefined} {...bot.generation} remote={{ deviceId: bot.deviceId, botId: bot.id }} /> : bot.preview || bot.description || t('bots.list.startChat')}</span>
                     </span>
@@ -759,6 +789,20 @@ export function TeammatesSection() {
                 </div>
               );
             })}
+            {visibleChats.length > CHAT_PREVIEW_LIMIT ? (
+              <button
+                type="button"
+                aria-expanded={showAllChats}
+                onClick={() => setShowAllChats(value => !value)}
+                className={cn(
+                  'flex h-6 w-full items-center justify-center rounded-full px-2 text-xs font-normal',
+                  'text-[var(--cmd-palette-item-meta)] transition-colors hover:bg-sidebar-item-hover hover:text-foreground',
+                  'focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--focus-ring)]',
+                )}
+              >
+                {showAllChats ? t('bots.list.showLess') : t('ccAgent.sidebar.showAllSessions', { count: visibleChats.length })}
+              </button>
+            ) : null}
             {roster.showHiddenSection ? (
               <div className="mt-3 border-t border-[var(--border-default)] pt-3">
                 <button

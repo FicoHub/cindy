@@ -1,5 +1,6 @@
 import {
   CodexResumePreparationBlockedError,
+  PI_CACHE_RECOVERY_EXPECTATION,
   AUTO_REVIEW_SOURCE_CONTENT,
   AUTO_REVIEW_USER_INTENT,
   INHERITED_CAPABILITY_SELECTION,
@@ -1003,6 +1004,19 @@ describe('maker SEND transaction', () => {
     });
     expect(deps.readPiUserEntry).toHaveBeenCalledWith('session-1', 'plain-client');
     expect(vi.mocked(session.send).mock.lastCall?.[1]?.retryTranscriptUserEntryId).toBe('pi-user-entry');
+  });
+
+  it('relinks the existing user row when cache recovery accepts a replacement native entry', async () => {
+    const { deps, session } = createDeps();
+    session.agentKind = 'pi';
+    deps.readPiUserEntry = vi.fn(async () => 'old-entry');
+    const transaction = createMakerSendTransaction(deps);
+    await transaction.sendToAgentAccepted('session-1', { type: 'user', content: 'Original input' }, undefined, {
+      retryUserClientId: 'original-client',
+      [PI_CACHE_RECOVERY_EXPECTATION]: { providerId: 'strict', modelId: 'model', wireModelId: 'model', routeKey: 'a'.repeat(64), applied: false },
+    });
+    expect(deps.linkPiUserEntry).toHaveBeenCalledExactlyOnceWith('session-1', 'original-client', 'pi-user-entry');
+    expect(deps.createDbMessage).not.toHaveBeenCalled();
   });
 
   it('threads scheduler origin into session.send opts and persisted agentMeta', async () => {
@@ -2048,6 +2062,49 @@ describe('maker SEND transaction', () => {
     expect(deps.markOrcaRoleIfNeeded).toHaveBeenCalledWith('lazy-session', undefined);
     expect(deps.broadcastSessionCreated).toHaveBeenCalledWith('lazy-session');
     expect(lazySession.send).toHaveBeenCalled();
+  });
+
+  it('waits for task restoration before route switching and lazy resume', async () => {
+    let release!: () => void;
+    const restored = new Promise<void>(resolve => { release = resolve; });
+    const { deps, session } = createDeps({
+      getSession: vi.fn(() => undefined),
+      restoreArchivedSessionForSend: vi.fn(() => restored),
+      applyPendingAgentSwitch: vi.fn(async () => {}),
+    });
+    const sending = createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'continue', {
+      id: 'session-1', agentKind: 'codex', workingDir: '/repo',
+    });
+    expect(deps.restoreArchivedSessionForSend).toHaveBeenCalledWith('session-1');
+    expect(deps.applyPendingAgentSwitch).not.toHaveBeenCalled();
+    expect(deps.bootstrapSession).not.toHaveBeenCalled();
+    expect(session.send).not.toHaveBeenCalled();
+    release();
+    await expect(sending).resolves.toMatchObject({ accepted: true });
+    expect(deps.bootstrapSession).toHaveBeenCalledOnce();
+  });
+
+  it('does not resume or dispatch if restoring task status fails', async () => {
+    const { deps, session } = createDeps({
+      restoreArchivedSessionForSend: vi.fn(async () => { throw new Error('restore failed'); }),
+    });
+    await expect(createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'continue'))
+      .rejects.toThrow('restore failed');
+    expect(deps.bootstrapSession).not.toHaveBeenCalled();
+    expect(session.send).not.toHaveBeenCalled();
+  });
+
+  it.each(['before', 'during'] as const)('does not resume a send cancelled %s restoration', async timing => {
+    const controller = new AbortController();
+    if (timing === 'before') controller.abort();
+    const { deps, session } = createDeps({
+      restoreArchivedSessionForSend: vi.fn(async () => { controller.abort(); }),
+    });
+    await expect(createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'continue', undefined,
+      { signal: controller.signal })).resolves.toMatchObject({ accepted: false });
+    expect(deps.restoreArchivedSessionForSend).toHaveBeenCalledTimes(timing === 'before' ? 0 : 1);
+    expect(deps.bootstrapSession).not.toHaveBeenCalled();
+    expect(session.send).not.toHaveBeenCalled();
   });
 
   it('restores a persisted writable parent without a filtered read-only child after restart', async () => {

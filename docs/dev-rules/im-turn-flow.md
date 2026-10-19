@@ -57,6 +57,8 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
 | `controlState.inProgress` / 绑定库 | `im/shared/controlState.ts` / `im/binding.ts` | bot:user | 保留（`/ctr` 是个人渠道能力） |
 | `pendingInteractions.pending` / `interactions.ts pending` | 两侧 | requestId / interactionId | 并入（批次 5：交互挂起表合一，超时策略按渠道参数） |
 | `groupHistoryAccess.activeBySession` | `im/shared` | sessionId | 已同源，不动 |
+| 群消息本地窗口（`hook_group_messages`）与上下文游标（`hook_group_context_cursors`） | `im/shared/groupWindowCore.ts`；个人渠道经 `im/shared/channelGroupWindow.ts`（Telegram / 企业微信 / 钉钉各一份 provider 前缀，`<渠道>-personal:<botContextId>`），官方经 `hook-control/groupWindow.ts` | provider + chat / cursorKey | 已同源，不另建存储：新渠道接群上下文时复用 `createChannelGroupWindow`，在 `prepareAgentTurnText` 入窗并拼前缀、受理后 `commit`，终稿发出后把机器人回复入窗 |
+| `channelToolScope.activeBySession`（`cindy_telegram_bot` / `cindy_feishu_bot` 轮次内工具的逐轮作用域） | `im/shared` | sessionId | 个人渠道能力；与群历史租约同一生命周期（`beforeProviderStart` 登记、`releaseTurnInteractionRoute` 释放）。Telegram、飞书 / Lark 各一种作用域，带着触发本轮那条连接自己的 transport；企业微信 / 钉钉 / Discord 没有渠道直通工具，伙伴专线轮次由 `messageHandler` 登记不带 transport 的 `LaneTurnScope`（只给触发者身份与当前对话）；`cindy_feishu_bot` 的 `send_*_to_user` 也按它选出站 bot（2026-10-17 前恒走设置页那份，伙伴绑定的飞书连接会从错的 bot 发出） |
 | Telegram 传输层（`chatQueues` / `typingLoops` / 回挂目标） | `packages/lizi-im/src/telegram/index.ts` | chat | 保留（个人出站载体） |
 
 **不为合并新增**全局状态机或持久化表：队列与停止交给已有公共入口持有的状态；合并只移动和
@@ -74,11 +76,42 @@ Telegram / Slack / X）是同一件事的两套实现：把渠道里的一条消
    跨队列快照时必须由宿主在派发时重新盖章，不能指望它随队列项持久化。
 5. **session-new-v1**：`/new` 成功时新任务已落库并出现在列表；**turn-reopen-v1**：续跑轮
    断连即终局、`turn.end` 直发不缓存。
-6. **群历史租约**：`beginGroupHistoryAccess` 在 provider 真正开始这一轮前登记、终态释放；
-   `sessionInstanceId` 挡住旧实例借用新权限。
+6. **群历史租约与渠道工具租约**：`beginGroupHistoryAccess` / `beginChannelToolScope` 都在 provider 真正
+   开始这一轮前登记、终态释放；`sessionInstanceId` 挡住旧实例借用新权限。渠道工具的目标 chat 与
+   触发者身份只来自租约，不来自模型参数。每个可绑定渠道的 `channelNoteSourceFor` 都要在 `[渠道说明]`
+   末尾给 `toolsHint` 点名本轮可用的渠道工具（Telegram：`TELEGRAM_TOOLS_HINT`；飞书：`feishuToolsHint`），
+   Agent 不该靠摸瞎试工具才知道自己在哪个渠道；新增可绑定渠道时四件事一起补——渠道说明提示、
+   `channelToolScopeFor` 作用域、轮次内直通工具、以及该渠道工具在**三个 Harness** 的挂载门禁
+   （`shared/botImConnection.ts` 的 `hasImChannelVendorOptions`：专线带 `<channel>ChatId`，伙伴主任务带
+   `cindyBotImChannels` 标记；Codex / Pi 的共享 bridge 用空 ctx 建清单，provider `isEnabled` 必须在空
+   workdir 快照放行，再由 `codexEnvironment.buildSessionMcpConfig` / `piEnvironment` 逐会话收可见性）。
+   渠道工具租约还被 `botSkillService` 复用来判定专线上「是不是主人触发的轮次」；没有 `channelToolScopeFor`
+   的可绑定渠道靠 `LaneTurnScope` 兜住这一判定，否则主人在专线上也只能只读技能。
+   6b. **发送前上下文体检同源**：个人 IM 的 `dispatchQueuedSend` 在伙伴守卫（`companion.prepareSend`）
+   之后、拿发送锁（`acquirePendingAgentSwitch`）之前调用 `deps.prepareUnhealthySession`（orchestrator 接
+   `register.prepareUnhealthySessionForSend`），与桌面直发、官方 hook 走同一个
+   `contextOverflowRollover.prepareUnhealthySession`：伙伴对话（主任务 + channel / group 专线）的空闲
+   间隔刷新（≥12h）、90% 到线换窗、坏历史重建都在这里发生，IM 不另设换窗 / 换任务规则
+   （[`cindy-bots-runtime.md` §3.2](../product-rules/cindy-bots-runtime.md)）。体检关闭 live handle 的原因是
+   `runtime-refresh`，close 监听在有 `acquirePendingAgentSwitch` 时保住任务，新 handle 由
+   `refreshSessionAfterPendingAgentSwitch` 按最新 DB 行重建；体检抛错按直发口径让这条消息失败。
+   6c. **全响应（ambient）前置判定不留痕迹**：`messageHandler.processOne` 只对 `event.ambient === true` 的消息、
+   且 adapter 实现了 `ambientTurnGate` 时，在 ack / 提前落库 / 群上下文拼装**之前**问一次该不该插话；
+   `'skip'` 直接 return（不落库、不起轮次、不推进群窗口游标），钩子抛错或判不出来按 `'proceed'` 走原路径。
+   被召唤的消息永远不经过判定。判定走共享辅助模型链（`im/shared/ambientReplyJudge.ts`），不得在这里起主模型。
 7. **计划对账**只在真实用户轮次注入（官方仅 `source.im` 存在时）。
 8. **终稿必达**（官方）：`turn.end` 先进持久出箱；客户端发布终稿时以 `clientFinal` 交回。
-   带附件的轮次不由客户端发布（出箱只存文本）；兜底帧写不进出箱时也不由客户端发布；本进程
+   带附件的轮次不由客户端发布。Telegram / Slack 的持久出箱只存文本；X 的出箱保留
+   `cindy-media` 地址、引用 ID、名称、MIME 与大小，Base64 只存在传输帧和内存中。
+   X 仅收 JPEG / PNG / WebP / GIF / MP4 / MOV；单图片 5 MiB、GIF 15 MiB、视频 10 MiB，
+   一轮最多 8 项、总计 30 MiB（服务端再核验 X 的附件组合；持久出箱仍按 32 MB 总预算计入媒体的传输大小）。托管媒体通过 `ingestMedia`
+   作为非缓存入库；待发 pin 使用 `message` 引用、出生任务与 `hook-outbox` 来源，沿用
+   任务删除清理。恢复时核对当前账号、任务与引用，失效不重放附件；仍待发的结果保留 24 小时。
+   收到 `turn.delivery`（未协商回执时为 transport 接受）后清除出箱媒体地址并释放 pin；
+   定时及读路径清理过期出箱，媒体仓同时回收崩溃遗留 pin，
+   物理字节仅由既有媒体回收器处置，不删除仍被聊天／画廊引用的媒体。
+   媒体入仓或出箱失败时保留原有完整内存发送兜底，并记录持久化失败；不得将丢附件记作持久化成功。
+   兜底帧写不进出箱时也不由客户端发布；本进程
    仍在发布、正式 `turn.end` 还没进入发送 / 缓冲路径时，重连扫描与服务端重投 `task.dispatch` 都不重放出箱里的兜底帧（重投只回放 ack）；终稿段
    回执未知先同 opId 有界重发对账，仍未知才交回。
 9. **明确停止 = 与桌面 Stop 同一语义**：撤自动续跑与退避簿记、取消上下文溢出恢复、暂停
