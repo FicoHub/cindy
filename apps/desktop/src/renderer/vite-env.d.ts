@@ -527,6 +527,7 @@ interface WechatChannelSettingsState {
   version: 1;
   workingDir: string | null;
   workingDirAvailable: boolean;
+  companionBotId?: string;
 }
 
 type DiscordBotSessionAuthCheckResult = {
@@ -2467,6 +2468,8 @@ interface ElectronAPI {
     cancelAuthorization: () => Promise<{ ok: true }>;
     unbind: () => Promise<{ ok: true }>;
     getChannelSettings: () => Promise<WechatChannelSettingsState>;
+    setCompanion: (botId: string | null) => Promise<WechatChannelSettingsState>;
+    onChannelSettingsChange: (callback: (state: WechatChannelSettingsState) => void) => () => void;
     chooseWorkingDirectory: () => Promise<{
       canceled: boolean;
       state: WechatChannelSettingsState;
@@ -4412,7 +4415,9 @@ interface ElectronAPI {
     setWorkspaces: (
       workspaces: Record<string, string>,
     ) => Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
-    /** 该 provider 派发任务的默认工作目录别名(null = 内置「对话」伪目录)。 */
+    /** Official X assignment, compared with the caller's last observed value. */
+    setXCompanion: (botId: string | null, expectedBotId: string | null) =>
+      Promise<{ hook: import('../shared/hookControlIpc').SlackHookView }>;
     setProviderDefaultWorkspace: (
       provider: 'telegram' | 'x',
       alias: string | null,
@@ -7008,6 +7013,7 @@ interface ElectronAPI {
       getCodexRateLimits: (
         providerId?: string,
       ) => Promise<import('@cindy/maker-shared/device-link-contract').MobileCodexRateLimitsResult>;
+      setCodexResetAutoUse: (patch: Partial<import('@cindy/maker-shared/device-link-contract').CodexResetAutoUseSettings> | null, accountKey: string, providerId?: string) => Promise<import('@cindy/maker-shared/device-link-contract').MobileCodexRateLimitsResult>;
       consumeCodexRateLimitReset: (
         idempotencyKey: string,
         providerId?: string,

@@ -130,6 +130,7 @@ function syncNewMakerPrefs(appDefaultModelRequestId?: string) {
     ...(appDefaultModelRequestId ? { appDefaultModelRequestId } : {}),
     ownerStamp: { dataOwnerId: owner.dataOwnerId, ownerGeneration: owner.generation },
     selectedRoute: {
+      ...(draft.agentDeviceId ? { agentDeviceId: draft.agentDeviceId } : {}),
       harness: draft.vendor === 'cc' || draft.vendor === 'orca' ? 'claude' : draft.vendor,
       providerId: selected.providerId ?? null,
       model: selected.model,

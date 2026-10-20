@@ -681,6 +681,7 @@ const fanOutDingTalkBotOwnerChange = createIpcFanOut('dingtalkBot:owner-change')
 const fanOutWecomBotStatusChange = createIpcFanOut('wecomBot:status-changed');
 // Personal WeChat: main owns auth/polling and broadcasts a credential-free state snapshot.
 const fanOutWechatBotStateChange = createIpcFanOut('wechatBot:state-changed');
+const fanOutWechatChannelSettingsChange = createIpcFanOut('wechatBot:channel-settings-changed');
 const fanOutVoiceInputEvent = createIpcFanOut('voice-input:event');
 const fanOutVoiceInputGlobalShortcutTrigger = createIpcFanOut(
   'voice-input:global-shortcut-trigger',
@@ -2607,18 +2608,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getChannelSettings: (): Promise<{
       version: 1;
       workingDir: string | null;
-      workingDirAvailable: boolean;
+      workingDirAvailable: boolean; companionBotId?: string;
     }> => ipcRenderer.invoke('wechatBot:get-channel-settings'),
+    setCompanion: (botId: string | null): Promise<{
+      version: 1; workingDir: string | null; workingDirAvailable: boolean; companionBotId?: string;
+    }> => ipcRenderer.invoke('wechatBot:set-companion', botId),
     chooseWorkingDirectory: (): Promise<{
       canceled: boolean;
-      state: { version: 1; workingDir: string | null; workingDirAvailable: boolean };
+      state: { version: 1; workingDir: string | null; workingDirAvailable: boolean; companionBotId?: string };
     }> => ipcRenderer.invoke('wechatBot:choose-working-directory'),
     resetWorkingDirectory: (): Promise<{
       version: 1;
       workingDir: string | null;
-      workingDirAvailable: boolean;
+      workingDirAvailable: boolean; companionBotId?: string;
     }> => ipcRenderer.invoke('wechatBot:reset-working-directory'),
     onStateChange: fanOutWechatBotStateChange,
+    onChannelSettingsChange: fanOutWechatChannelSettingsChange,
   },
 
   // Renderer → main 的 "用户已登录 + localDb 已就绪" 信号。LocalDbGate 在
@@ -5220,6 +5225,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('maker:hook-control:set-provider-enabled', { provider, enabled }),
     setWorkspaces: (workspaces: Record<string, string>): Promise<{ hook: unknown }> =>
       ipcRenderer.invoke('maker:hook-control:set-workspaces', { workspaces }),
+    setXCompanion: (botId: string | null, expectedBotId: string | null): Promise<{ hook: unknown }> =>
+      ipcRenderer.invoke('maker:hook-control:set-x-companion', { botId, expectedBotId }),
     setProviderDefaultWorkspace: (
       provider: 'telegram' | 'x',
       alias: string | null,
@@ -7975,6 +7982,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       getCodexRateLimits: (providerId?: string): Promise<MobileCodexRateLimitsResult> =>
         ipcRenderer.invoke('maker:usage:codex-rate-limits', providerId),
       /** Consume one desktop-issued reset offer; Main validates its account and expiry. */
+      setCodexResetAutoUse: (patch: Partial<import('@cindy/maker-shared/device-link-contract').CodexResetAutoUseSettings> | null, accountKey: string, providerId?: string): Promise<MobileCodexRateLimitsResult> =>
+        ipcRenderer.invoke('maker:usage:codex-reset-auto-use', patch, accountKey, providerId),
       consumeCodexRateLimitReset: (idempotencyKey: string, providerId?: string): Promise<MobileCodexRateLimitResetResult> =>
         ipcRenderer.invoke('maker:usage:codex-rate-limit-reset', idempotencyKey, providerId),
       /** Claude 订阅账号余量 (5h/周/分模型窗口, cached-first, main 侧按需后台刷新)。 */
