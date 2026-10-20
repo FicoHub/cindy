@@ -16739,7 +16739,7 @@
     "incomplete": "Some content could not be displayed."
   },
   "setupMigration": {
-    "title": "Move from Another Computer",
+    "title": "Migration Assistant",
     "back": "← Back",
     "cancel": "Cancel",
     "listSeparator": ", ",
@@ -16954,10 +16954,9 @@
       "updateChannel": "Beta channel"
     },
     "settings": {
-      "title": "Move",
-      "label": "Move settings from another computer",
-      "hint": "Set up this computer with the plugins, skills, settings and connections from another one",
-      "start": "Start Moving",
+      "title": "Migration Assistant",
+      "description": "On a new computer, copy over all the features, plugins and settings Cindy is connected to on your other computers, ready to use.",
+      "start": "Open Migration Assistant",
       "pending_one": "{{count}} item still to do on this computer",
       "pending_other": "{{count}} items still to do on this computer",
       "allDone": "Everything to do on this computer is done",
@@ -16965,9 +16964,9 @@
       "closeChecklist": "Close List"
     },
     "suggestion": {
-      "title": "Move Settings from “{{name}}”?",
-      "description": "You can set up this computer with the plugins, skills, settings and connections from that one. Anything that needs a new sign-in or permission here is listed for you. You can also start later in Settings → General.",
-      "confirm": "Start Moving",
+      "title": "Use Migration Assistant to move from “{{name}}”?",
+      "description": "You can set up this computer with the plugins, skills, settings and connections from that one. Anything that needs a new sign-in or permission here is listed for you. You can also open it later in Settings → General → Migration Assistant.",
+      "confirm": "Open Migration Assistant",
       "later": "Not Now"
     }
   }

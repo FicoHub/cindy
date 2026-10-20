@@ -1,11 +1,12 @@
 /**
- * Settings → General: start new-computer setup, and keep the one-time checklist from the
+ * Settings → General → Migration Assistant: start new-computer setup, and keep the one-time checklist from the
  * last setup visible until each item is done (docs/product-rules/new-device-setup-migration.md).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { SetupMigrationChecklist } from '@/features/setup-migration/SetupMigrationChecklist';
 import { openChecklistRoute } from '@/features/setup-migration/checklistTargets';
 import {
@@ -60,12 +61,8 @@ export function SetupMigrationSection() {
       <h2 className={SETTINGS_SECTION_TITLE_CLASS}>{t('setupMigration.settings.title')}</h2>
       <div className={SETTINGS_CARD_CLASS}>
         <div className={SETTINGS_ROW_CLASS}>
-          <span className="flex min-w-0 flex-col gap-1">
-            <span className={SETTINGS_ROW_LABEL_CLASS}>
-              {t('setupMigration.settings.label')}
-            </span>
-            <span className={SETTINGS_ROW_HINT_CLASS}>{t('setupMigration.settings.hint')}</span>
-          </span>
+          {/* The section title already names the feature; the row carries only its one-line description. */}
+          <span className={cn('min-w-0', SETTINGS_ROW_LABEL_CLASS)}>{t('setupMigration.settings.description')}</span>
           <Button variant="secondary" size="md" className="shrink-0" onClick={() => openSetupMigration()}>
             {t('setupMigration.settings.start')}
           </Button>

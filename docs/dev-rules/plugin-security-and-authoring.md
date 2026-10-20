@@ -220,7 +220,7 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 
 - 首次安装只来自明确依据：用户导入本地 `.cindy`、明确要求当前 Agent 调用
   `ghost_forge_install`、用户点击某个市场条目的安装、当前 Agent 按用户请求与既有操作授权
-  调用 `ghost_market_install` 安装选定的缺失插件，用户在「从其他电脑迁移」中选择并确认的
+  调用 `ghost_market_install` 安装选定的缺失插件，用户在「迁移助理」中选择并确认的
   市场插件（[新电脑设置](../product-rules/new-device-setup-migration.md)），或服务端为当前
   owner 下发 `defaultInstall`。安装成功默认启用。
 - **安装／更新确认**（`shared/ghostInstallConsent.ts` 判据，`main/cindy-brain/ghostInstallConsent.ts`
@@ -247,7 +247,7 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
     租约内捕获 owner 并传入装入入口，等锁结束后若账号已切换则拒绝取租约。每条装入路径都
     必须显式交出确认策略（`prompt`／`automatic`／`exempt`）或锁外求得的结论，签名上必填，
     新增路径无法漏掉。
-  - 「从其他电脑迁移」仍走 `prompt` 策略与上面的两段式：迁移窗口展示 Main 按这台电脑市场
+  - 「迁移助理」仍走 `prompt` 策略与上面的两段式：迁移窗口展示 Main 按这台电脑市场
     release 的 manifest 算出的确认事实（`evaluateGhostInstallConsent`），用户一次确认整批；
     安装时 prompt 只在真实包算出的事实与用户确认的事实一致时回答「已确认」，否则回落到发起窗口
     的普通逐个确认。批准只来自同一窗口、同一账号的计划，Renderer 只能选择计划内的条目，不能

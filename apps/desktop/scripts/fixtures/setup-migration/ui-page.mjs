@@ -141,7 +141,7 @@ export default {
   },
   async check(page, ui) {
     if (ui.case === 'settings') {
-      await page.getByText(await ui.t('setupMigration.settings.label'), { exact: true }).waitFor();
+      await page.getByText(await ui.t('setupMigration.settings.description'), { exact: true }).waitFor();
       return;
     }
     if (ui.case === 'read-error') {
