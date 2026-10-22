@@ -1,11 +1,13 @@
 /**
- * 任务级的供应商组偏好(docs/product-rules/provider-groups.md §6.2「任务进行中换号」)：用户在换号提示里选了
- * 「以后自动换，不再询问」的任务，之后用户自己发消息前直接换、不再弹窗；选了「不换，以后别问」的任务，之后不再提议换号。
+ * 任务级的供应商组偏好(docs/product-rules/provider-groups.md §6.2「任务进行中换号」)：
+ * - 「以后自动换」：2026-10-21 版换号弹窗里勾过的任务，之后用户自己发消息前直接换。现在由组设置里的开关代替，
+ *   旧记录与旧手机发来的 `remember: true` 仍照常生效。
+ * - 「暂不提醒」：用户关掉了输入框上方的换号提示，这个任务到这一轮配额重置前不再提议换号。
  * 只对那一个任务有效，两者互斥，后选的覆盖先选的。
  *
  * 记在任务所在电脑上(发送前的检查在这里跑)，按账号存放，跨重启保留：
- * `userData/owners/<账号>/provider-group-session-prefs.json`，只有任务 id 与选择的时间，不含消息、凭证或用户身份。
- * 每种超出容量时淘汰最久之前选的。
+ * `userData/owners/<账号>/provider-group-session-prefs.json`，只有任务 id 与时间，不含消息、凭证或用户身份。
+ * 每种超出容量时淘汰最早的。
  */
 import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
@@ -14,8 +16,8 @@ import { createOverrideSettingsFile } from '../maker-host/override-settings-file
 interface SessionPrefsFile {
   /** 任务 id → 打开「以后自动换」的时间(unix ms)。 */
   autoRebalance: Record<string, number>;
-  /** 任务 id → 选「不换，以后别问」的时间(unix ms)。旧版本不认识这个字段，读到的仍是原来的行为。 */
-  declineRebalance: Record<string, number>;
+  /** 任务 id → 换号提示暂不出现到这个时刻(unix ms)。旧版本不认识这个字段，读到的仍是原来的行为。 */
+  snoozeRebalance: Record<string, number>;
 }
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -40,7 +42,7 @@ function normalizeSessions(value: unknown): Record<string, number> {
 
 function normalize(raw: unknown): SessionPrefsFile {
   const value = raw as Partial<SessionPrefsFile> | null;
-  return { autoRebalance: normalizeSessions(value?.autoRebalance), declineRebalance: normalizeSessions(value?.declineRebalance) };
+  return { autoRebalance: normalizeSessions(value?.autoRebalance), snoozeRebalance: normalizeSessions(value?.snoozeRebalance) };
 }
 
 function without(sessions: Record<string, number>, sessionId: string): Record<string, number> {
@@ -50,10 +52,15 @@ function without(sessions: Record<string, number>, sessionId: string): Record<st
   return rest;
 }
 
+/** 去掉已经到期的暂不提醒，文件不会因为关过提示的任务一直变大。 */
+function unexpired(sessions: Record<string, number>, now: number): Record<string, number> {
+  return Object.fromEntries(Object.entries(sessions).filter(([, until]) => until > now));
+}
+
 const store = createOverrideSettingsFile<SessionPrefsFile>({
   filePath: () => ownerScopedUserDataPath('provider-group-session-prefs.json'),
   scopeKey: activeOwnerScopeKey,
-  defaults: { autoRebalance: {}, declineRebalance: {} },
+  defaults: { autoRebalance: {}, snoozeRebalance: {} },
   normalize,
   log: desktopMakerLogger.child('provider-group-session-prefs'),
   label: 'provider-group-session-prefs',
@@ -69,27 +76,28 @@ export function readProviderGroupAutoRebalance(sessionId: string): boolean {
   return store.read().autoRebalance[sessionId] !== undefined;
 }
 
-/** 记下这个任务以后自动换号(同时撤掉「以后别问」)。 */
+/** 记下这个任务以后自动换号(同时撤掉暂不提醒)。 */
 export async function writeProviderGroupAutoRebalance(sessionId: string, now: number = Date.now()): Promise<void> {
   if (!SESSION_ID_PATTERN.test(sessionId)) return;
   await store.updateAtomic(({ value }) => ({
     autoRebalance: prune({ ...value.autoRebalance, [sessionId]: now }),
-    declineRebalance: without(value.declineRebalance, sessionId),
+    snoozeRebalance: without(value.snoozeRebalance, sessionId),
   }));
 }
 
-/** 这个任务选过「不换，以后别问」。 */
-export function readProviderGroupDeclineRebalance(sessionId: string): boolean {
+/** 这个任务的换号提示此刻处于暂不提醒。 */
+export function readProviderGroupRebalanceSnoozed(sessionId: string, now: number = Date.now()): boolean {
   if (!SESSION_ID_PATTERN.test(sessionId)) return false;
   store.invalidateIfChanged();
-  return store.read().declineRebalance[sessionId] !== undefined;
+  const until = store.read().snoozeRebalance[sessionId];
+  return until !== undefined && until > now;
 }
 
-/** 记下这个任务以后不再提议换号(同时撤掉「以后自动换」)。 */
-export async function writeProviderGroupDeclineRebalance(sessionId: string, now: number = Date.now()): Promise<void> {
-  if (!SESSION_ID_PATTERN.test(sessionId)) return;
+/** 这个任务的换号提示暂不出现到 `until`(同时撤掉「以后自动换」)。 */
+export async function writeProviderGroupRebalanceSnooze(sessionId: string, until: number, now: number = Date.now()): Promise<void> {
+  if (!SESSION_ID_PATTERN.test(sessionId) || !(until > now)) return;
   await store.updateAtomic(({ value }) => ({
     autoRebalance: without(value.autoRebalance, sessionId),
-    declineRebalance: prune({ ...value.declineRebalance, [sessionId]: now }),
+    snoozeRebalance: prune({ ...unexpired(value.snoozeRebalance, now), [sessionId]: until }),
   }));
 }

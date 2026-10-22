@@ -120,6 +120,13 @@ describe('accounts on the same computer', () => {
     ],
   };
 
+  it('keeps automatic balancing only when it is turned on', () => {
+    expect(normalizeProviderGroupConfig({ ...raw, autoRebalance: true }, 'openai')?.autoRebalance).toBe(true);
+    for (const value of [false, 'true', undefined]) {
+      expect('autoRebalance' in normalizeProviderGroupConfig({ ...raw, autoRebalance: value }, 'openai')!).toBe(false);
+    }
+  });
+
   it('counts each computer once however many of its accounts are in the group', () => {
     const config = normalizeProviderGroupConfig(raw, 'openai')!;
     expect(config.members).toHaveLength(4);

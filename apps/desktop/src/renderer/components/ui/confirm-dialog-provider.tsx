@@ -78,23 +78,14 @@ export interface ConfirmWithCheckboxOptions extends Omit<ConfirmOptions, 'dontSh
   checkboxLabel: string;
   /** 复选框初始勾选态,缺省 false;每次弹出都复位到该值。 */
   checkboxDefaultChecked?: boolean;
-  /** 可选第三按钮文案:点它返回 `{ ok: false, tertiary: true }`,与取消区分开。 */
-  tertiaryText?: string;
-}
-
-export interface ConfirmWithCheckboxResult {
-  ok: boolean;
-  checked: boolean;
-  /** 点的是第三按钮(只有给了 tertiaryText 才可能为 true)。 */
-  tertiary?: boolean;
 }
 
 interface ConfirmDialogContextValue {
   confirm: (options: ConfirmOptions, signal?: AbortSignal) => Promise<boolean>;
   /** 三状态 confirm — 用于「保存 / 不保存 / 取消」这类需要区分 cancel 与 negative 的场景。 */
   confirmThree: (options: ConfirmThreeOptions) => Promise<ConfirmThreeResult>;
-  /** 带业务复选框(初始勾选态由 checkboxDefaultChecked 决定,缺省不勾;取消与第三按钮时 checked 恒为 false)。 */
-  confirmWithCheckbox: (options: ConfirmWithCheckboxOptions) => Promise<ConfirmWithCheckboxResult>;
+  /** 带业务复选框(初始勾选态由 checkboxDefaultChecked 决定,缺省不勾;取消时 checked 恒为 false)。 */
+  confirmWithCheckbox: (options: ConfirmWithCheckboxOptions) => Promise<{ ok: boolean; checked: boolean }>;
 }
 
 interface QueueItem {
@@ -215,17 +206,13 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
   );
 
   const confirmWithCheckbox = useCallback(
-    (options: ConfirmWithCheckboxOptions): Promise<ConfirmWithCheckboxResult> => {
+    (options: ConfirmWithCheckboxOptions): Promise<{ ok: boolean; checked: boolean }> => {
       return new Promise((resolve) => {
         const item: QueueItem = {
           options,
           // ConfirmDialog 的复选框状态经 onConfirm({dontShowAgain}) 回传,
-          // 这里只是换个语义消费;取消与第三按钮路径拿不到勾选态,按未勾处理。
-          resolve: (r, checked) => resolve({
-            ok: r === 'confirm',
-            checked: r === 'confirm' && Boolean(checked),
-            ...(r === 'tertiary' ? { tertiary: true } : {}),
-          }),
+          // 这里只是换个语义消费;取消路径拿不到勾选态,按未勾处理。
+          resolve: (r, checked) => resolve({ ok: r === 'confirm', checked: Boolean(checked) }),
         };
         queueRef.current.push(item);
         if (!isShowingRef.current) {

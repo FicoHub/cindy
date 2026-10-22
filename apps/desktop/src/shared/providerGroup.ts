@@ -61,6 +61,11 @@ export interface ProviderGroupConfig {
   strategy: ProviderGroupStrategy;
   /** 组内电脑失败时自动换一台继续，默认开启。 */
   autoSwitch: boolean;
+  /**
+   * 任务进行中换号不再提醒、直接换(provider-groups.md §6.2)，默认关闭。旧版本不认识这个字段，读到的是关闭；
+   * 只在打开时写出，旧版本保存组设置会把它丢掉(回到关闭，即提醒)。
+   */
+  autoRebalance?: boolean;
   members: ProviderGroupMember[];
 }
 
@@ -385,7 +390,7 @@ export function normalizeProviderGroupConfig(raw: unknown, groupProviderId: stri
     members.push(member);
   }
   if (members.length === 0) return null;
-  return { strategy, autoSwitch: value.autoSwitch !== false, members };
+  return { strategy, autoSwitch: value.autoSwitch !== false, ...(value.autoRebalance === true ? { autoRebalance: true } : {}), members };
 }
 
 // ─── 同账号电脑之间(`maker:provider:list` 的 `group` 字段与 `provider-group:remote` 通道) ─────
