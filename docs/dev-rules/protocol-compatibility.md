@@ -1625,7 +1625,8 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
     负载与绑定。旧版本回 `CHANNEL_NOT_ALLOWED`(没有这个通道)或 `[INVALID_PARAMS] unknown provider group action`(有通道没有这个
     动作)，控制端一律按没归组处理，即与改动前相同。
   - `rebalance-suggestion { sessionId }` / `rebalance-decision { sessionId, memberKey, remember: boolean }`(2026-10-21，任务进行中
-    换号，provider-groups.md §6.2)：同样发给**任务所在的电脑**，见下方「供应商组任务进行中换号」。
+    换号，provider-groups.md §6.2)与 `rebalance-decline { sessionId }`(2026-10-22)：同样发给**任务所在的电脑**，见下方
+    「供应商组任务进行中换号」。
   旧 O 回 `CHANNEL_NOT_ALLOWED`：`pick` 按 `none` 处理，任务照旧直接在 O 上运行。
 - **`maker:provider:list` 新增可选字段 `group`**：只对同账号调用方、只加在建了组且「允许被远程调用」的供应商上：
   `{ strategy, autoSwitch, members: [{ key, kind, agentDeviceId, providerId, label?, paused }] }`(并发上限与权重不外发)。
@@ -1730,6 +1731,9 @@ B 上的 Worker 是一条普通任务，`sessions.orca_remote_lead`(migration 01
   - `rebalance-decision { sessionId, memberKey, remember, clientId? }` → `{ ok: boolean }`：只允许这个任务中匹配 `clientId` 的消息
     发送前换到 `memberKey`（2 分钟内有效，定时任务不消费）；复用 `persistUserMessage.clientId`，不增加发送协议字段。
     缺少消息 ID 或 `memberKey` 不在组里回 `ok: false`，不记决定与偏好；`remember: true` 时另记这个任务以后自动换。
+  - `rebalance-decline { sessionId }`（2026-10-22）→ `{ ok: boolean }`：用户选「不换，以后别问」，任务所在电脑记下这个任务以后
+    不再提议换号（之后 `rebalance-suggestion` 回 `null`），并撤掉「以后自动换」；没归组回 `ok: false`。用独立动作而不是给
+    `rebalance-decision` 加字段：旧端会忽略多出的字段、把它当成确认换号。旧端回 `[INVALID_PARAMS]`，客户端忽略，下一条照旧再问。
   - 解析：`sessionId`、`clientId` 与 `memberKey` 按已有远程 id 规则校验，`remember` 必须是布尔值，坏请求回 `[INVALID_PARAMS]`。客户端读回包用
     `parseProviderGroupRebalanceSuggestion`（手机端 `parseMobileRebalanceSuggestion`，口径相同），格式不对按不提议处理。
 - **时机**：客户端在任务空闲时预先问 `rebalance-suggestion`（变空闲、打开任务时，空闲期间每 5 分钟；单次最多等 5 秒），

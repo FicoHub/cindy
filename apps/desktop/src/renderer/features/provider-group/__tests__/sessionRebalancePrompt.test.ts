@@ -19,7 +19,7 @@ const suggestion = (kind: 'ask' | 'auto') => ({
   quota: { usedPercent: 20, resetAtMs: Date.now() + 86_400_000, windowMs: 7 * 86_400_000 },
 });
 
-type Answer = { ok: boolean; checked: boolean };
+type Answer = { ok: boolean; checked: boolean; tertiary?: boolean };
 
 function setup(reply: () => Promise<unknown>, answer: Answer = { ok: false, checked: false }) {
   const command = vi.fn((request: { action: string }) =>
@@ -61,6 +61,16 @@ describe('offerSessionRebalance', () => {
     // 一次提议只管一条消息：下一条等任务再空闲、重新问过才可能再问。
     await offerSessionRebalance({ sessionId: 's1', confirmWithCheckbox: h.confirmWithCheckbox, t });
     expect(h.confirmWithCheckbox).toHaveBeenCalledTimes(kind === 'ask' ? 1 : 0);
+  });
+
+  it('stay and stop asking: records the decline for this task and sends to the current account', async () => {
+    const h = setup(async () => suggestion('ask'), { ok: false, checked: false, tertiary: true });
+    await prefetchSessionRebalance('s1');
+    const record = await offerSessionRebalance({ sessionId: 's1', confirmWithCheckbox: h.confirmWithCheckbox, t });
+    expect(record).toBeUndefined();
+    expect(h.confirmWithCheckbox.mock.calls[0][0]).toMatchObject({ tertiaryText: t('providerGroup.rebalance.decline') });
+    expect(h.decisions()).toEqual([]);
+    expect(h.command.mock.calls.map(([request]) => request)).toContainEqual({ action: 'rebalance-decline', sessionId: 's1' });
   });
 
   it('sends at once without asking when nothing usable was fetched beforehand', async () => {

@@ -86,6 +86,9 @@ describe('switching accounts between messages', () => {
       .toEqual({ action: 'rebalance-suggestion', sessionId: 's1' });
     expect(parseProviderGroupRemoteRequest({ action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: true }))
       .toEqual({ action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: true });
+    expect(parseProviderGroupRemoteRequest({ action: 'rebalance-decline', sessionId: 's1' }))
+      .toEqual({ action: 'rebalance-decline', sessionId: 's1' });
+    expect(() => parseProviderGroupRemoteRequest({ action: 'rebalance-decline', sessionId: 'a b' })).toThrow();
     for (const bad of [{ remember: 'true' }, { memberKey: 'a b' }, { memberKey: '' }]) {
       expect(() => parseProviderGroupRemoteRequest({
         action: 'rebalance-decision', sessionId: 's1', memberKey: 'device:mini:anthropic', remember: false, ...bad,

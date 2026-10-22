@@ -748,6 +748,7 @@
       "quotaReset": "{{left}}% 남음 · {{reset}}",
       "confirm": "전환",
       "cancel": "취소",
+      "decline": "유지, 다시 묻지 않기",
       "remember": "앞으로 묻지 않고 자동 전환(이 작업만)"
     },
     "deleteConfirm": {

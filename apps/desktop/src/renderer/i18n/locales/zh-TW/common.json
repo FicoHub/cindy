@@ -748,6 +748,7 @@
       "quotaReset": "還剩 {{left}}%，{{reset}}",
       "confirm": "換過去",
       "cancel": "取消",
+      "decline": "不換，以後別問",
       "remember": "以後自動換，不再詢問（僅此任務）"
     },
     "deleteConfirm": {

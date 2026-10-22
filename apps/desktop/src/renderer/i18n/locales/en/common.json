@@ -758,6 +758,7 @@
       "quotaReset": "{{left}}% left · {{reset}}",
       "confirm": "Switch",
       "cancel": "Cancel",
+      "decline": "Stay, don’t ask again",
       "remember": "Switch automatically from now on (this task only)"
     },
     "deleteConfirm": {

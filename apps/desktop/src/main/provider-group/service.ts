@@ -199,6 +199,10 @@ export interface ProviderGroupServiceDeps {
   readAutoRebalance?(sessionId: string): boolean;
   /** 记下这个任务以后自动换号。 */
   writeAutoRebalance?(sessionId: string): Promise<void>;
+  /** 这个任务选过「不换，以后别问」：不再提议换号。不提供 = 都没选过。 */
+  readDeclineRebalance?(sessionId: string): boolean;
+  /** 记下这个任务以后不再提议换号。 */
+  writeDeclineRebalance?(sessionId: string): Promise<void>;
   /**
    * 分享的人这边的「需要换一台」凭证(guestSwitch.ts)；不提供 = 分享来的供应商出错时一律交回原有处理。
    */
@@ -300,6 +304,11 @@ export interface ProviderGroupService {
    * `remember` = 以后自动换。`memberKey` 不在组里返回 false。
    */
   rebalanceDecision(sessionId: string, memberKey: string, remember: boolean, clientId?: string): Promise<boolean>;
+  /**
+   * 用户在换号提示里选「不换，以后别问」：这个任务以后不再提议换号，这条消息照常发到原来的账号。
+   * 只记任务级偏好，不影响出问题时的自动换电脑(§6.1)。没归组或没记上返回 false。
+   */
+  rebalanceDecline(sessionId: string): Promise<boolean>;
 }
 
 export interface ProviderGroupBeforeSendOptions {
@@ -1996,6 +2005,7 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
     },
 
     async rebalanceSuggestion(sessionId) {
+      if (deps.readDeclineRebalance?.(sessionId)) return null;
       const context = await rebalanceContext(sessionId);
       if (!context) return null;
       const { binding, source, config, row, current } = context;
@@ -2024,6 +2034,18 @@ export function createProviderGroupService(deps: ProviderGroupServiceDeps): Prov
         }
       }
       return true;
+    },
+
+    async rebalanceDecline(sessionId) {
+      if (!deps.writeDeclineRebalance || !deps.readBinding(sessionId)) return false;
+      try {
+        await deps.writeDeclineRebalance(sessionId);
+        return true;
+      } catch (error) {
+        // 没记住只影响下一条消息还会再问。
+        deps.log.warn('provider group: remembering declined balancing failed', { sessionId, error: errorText(error) });
+        return false;
+      }
     },
 
     claimGuestStartSwitch(sessionId) {

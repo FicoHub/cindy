@@ -748,6 +748,7 @@
       "quotaReset": "残り {{left}}%・{{reset}}",
       "confirm": "切り替える",
       "cancel": "キャンセル",
+      "decline": "切り替えず、今後は確認しない",
       "remember": "今後は確認せず自動で切り替える（このタスクのみ）"
     },
     "deleteConfirm": {

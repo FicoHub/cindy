@@ -80,6 +80,7 @@ function harness(options: {
   const released = new Map<string, ProviderGroupRef>();
   /** 选过「以后自动换号」的任务。 */
   const autoRebalance = new Set<string>();
+  const declineRebalance = new Set<string>();
   // 现读那台的状态：默认与组内电脑状态同一份离线名单，单测按需逐次指定。
   const probe = vi.fn(async (agentDeviceId: string, providerId: string): Promise<ResolvedMemberState> => {
     const found = config.members.find((m) => m.agentDeviceId === agentDeviceId && m.providerId === providerId);
@@ -159,6 +160,10 @@ function harness(options: {
     readAutoRebalance: vi.fn((id: string) => autoRebalance.has(id)),
     writeAutoRebalance: vi.fn(async (id: string) => {
       autoRebalance.add(id);
+    }),
+    readDeclineRebalance: vi.fn((id: string) => declineRebalance.has(id)),
+    writeDeclineRebalance: vi.fn(async (id: string) => {
+      declineRebalance.add(id);
     }),
     now: () => now,
     // 等原电脑恢复时的退避不真等。
@@ -1358,6 +1363,20 @@ describe('switching accounts between messages to balance quota', () => {
     expect(h.deps.writeAutoRebalance).toHaveBeenCalledWith('s1');
     expect(await h.service.rebalanceSuggestion('s1')).toMatchObject({ kind: 'auto', memberKey: MINI.key });
     expect(await h.service.rebalanceSuggestion('s2')).toMatchObject({ kind: 'ask', memberKey: MINI.key });
+  });
+
+  // 2026-10-22 用户反馈：只能「取消」时每条消息都会再弹，像流氓软件。选「不换，以后别问」只停这个任务的提议。
+  it('stops offering for that task only after “stay, don’t ask again”', async () => {
+    const h = paced();
+    h.bindings.set('s2', { providerId: 'anthropic', memberKey: 'local', at: 1_000_000 });
+    expect(await h.service.rebalanceDecline('s1')).toBe(true);
+    expect(h.deps.writeDeclineRebalance).toHaveBeenCalledWith('s1');
+    expect(await h.service.rebalanceSuggestion('s1')).toBeNull();
+    expect(await h.service.rebalanceSuggestion('s2')).toMatchObject({ kind: 'ask', memberKey: MINI.key });
+    await h.service.beforeSend('s1', { clientId: 'message-a' });
+    expect(h.deps.switchAgentLocation).not.toHaveBeenCalled();
+    // 没归组的任务不记。
+    expect(await h.service.rebalanceDecline('ungrouped')).toBe(false);
   });
 
   // §6.2：A 确认后离开而未发送，B 取消或没有提议时不能继承 A 的换号；此前只按任务 id 暂存。

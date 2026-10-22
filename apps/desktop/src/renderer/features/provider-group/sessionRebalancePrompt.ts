@@ -1,7 +1,7 @@
 /**
  * 任务进行中换号(provider-groups.md §6.2，2026-10-21 用户裁决)：用户自己发下一条消息前，看任务所在电脑是否提议为了
- * 均匀用完各账号的配额换一台。要换就弹窗确认(换过去 / 取消，可勾「以后自动换」，只管这个任务)；这个任务勾过的
- * 不再弹窗、直接换，消息里的分隔条写明原因。
+ * 均匀用完各账号的配额换一台。要换就弹窗确认(换过去 / 不换，以后别问 / 取消，可勾「以后自动换」，只管这个任务)；
+ * 这个任务勾过「以后自动换」的不再弹窗、直接换，消息里的分隔条写明原因；选过「以后别问」的不再提议换号。
  *
  * 换号的判断和记录都在任务所在电脑：本机任务问本机，被控电脑上的任务经设备互联问那台。为了不让每次发送都多等一次往返，
  * 提议在任务空闲时预先问好(上一轮结束、打开任务时，空闲期间每 5 分钟再问)，发送时只用问好的结果；没问到、问不到、
@@ -34,10 +34,14 @@ type ConfirmWithCheckbox = (options: {
   confirmText?: string;
   cancelText?: string;
   checkboxLabel: string;
+  tertiaryText?: string;
   autoFocusConfirm?: boolean;
-}) => Promise<{ ok: boolean; checked: boolean }>;
+}) => Promise<{ ok: boolean; checked: boolean; tertiary?: boolean }>;
 
-type RebalanceRequest = Extract<ProviderGroupCommand, { action: 'rebalance-suggestion' | 'rebalance-decision' }>;
+type RebalanceRequest = Extract<
+  ProviderGroupCommand,
+  { action: 'rebalance-suggestion' | 'rebalance-decision' | 'rebalance-decline' }
+>;
 
 const prefetched = new Map<string, { at: number; suggestion: ProviderGroupRebalanceSuggestion }>();
 const inFlight = new Set<string>();
@@ -121,6 +125,15 @@ async function recordDecision(
   }
 }
 
+/** 记下「不换，以后别问」；旧版本不认识这个请求时没记上，下一条消息还会再问。 */
+async function recordDecline(sessionId: string, hostDeviceId: string | undefined): Promise<void> {
+  try {
+    await command(hostDeviceId, { action: 'rebalance-decline', sessionId });
+  } catch {
+    // 照常发到原来的账号。
+  }
+}
+
 /** 弹窗正文：换到哪台、那台的配额还剩多少、多久重置，以及换过去会丢一部分上下文。 */
 export function describeSessionRebalance(
   suggestion: NonNullable<ProviderGroupRebalanceSuggestion>,
@@ -153,14 +166,20 @@ export async function offerSessionRebalance(options: {
   if (suggestion.kind === 'auto') {
     return async (clientId) => { await recordDecision(sessionId, suggestion.memberKey, false, hostDeviceId, clientId); };
   }
-  const { ok, checked } = await confirmWithCheckbox({
+  const { ok, checked, tertiary } = await confirmWithCheckbox({
     title: t('providerGroup.rebalance.title', { label: suggestion.label }),
     description: describeSessionRebalance(suggestion, t),
     confirmText: t('providerGroup.rebalance.confirm'),
     cancelText: t('providerGroup.rebalance.cancel'),
+    tertiaryText: t('providerGroup.rebalance.decline'),
     checkboxLabel: t('providerGroup.rebalance.remember'),
     autoFocusConfirm: true,
   });
+  if (tertiary) {
+    // 不拦发送：记录与消息并行，消息照常发到原来的账号。
+    void recordDecline(sessionId, hostDeviceId);
+    return;
+  }
   if (!ok) return;
   return async (clientId) => { await recordDecision(sessionId, suggestion.memberKey, checked, hostDeviceId, clientId); };
 }
