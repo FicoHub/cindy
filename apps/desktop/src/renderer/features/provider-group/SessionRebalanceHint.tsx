@@ -28,7 +28,7 @@ export function SessionRebalanceHint({ sessionId, hostDeviceId, hint }: {
   return (
     <div data-testid="session-rebalance-hint" data-armed={armed || undefined} className="flex min-w-0 select-none items-center gap-2 px-3 py-2">
       <ArrowLeftRight size={14} aria-hidden className="shrink-0 text-[var(--text-secondary)]" />
-      <span role="status" className="min-w-0 flex-1 text-13 leading-[18px] text-[var(--text-secondary)]">{text}</span>
+      <span role="status" className="min-w-0 flex-1 text-13 text-[var(--text-secondary)]">{text}</span>
       <button
         type="button"
         onClick={() => armSessionRebalance(sessionId, hostDeviceId, !armed)}
