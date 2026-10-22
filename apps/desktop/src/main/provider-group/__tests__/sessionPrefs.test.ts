@@ -53,7 +53,19 @@ describe('provider group session prefs', () => {
     expect(prefs.readProviderGroupRebalanceSnoozed('s1', 10_000)).toBe(false);
     await prefs.writeProviderGroupRebalanceSnooze('s2', 30_000, 20_000);
     await prefs.writeProviderGroupRebalanceSnooze('s3', 5_000, 20_000);
-    expect(JSON.parse(fs.readFileSync(file(), 'utf8')).snoozeRebalance).toEqual({ s2: 30_000 });
+    expect(JSON.parse(fs.readFileSync(file(), 'utf8')).snoozeRebalance).toEqual({ s2: { at: 20_000, until: 30_000 } });
+  });
+
+  // review #6810：旧版本不认识 snoozeRebalance 但会原样保留，在旧版本上勾的「以后自动换」不能被更早的关掉压住。
+  it('lets the later choice win when an older version left both on disk', () => {
+    fs.writeFileSync(file(), JSON.stringify({
+      autoRebalance: { later: 5_000, earlier: 1_000 },
+      snoozeRebalance: { later: { at: 2_000, until: 90_000 }, earlier: { at: 3_000, until: 90_000 } },
+    }));
+    expect(prefs.readProviderGroupAutoRebalance('later')).toBe(true);
+    expect(prefs.readProviderGroupRebalanceSnoozed('later', 10_000)).toBe(false);
+    expect(prefs.readProviderGroupAutoRebalance('earlier')).toBe(false);
+    expect(prefs.readProviderGroupRebalanceSnoozed('earlier', 10_000)).toBe(true);
   });
 
   it('reads a file written before snoozing existed', async () => {
