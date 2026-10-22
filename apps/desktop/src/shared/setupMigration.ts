@@ -50,6 +50,9 @@ export const SETUP_MIGRATION_RENDERER_PREF_KEYS: readonly string[] = [
   'chat.sendShortcutPreference',
   'chat.linkOpenPreference',
   'chat.webLinkOpenPreference',
+  // The window-behavior settings file only caches this for macOS window creation; the
+  // switch and the Windows click handling read this key, so both must move together.
+  'input.swallowActivationClick',
 ];
 export const SETUP_MIGRATION_RENDERER_PREF_PREFIXES: readonly string[] = [
   'experimental.',
