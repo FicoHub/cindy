@@ -369,7 +369,7 @@ export function BotSettings({
     );
   }
 
-  const handleChooseAvatar = async (portrait?: string) => {
+  const handleChooseAvatar = async (portrait: string) => {
     if (avatarInFlight.current) return;
     avatarInFlight.current = true;
     setAvatarBusy(true);
@@ -377,9 +377,7 @@ export function BotSettings({
     try {
       await autosave.flush();
       if (autosave.isDirty()) return;
-      const next = portrait
-        ? await chooseBotAvatar(bot.id, portrait.split(',')[1])
-        : await chooseBotAvatar(bot.id);
+      const next = await chooseBotAvatar(bot.id, portrait.split(',')[1]);
       if (!next) return;
       setAvatar(next.avatar);
       setAvatarColor(next.avatarColor);
@@ -395,7 +393,6 @@ export function BotSettings({
     <BotPortraitPicker
       disabled={avatarBusy}
       onChange={portrait => void handleChooseAvatar(portrait)}
-      onUpload={() => void handleChooseAvatar()}
       trigger={
         <button
           type="button"
@@ -658,7 +655,6 @@ export function BotSettings({
                     contacts: 'personalization&section=personalization.contacts',
                     ssh: 'remote-control&section=remoteControl.ssh',
                     slack: 'im-bot&section=imBot.cindy.slack', feishu_bot: 'im-bot', wechat: 'im-bot',
-                    'ios-simulator': 'ghosts',
                   };
                   navigate(kind === 'skill' ? '/skillhub/local' : `/settings?tab=${toolSettings[id ?? ''] ?? 'builtin-tools'}`);
                 });
