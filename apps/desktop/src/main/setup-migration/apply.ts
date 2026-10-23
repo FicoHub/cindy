@@ -203,11 +203,10 @@ export async function applySetupPlan(
       const group = deps.settingsGroup(item.id);
       const values = snapshot.settings.find((candidate) => candidate.id === item.id)?.values;
       if (!group || !values) return 'skipped';
-      // Re-read now: a value the user changed here since the preview is still kept.
-      const { apply } = splitSettingsValues(values, group.readCustomized());
-      if (Object.keys(apply).length === 0) return 'skipped';
-      await group.applyPatch(apply);
-      return 'done';
+      // Decided inside the store's write lock: a value changed here since the preview, by the
+      // user or another process, is still kept.
+      const written = await group.applyPatch((customizedHere) => splitSettingsValues(values, customizedHere).apply);
+      return written ? 'done' : 'skipped';
     });
   }
 
@@ -225,7 +224,7 @@ export function buildApplyChecklist(
 ): SetupMigrationChecklistItem[] {
   const { plan, snapshot, keys } = input;
   const checklist = plan.checklist.filter((item) => {
-    if (item.kind === 'provider-key' || item.kind === 'provider-sign-in') {
+    if (item.kind === 'provider-key' || item.kind === 'provider-connection' || item.kind === 'provider-sign-in') {
       return keys.has(`provider:${item.ref}`);
     }
     if (item.kind === 'mcp-token') return keys.has(`mcp:${item.ref}`);

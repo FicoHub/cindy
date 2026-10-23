@@ -203,6 +203,9 @@ export function buildSetupPlan(input: SetupPlanInputs): SetupMigrationPlan {
       addChecklist({ id: `local-model:${provider.id}`, kind: 'local-model', label: provider.name, ref: provider.id });
       return { key, provider, state: 'unavailable' as const, reason: 'local-only' as const };
     }
+    if (provider.urlSecretsRemoved) {
+      addChecklist({ id: `provider-connection:${provider.id}`, kind: 'provider-connection', label: provider.name, ref: provider.id });
+    }
     if (provider.auth === 'apiKey') {
       addChecklist({ id: `provider-key:${provider.id}`, kind: 'provider-key', label: provider.name, ref: provider.id });
     } else if (provider.auth === 'oauth' || provider.auth === 'native') {

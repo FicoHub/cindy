@@ -20,6 +20,7 @@ export function checklistRoute(item: SetupMigrationChecklistItem): string {
     case 'skill-manual':
       return '/skillhub/local';
     case 'provider-key':
+    case 'provider-connection':
     case 'provider-sign-in':
     case 'local-model':
       return '/settings?tab=providers';

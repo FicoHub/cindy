@@ -17220,6 +17220,11 @@
         "title": "「{{name}}」の API キーを入力",
         "action": "入力する"
       },
+      "provider-connection": {
+        "title": "「{{name}}」の接続先アドレスを入力し直す",
+        "detail": "元のアドレスのユーザー情報やクエリパラメーターには認証情報が含まれる可能性があるため、移行していません",
+        "action": "入力する"
+      },
       "provider-sign-in": {
         "title": "「{{name}}」にログイン",
         "action": "ログイン"

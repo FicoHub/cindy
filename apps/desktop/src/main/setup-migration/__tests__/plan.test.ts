@@ -122,6 +122,8 @@ describe('buildSetupPlan', () => {
             { id: 'openrouter', name: 'OpenRouter', auth: 'apiKey', config: { id: 'openrouter', runtimes: { codex: { baseUrl: 'https://openrouter.ai/api/v1' } } } },
             { id: 'ollama', name: 'My Ollama', auth: 'none', config: { id: 'ollama', runtimes: { pi: { baseUrl: 'http://127.0.0.1:11434/v1' } } } },
             { id: 'existing', name: 'Existing', auth: 'oauth', config: { id: 'existing', runtimes: {} } },
+            // The source dropped a query-string key from its address; the address is entered again.
+            { id: 'gateway', name: 'Gateway', auth: 'none', urlSecretsRemoved: true, config: { id: 'gateway', runtimes: { codex: { baseUrl: 'https://gw.example.com/v1' } } } },
           ],
           mcpServers: [
             { id: 'docs', name: 'Docs', transport: 'http', url: 'https://mcp.example.com', headers: {}, hasToken: true },
@@ -134,9 +136,10 @@ describe('buildSetupPlan', () => {
       ['openrouter', 'ready', null],
       ['ollama', 'unavailable', 'local-only'],
       ['existing', 'present', null],
+      ['gateway', 'ready', null],
     ]);
     expect(plan.checklist.map((item) => item.id)).toEqual(
-      expect.arrayContaining(['provider-key:openrouter', 'local-model:ollama', 'mcp-token:docs']),
+      expect.arrayContaining(['provider-key:openrouter', 'local-model:ollama', 'mcp-token:docs', 'provider-connection:gateway']),
     );
     expect(plan.checklist.some((item) => item.id.includes('existing'))).toBe(false);
   });

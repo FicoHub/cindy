@@ -365,9 +365,17 @@ export function createOverrideSettingsFile<T>(options: {
 export interface PortableOverrideSettings {
   /** Values the user changed on this computer (normalized), minus excluded keys. */
   readCustomized(): Record<string, unknown>;
-  /** Writes another computer's changed values; the store still normalizes every key. */
-  applyPatch(patch: Record<string, unknown>): Promise<void>;
+  /**
+   * Writes another computer's changed values; the store still normalizes every key.
+   * `select` runs inside this store's cross-process write lock and receives the values
+   * customized here at that moment, so a key changed after the preview (in any process) is
+   * never overwritten. Resolves whether anything was written.
+   */
+  applyPatch(select: (customizedHere: Record<string, unknown>) => Record<string, unknown>): Promise<boolean>;
 }
+
+/** Thrown inside the write lock to leave the file untouched when nothing remains to write. */
+class NothingToWrite extends Error {}
 
 const PORTABLE_SETTINGS_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 
@@ -395,33 +403,41 @@ export function portableOverrideSettings<T>(
     }
     return options.filter ? options.filter(out) : out;
   };
+  const customizedOf = (state: OverrideSettingsState<T>): Record<string, unknown> => {
+    const value = state.value as Record<string, unknown>;
+    const changed: Record<string, unknown> = {};
+    for (const key of state.customizedKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) changed[key] = value[key];
+    }
+    return keep(changed);
+  };
   return {
     readCustomized() {
-      const state = resolve().readState();
-      const value = state.value as Record<string, unknown>;
-      const changed: Record<string, unknown> = {};
-      for (const key of state.customizedKeys) {
-        if (Object.prototype.hasOwnProperty.call(value, key)) changed[key] = value[key];
-      }
-      return keep(changed);
+      return customizedOf(resolve().readState());
     },
-    async applyPatch(patch) {
-      const store = resolve();
-      const state = store.readState();
-      // Keys this version does not know would normalize to nothing yet still mark the
-      // store as customized; only accept keys this store can represent.
-      const known = new Set([
-        ...Object.keys(state.defaults as Record<string, unknown>),
-        ...Object.keys(state.value as Record<string, unknown>),
-        ...(options.optionalKeys ?? []),
-      ]);
-      const values = keep(
-        Object.fromEntries(Object.entries(patch).filter(([key]) => known.has(key))),
-      );
-      if (Object.keys(values).length === 0) return;
-      // An explicit choice on the other computer stays explicit here, even when it equals
-      // this version's default.
-      await store.writePatchAtomic(values as Partial<T>, { preserveDefaults: true });
+    async applyPatch(select) {
+      try {
+        // An explicit choice on the other computer stays explicit here, even when it equals
+        // this version's default.
+        await resolve().updateAtomic((state) => {
+          // Keys this version does not know would normalize to nothing yet still mark the
+          // store as customized; only accept keys this store can represent.
+          const known = new Set([
+            ...Object.keys(state.defaults as Record<string, unknown>),
+            ...Object.keys(state.value as Record<string, unknown>),
+            ...(options.optionalKeys ?? []),
+          ]);
+          const values = keep(
+            Object.fromEntries(Object.entries(select(customizedOf(state))).filter(([key]) => known.has(key))),
+          );
+          if (Object.keys(values).length === 0) throw new NothingToWrite();
+          return values as Partial<T>;
+        }, { preserveDefaults: true });
+        return true;
+      } catch (error) {
+        if (error instanceof NothingToWrite) return false;
+        throw error;
+      }
     },
   };
 }

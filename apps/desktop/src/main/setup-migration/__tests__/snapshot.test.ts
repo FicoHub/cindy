@@ -102,6 +102,48 @@ describe('collectSetupSnapshot', () => {
     ]);
   });
 
+  it('drops credentials carried in custom provider addresses and marks them to be entered again', async () => {
+    // Review repro (PR #6473): a query-string key in modelsUrl survived collect → JSON → parse.
+    const key = 'TEST_ONLY_NOT_A_REAL_KEY_6473';
+    const result = await collectSetupSnapshot(
+      deps({
+        readProviders: async () => [
+          {
+            id: 'review6473',
+            name: 'Review fixture',
+            auth: { method: 'apiKey' },
+            runtimes: {
+              codex: {
+                baseUrl: `https://me:${key}@api.example.com/v1`,
+                wireProtocol: 'openai-responses',
+                modelsUrl: `https://api.example.com/v1/models?api_key=${key}`,
+                requestPath: `/responses?key=${key}`,
+                models: [{ id: 'm', name: 'M', route: { baseUrl: `https://alt.example.com/v1#${key}`, wireProtocol: 'openai-chat' } }],
+              },
+            },
+          },
+          { id: 'clean', name: 'Clean', runtimes: { codex: { baseUrl: 'https://api.example.com/v1', models: [] } } },
+        ],
+      }),
+    );
+    const received = parseSetupSnapshot(JSON.parse(JSON.stringify(result)))!;
+    expect(JSON.stringify(received)).not.toContain(key);
+    expect(received.providers.map((provider) => [provider.id, provider.urlSecretsRemoved ?? false])).toEqual([
+      ['review6473', true],
+      ['clean', false],
+    ]);
+    expect(received.providers[0]!.config).toMatchObject({
+      runtimes: {
+        codex: {
+          baseUrl: 'https://api.example.com/v1',
+          modelsUrl: 'https://api.example.com/v1/models',
+          requestPath: '/responses',
+          models: [{ id: 'm', route: { baseUrl: 'https://alt.example.com/v1' } }],
+        },
+      },
+    });
+  });
+
   it('exports only credential-free Git marketplaces', async () => {
     const result = await collectSetupSnapshot(
       deps({

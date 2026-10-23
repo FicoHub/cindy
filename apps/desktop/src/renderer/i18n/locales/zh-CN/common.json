@@ -17220,6 +17220,11 @@
         "title": "为「{{name}}」填写 API Key",
         "action": "去填写"
       },
+      "provider-connection": {
+        "title": "为「{{name}}」重新填写连接地址",
+        "detail": "原地址里的账号信息或查询参数可能含有凭证，没有一起迁移",
+        "action": "去填写"
+      },
       "provider-sign-in": {
         "title": "登录「{{name}}」",
         "action": "去登录"

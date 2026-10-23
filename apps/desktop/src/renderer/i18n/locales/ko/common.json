@@ -17220,6 +17220,11 @@
         "title": "‘{{name}}’의 API 키 입력",
         "action": "입력하기"
       },
+      "provider-connection": {
+        "title": "‘{{name}}’의 연결 주소 다시 입력",
+        "detail": "원래 주소의 사용자 정보나 쿼리 매개변수에 인증 정보가 있을 수 있어 옮기지 않았습니다",
+        "action": "입력하기"
+      },
       "provider-sign-in": {
         "title": "‘{{name}}’에 로그인",
         "action": "로그인"

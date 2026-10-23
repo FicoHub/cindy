@@ -1,5 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
+import { createOverrideSettingsFile, portableOverrideSettings } from '../../maker-host/override-settings-file.js';
 import type { GhostManifest } from '../../../shared/ghost.js';
 import type { GhostInstallConsentRequest } from '../../../shared/ghostInstallConsent.js';
 import type { SetupMigrationProgress } from '../../../shared/setupMigration.js';
@@ -133,21 +138,42 @@ describe('applySetupPlan', () => {
     ]);
   });
 
-  it('re-reads settings before writing and keeps what the user changed since the preview', async () => {
-    const source = snapshot({ settings: [{ id: 'collaboration', values: { workerSoftLimit: 3, workerHardLimit: 6 } }] });
-    const plan = buildSetupPlan(
-      planInputs({ snapshot: source, settings: [{ id: 'collaboration', customized: {} }] }),
-    );
-    const applyPatch = vi.fn(async () => {});
-    const { deps } = harness({
-      settingsGroup: () => ({ readCustomized: () => ({ workerHardLimit: 10 }), applyPatch }),
-    });
-    const result = await applySetupPlan(
-      { plan, snapshot: source, keys: new Set(['settings:collaboration']), approvedPluginKeys: new Set(), emit: () => {} },
-      deps,
-    );
-    expect(applyPatch).toHaveBeenCalledWith({ workerSoftLimit: 3 });
-    expect(result.results).toEqual([{ key: 'settings:collaboration', outcome: 'done' }]);
+  it('keeps a value another process changed after the preview, deciding inside the write lock', async () => {
+    // Review repro (PR #6473): the preview saw no local value, then another store instance
+    // on the same file wrote limit 9; applying must keep it instead of writing the source's 3.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-setup-apply-'));
+    try {
+      const file = path.join(dir, 'settings.json');
+      const open = () =>
+        createOverrideSettingsFile<{ limit: number; depth: number }>({
+          filePath: () => file,
+          defaults: { limit: 1, depth: 1 },
+          normalize: (raw) => {
+            const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+            return {
+              limit: typeof r.limit === 'number' ? r.limit : 1,
+              depth: typeof r.depth === 'number' ? r.depth : 1,
+            };
+          },
+          log: { info: vi.fn(), warn: vi.fn() },
+          label: 'setup-apply-test',
+        });
+      const here = portableOverrideSettings(open());
+      const source = snapshot({ settings: [{ id: 'collaboration', values: { limit: 3, depth: 2 } }] });
+      const plan = buildSetupPlan(
+        planInputs({ snapshot: source, settings: [{ id: 'collaboration', customized: here.readCustomized() }] }),
+      );
+      await open().writePatchAtomic({ limit: 9 });
+      const { deps } = harness({ settingsGroup: () => here });
+      const result = await applySetupPlan(
+        { plan, snapshot: source, keys: new Set(['settings:collaboration']), approvedPluginKeys: new Set(), emit: () => {} },
+        deps,
+      );
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ limit: 9, depth: 2 });
+      expect(result.results).toEqual([{ key: 'settings:collaboration', outcome: 'done' }]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('keeps going after one failure and installs disabled skills as disabled', async () => {

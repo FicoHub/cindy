@@ -17220,6 +17220,11 @@
         "title": "為「{{name}}」填寫 API Key",
         "action": "前往填寫"
       },
+      "provider-connection": {
+        "title": "為「{{name}}」重新填寫連線位址",
+        "detail": "原位址中的帳號資訊或查詢參數可能含有憑證，沒有一起遷移",
+        "action": "前往填寫"
+      },
       "provider-sign-in": {
         "title": "登入「{{name}}」",
         "action": "前往登入"

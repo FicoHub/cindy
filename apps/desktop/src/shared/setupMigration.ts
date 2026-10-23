@@ -171,6 +171,7 @@ export type SetupMigrationChecklistKind =
   | 'market-source'
   | 'skill-manual'
   | 'provider-key'
+  | 'provider-connection'
   | 'provider-sign-in'
   | 'local-model'
   | 'mcp-token'

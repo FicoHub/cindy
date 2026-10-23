@@ -17274,6 +17274,11 @@
         "title": "Enter the API key for “{{name}}”",
         "action": "Enter Key"
       },
+      "provider-connection": {
+        "title": "Re-enter the connection address for “{{name}}”",
+        "detail": "Sign-in details or query parameters in the original address may contain credentials, so they were not copied",
+        "action": "Enter Address"
+      },
       "provider-sign-in": {
         "title": "Sign in to “{{name}}”",
         "action": "Sign In"

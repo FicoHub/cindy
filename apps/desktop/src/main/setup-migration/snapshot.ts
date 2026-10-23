@@ -252,27 +252,41 @@ export function projectMarketSources(sources: SourceMarketSourceFact[]): SetupSn
  * had any of them is marked as needing its credentials entered again on the other computer.
  */
 function projectMcpServer(server: SourceMcpFact): SetupSnapshotMcpServer | null {
-  let parsed: URL;
   try {
-    parsed = new URL(server.url);
+    new URL(server.url);
   } catch {
     return null;
   }
-  const urlCarriesSecrets = Boolean(parsed.username || parsed.password || parsed.search || parsed.hash);
-  if (urlCarriesSecrets) {
-    parsed.username = '';
-    parsed.password = '';
-    parsed.search = '';
-    parsed.hash = '';
-  }
+  const url = withoutUrlSecrets(server.url);
   return {
     id: server.id,
     name: server.name,
     transport: server.transport,
-    url: urlCarriesSecrets ? parsed.toString() : server.url,
+    url: url.value,
     headers: {},
-    hasToken: server.hasToken || urlCarriesSecrets || Object.keys(server.headers).length > 0,
+    hasToken: server.hasToken || url.removed || Object.keys(server.headers).length > 0,
   };
+}
+
+/**
+ * The user, password, query and fragment parts of a URL can carry credentials
+ * (`?api_key=…`). Absolute URLs lose all of them; a relative request path loses everything
+ * from its query on.
+ */
+function withoutUrlSecrets(value: string): { value: string; removed: boolean } {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    const cut = value.search(/[?#]/);
+    return cut === -1 ? { value, removed: false } : { value: value.slice(0, cut), removed: true };
+  }
+  if (!(parsed.username || parsed.password || parsed.search || parsed.hash)) return { value, removed: false };
+  parsed.username = '';
+  parsed.password = '';
+  parsed.search = '';
+  parsed.hash = '';
+  return { value: parsed.toString(), removed: true };
 }
 
 export function providerAuthKind(config: SourceProviderFact): SetupSnapshotProviderAuth {
@@ -282,22 +296,43 @@ export function providerAuthKind(config: SourceProviderFact): SetupSnapshotProvi
   return 'apiKey';
 }
 
+/** Address fields of a custom provider; any of them may carry credentials in its URL. */
+const PROVIDER_RUNTIME_URL_KEYS = ['baseUrl', 'modelsUrl', 'requestPath'] as const;
+const PROVIDER_ROUTE_URL_KEYS = ['baseUrl', 'requestPath'] as const;
+const PROVIDER_OAUTH_URL_KEYS = ['deviceAuthorizationUrl', 'tokenUrl', 'authorizeUrl', 'modelsDiscoveryUrl'] as const;
+
 function projectProvider(config: SourceProviderFact): SetupSnapshotProvider {
-  // Runtime headers are credential material kept in the secret store; never export them.
-  const runtimes = Object.fromEntries(
-    Object.entries(config.runtimes ?? {}).map(([agent, runtime]) => {
-      if (!runtime || typeof runtime !== 'object') return [agent, runtime];
-      const rest = { ...(runtime as Record<string, unknown>) };
-      delete rest.headers;
-      delete rest.headersState;
-      return [agent, rest];
-    }),
-  );
+  const copy = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+  let urlSecretsRemoved = false;
+  const clean = (target: unknown, keys: readonly string[]) => {
+    if (!target || typeof target !== 'object') return;
+    const record = target as Record<string, unknown>;
+    for (const key of keys) {
+      if (typeof record[key] !== 'string') continue;
+      const url = withoutUrlSecrets(record[key] as string);
+      record[key] = url.value;
+      urlSecretsRemoved ||= url.removed;
+    }
+  };
+  for (const runtime of Object.values((copy.runtimes as Record<string, unknown> | undefined) ?? {})) {
+    if (!runtime || typeof runtime !== 'object') continue;
+    const record = runtime as Record<string, unknown>;
+    // Runtime headers are credential material kept in the secret store; never export them.
+    delete record.headers;
+    delete record.headersState;
+    clean(record, PROVIDER_RUNTIME_URL_KEYS);
+    if (Array.isArray(record.models)) {
+      for (const model of record.models) clean((model as Record<string, unknown> | null)?.route, PROVIDER_ROUTE_URL_KEYS);
+    }
+  }
+  clean((copy.auth as Record<string, unknown> | undefined)?.oauth, PROVIDER_OAUTH_URL_KEYS);
   return {
     id: config.id,
     name: config.name,
     auth: providerAuthKind(config),
-    config: JSON.parse(JSON.stringify({ ...config, runtimes })) as Record<string, unknown>,
+    config: copy,
+    // The addresses arrive without those parts; the user enters them again on that computer.
+    ...(urlSecretsRemoved ? { urlSecretsRemoved: true } : {}),
   };
 }
 

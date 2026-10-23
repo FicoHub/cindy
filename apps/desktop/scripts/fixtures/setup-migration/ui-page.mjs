@@ -68,6 +68,7 @@ const plan = {
   ],
   checklist: [
     { id: 'provider-key:openrouter', kind: 'provider-key', label: 'OpenRouter', ref: 'openrouter' },
+    { id: 'provider-connection:openrouter', kind: 'provider-connection', label: 'OpenRouter', ref: 'openrouter' },
     { id: 'mcp-token:docs', kind: 'mcp-token', label: 'Team Docs', ref: 'docs' },
     { id: 'im-channel:telegram', kind: 'im-channel', label: 'telegram', ref: 'telegram' },
     { id: 'computer-use', kind: 'computer-use', label: 'computer', ref: 'computer' },

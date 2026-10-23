@@ -54,7 +54,7 @@ describe('portableOverrideSettings', () => {
   it('applies another computer’s choice through normalize and keeps an explicit default explicit', async () => {
     const { settings, file } = store();
     const portable = portableOverrideSettings(settings);
-    await portable.applyPatch({ enabled: true, limit: 50 });
+    expect(await portable.applyPatch(() => ({ enabled: true, limit: 50 }))).toBe(true);
     // `enabled: true` equals the default but was an explicit choice on the other computer.
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ enabled: true, limit: 20 });
     expect(settings.readState().customizedKeys.sort()).toEqual(['enabled', 'limit']);
@@ -63,16 +63,16 @@ describe('portableOverrideSettings', () => {
   it('ignores omitted and unknown keys instead of marking the store customized', async () => {
     const { settings, file } = store();
     const portable = portableOverrideSettings(settings, { omitKeys: ['folder'] });
-    await portable.applyPatch({ folder: '/Users/other', futureKey: 1, 'bad key': true });
+    expect(await portable.applyPatch(() => ({ folder: '/Users/other', futureKey: 1, 'bad key': true }))).toBe(false);
     expect(fs.existsSync(file)).toBe(false);
     expect(settings.readState().isCustomized).toBe(false);
   });
 
   it('accepts optional keys a store declares even though a fresh store has none of them', async () => {
     const { settings, file } = store();
-    await portableOverrideSettings(settings).applyPatch({ note: 'dropped' });
+    await portableOverrideSettings(settings).applyPatch(() => ({ note: 'dropped' }));
     expect(fs.existsSync(file)).toBe(false);
-    await portableOverrideSettings(settings, { optionalKeys: ['note'] }).applyPatch({ note: 'kept' });
+    await portableOverrideSettings(settings, { optionalKeys: ['note'] }).applyPatch(() => ({ note: 'kept' }));
     expect(settings.read().note).toBe('kept');
   });
 

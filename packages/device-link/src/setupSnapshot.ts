@@ -111,6 +111,8 @@ export interface SetupSnapshotProvider {
   /** Non-secret custom provider configuration; the target validates it with its own rules. */
   config: Record<string, unknown>;
   auth: SetupSnapshotProviderAuth;
+  /** The source removed credential-bearing URL parts (user, query, fragment); re-enter them. */
+  urlSecretsRemoved?: true;
 }
 
 export interface SetupSnapshotBuiltinTool {
@@ -351,6 +353,7 @@ function parseProvider(value: unknown): SetupSnapshotProvider | null {
     name: boundedString(value.name, 200) ?? value.id,
     config: value.config,
     auth,
+    ...(value.urlSecretsRemoved === true ? { urlSecretsRemoved: true as const } : {}),
   };
 }
 
