@@ -104,7 +104,7 @@ export function SetupMigrationChecklist({
   const metaClass =
     variant === 'dialog'
       ? 'text-[var(--confirm-desc)]'
-      : 'text-[var(--settings-section-sublabel)] opacity-70';
+      : 'text-[var(--text-tertiary)]';
   return (
     <ul className="flex flex-col">
       {items.map((item, index) => {
