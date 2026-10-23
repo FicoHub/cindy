@@ -55,6 +55,21 @@ describe('buildSetupPlan', () => {
     expect(plan.plugins[0]).toMatchObject({ key: 'plugin:xd:mivo', state: 'ready' });
   });
 
+  it('compares on/off with the copy in the source namespace when this computer has several', () => {
+    // Root and organization copies of one plugin can coexist (#6878). The copy in the source
+    // namespace is the same plugin: copy its on/off state, never install yet another copy.
+    const plan = buildSetupPlan(
+      planInputs({
+        snapshot: snapshot({ plugins: [plugin({ ghostId: 'mivo', namespace: 'xd', enabled: false })] }),
+        ghosts: [
+          { ghostId: 'mivo', namespace: null, instanceKey: '_root__mivo', enabled: false, builtin: false },
+          { ghostId: 'mivo', namespace: 'xd', instanceKey: 'xd__mivo', enabled: true, builtin: false },
+        ],
+      }),
+    );
+    expect(plan.plugins[0]).toMatchObject({ key: 'plugin:xd:mivo', state: 'ready', consent: null, enabledOnSource: false });
+  });
+
   it('installs custom-market plugins only when their marketplace is portable or already here', () => {
     const plan = buildSetupPlan(
       planInputs({

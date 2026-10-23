@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SetupMigrationPlan, SetupMigrationProgress } from '../../../../shared/setupMigration';
 import { applyRendererItems, rendererApplyCount } from '../applyRendererItems';
+import { getSwallowActivationClickEnabled } from '../../../hooks/useSwallowActivationClickSettings';
 import { applyPortableRendererPrefs, readPortableRendererPrefs } from '../rendererPrefs';
 
 class MemoryStorage implements Storage {
@@ -187,5 +188,20 @@ describe('portable renderer preferences', () => {
     expect(target.getItem('userPrompt.value.owner-a')).toBe('mine');
     expect(target.getItem('userPrompt.value.owner-b')).toBeNull();
     expect(target.getItem('cc-agent.sidebar.selectedMachines')).toBeNull();
+  });
+
+  it('moves the misclick protection switch that the click handler actually reads', () => {
+    // Two-computer acceptance: only the main-side cache file moved, so the switch and
+    // Windows click handling stayed off on the new computer.
+    const source = new MemoryStorage();
+    source.setItem('input.swallowActivationClick', 'true');
+    const target = new MemoryStorage();
+    expect(applyPortableRendererPrefs(readPortableRendererPrefs(source, null), target, null)).toBe(1);
+    vi.stubGlobal('localStorage', target);
+    try {
+      expect(getSwallowActivationClickEnabled()).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
