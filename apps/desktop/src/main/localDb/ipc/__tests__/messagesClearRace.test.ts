@@ -187,6 +187,39 @@ describe('message persistence clear boundary', () => {
     expect(h.broadcast).not.toHaveBeenCalled();
   });
 
+  // A routine that keeps deferring used to leave one hidden prompt per attempt
+  // (thousands of rows / hundreds of MB in one teammate chat).
+  it('discards an undispatched scheduled row instead of keeping a tombstone', async () => {
+    const insert = sqlite.prepare(
+      `INSERT INTO messages
+        (id, client_id, session_id, role, content, created_at, rewind_at)
+       VALUES (?, ?, ?, 'user', ?, ?, NULL)`,
+    );
+    insert.run('row-owner', 'owner-1', 's1', 'owner message', 100);
+    insert.run('row-scheduled', 'scheduled-1', 's1', '[UI_ACTION_TRIGGER]check tasks', 200);
+    sqlite
+      .prepare('UPDATE sessions SET list_preview = ?, list_preview_role = ?, list_message_count = ? WHERE id = ?')
+      .run('check tasks', 'user', 2, 's1');
+
+    await rewindPersistedUserMessageAfterClear('s1', 'scheduled-1', { discard: true });
+
+    expect(sqlite.prepare('SELECT client_id AS clientId, rewind_at AS rewindAt FROM messages').all())
+      .toEqual([{ clientId: 'owner-1', rewindAt: null }]);
+    expect(
+      sqlite
+        .prepare('SELECT list_preview AS preview, list_preview_role AS role, list_message_count AS count FROM sessions WHERE id = ?')
+        .get('s1'),
+    ).toEqual({ preview: null, role: null, count: null });
+    expect(h.broadcast).toHaveBeenCalledWith('local-db:messages:deleted', {
+      sessionId: 's1',
+      clientId: 'scheduled-1',
+      clientIds: ['scheduled-1'],
+    });
+    h.broadcast.mockClear();
+    await rewindPersistedUserMessageAfterClear('s1', 'scheduled-1', { discard: true });
+    expect(h.broadcast).not.toHaveBeenCalled();
+  });
+
   it('reconciles session attachment refs for a rewound user row', async () => {
     const { collectCindyMediaHashes } = await import('../../../cindy-media/chatAttachments');
     const { removeSessionAttachmentRefIfUnreferencedByLiveMessage } = await import(
