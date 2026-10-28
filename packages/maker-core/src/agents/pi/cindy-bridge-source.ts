@@ -2962,6 +2962,7 @@ class CindyMcpGateway {
   private readonly disclosedSchemas = new Map<string, string>();
   /** 本次调用跳过了权限询问（hook 未披露即放行）：按 toolCallId 记账，execute 见此标记一律回路标。 */
   private readonly permissionSkippedCalls = new Set<string>();
+  private disclosureNotePending = false;
   private botMemoryFacadeEnabled = false;
   private botHelperFacadeEnabled = false;
 
@@ -3236,6 +3237,26 @@ class CindyMcpGateway {
   }
 
   /**
+   * Sorted, prompt-ready server/tool names worth re-surfacing after compaction:
+   * only tools that still exist AND whose stored fingerprint still matches the
+   * live schema — a removed or schema-drifted tool must not be advertised as
+   * safe to call directly (the gate would re-close on it and waste a round-trip).
+   */
+  disclosedKeysForPrompt(limit = 48): string {
+    const all: string[] = [];
+    for (const [key, fingerprint] of this.disclosedSchemas) {
+      const tool = this.tools.get(key);
+      if (!tool || this.schemaFingerprint(tool) !== fingerprint) continue;
+      const sep = key.indexOf('\u0000');
+      all.push(sep === -1 ? key : key.slice(0, sep) + '/' + key.slice(sep + 1));
+    }
+    all.sort();
+    const shown = all.slice(0, limit);
+    if (all.length > limit) shown.push('… +' + (all.length - limit) + ' more');
+    return shown.join(', ');
+  }
+
+  /**
    * 按当前 schema 记一次披露并落盘。披露判定按 schema 指纹而非 Pi 版本：Pi 升级不会
    * 作废未变 schema 的披露；schema 真变动时指纹失配，门重新武装。
    */
@@ -3353,9 +3374,21 @@ class CindyMcpGateway {
         unavailableServers,
       };
     } else {
+      const query = typeof input.query === 'string' ? input.query.trim().toLowerCase() : '';
+      const offset = Number.isSafeInteger(input.offset) && Number(input.offset) >= 0 ? Number(input.offset) : 0;
+      const limit = Number.isSafeInteger(input.limit) && Number(input.limit) > 0 ? Math.min(Number(input.limit), 50) : 50;
+      const matches = query ? tools.filter((tool) =>
+        [tool.server, tool.name, tool.description].some((value) => value.toLowerCase().includes(query))) : tools;
+      const page = matches.slice(offset, offset + limit);
       payload = {
         ok: true,
-        tools,
+        tools: page.map((tool) => ({ ...tool, description: tool.description.length > 240
+          ? tool.description.slice(0, 240) + '…' : tool.description })),
+        total: matches.length,
+        offset,
+        ...(offset + page.length < matches.length ? { nextOffset: offset + page.length } : {}),
+        availableServers: this.availableServers(),
+        hint: 'Use query or server to narrow results; follow nextOffset for more. Inspect an exact server and tool for the complete description and input schema.',
         ...(unavailableServers.length > 0 ? { unavailableServers } : {}),
       };
     }
@@ -3498,6 +3531,32 @@ class CindyMcpGateway {
     this.botHelperFacadeEnabled = options.botMemoryFacade === true;
     this.botMemoryFacadeEnabled = options.botMemoryFacade === true
       && this.tools.has(mcpGatewayKey('cindy_memory', 'call_tool'));
+    // Token hygiene: post-compaction the model loses the memory of which MCP tools
+    // it already inspected and re-runs cindy_mcp_list_tools "to be safe". Inject a
+    // one-shot custom message into the first run after each successful compaction
+    // instead of editing the system prompt every run; the message then lives in
+    // context like any other turn until the next compaction summarizes it away.
+    this.disclosureNotePending = false;
+    pi.on?.('session_compact', () => { this.disclosureNotePending = true; });
+    pi.on?.('before_agent_start', () => {
+      if (!this.disclosureNotePending) return undefined;
+      this.disclosureNotePending = false;
+      const keys = this.disclosedKeysForPrompt();
+      if (!keys) return undefined;
+      return {
+        message: {
+          customType: 'cindy-mcp-disclosure-state',
+          content: [{
+            type: 'text',
+            text: 'MCP tools whose schemas you already inspected for this session (persisted across restarts): '
+              + keys + '. Call them directly while you still remember their parameter shapes. If compaction '
+              + 'blurred the details, re-inspect just the tools you need via cindy_mcp_list_tools instead of '
+              + 'guessing parameters. (One-shot reminder after context compaction.)',
+          }],
+          display: false,
+        },
+      };
+    });
 
     if (this.botMemoryFacadeEnabled) {
       pi.registerTool({
@@ -3761,16 +3820,19 @@ class CindyMcpGateway {
       name: CINDY_MCP_LIST_TOOLS,
       label: 'Discover Cindy MCP tools',
       description:
-        'List every connected Cindy/MCP capability without loading their parameter schemas into startup context. ' +
-        'Omit arguments to discover names and descriptions. Before invoking a tool, pass its exact server and tool ' +
+        'Discover connected Cindy/MCP tools in pages of at most 50 short descriptions. Use query or server to narrow ' +
+        'results, or offset=nextOffset for more. Before invoking a tool, pass its exact server and tool ' +
         'names here once to inspect that single input schema, then use cindy_mcp_call_tool.',
       parameters: {
         type: 'object',
         properties: {
           server: {
             type: 'string',
-            description: 'Optional exact server name. Omit to list tools from every connected server.',
+            description: 'Optional exact server name. Omit to search across connected servers.',
           },
+          query: { type: 'string', description: 'Search tool names and full descriptions, case-insensitively.' },
+          offset: { type: 'integer', minimum: 0, description: 'Use the previous nextOffset to continue browsing.' },
+          limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Page size; default 50.' },
           tool: {
             type: 'string',
             description: 'Optional exact tool name. Requires server and returns that tool\'s input schema.',
@@ -3986,7 +4048,7 @@ function astraResponsesPayload(payload, model) {
 
 async function nativeFastPayload(payload, model, ctx) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
-  if (!model || !['openai-responses', 'azure-openai-responses', 'openai-completions'].includes(model.api)) return undefined;
+  if (!model || !['openai-responses', 'azure-openai-responses', 'openai-completions', 'openai-codex-responses'].includes(model.api)) return undefined;
   let models;
   try { models = JSON.parse(process.env.CINDY_PI_FAST_MODELS || '[]'); } catch { return undefined; }
   if (!Array.isArray(models) || !models.some(item => item.provider === model.provider && item.id === model.id)) return undefined;

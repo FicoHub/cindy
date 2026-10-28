@@ -661,6 +661,17 @@ Library 请求同时绑定迁移代次和安装批准，根解析、排队及开
 
 `instanceKey` 由安装目录推出，不另分配：旧 root 是 `helper`，新 root 是 `_root__helper`，企业是 `_ns__<namespace>__<ghostId>`。注册表丢失或损坏时按目录重建，KV、密钥和 OAuth 仍挂在这个键上。
 
+设备模拟器的官方 ID 迁移是单项例外：`baguette-simulator` → `cindy-simulator` 只接受
+同一 public 市场资源、root 实例、当前批准和已验证包。更新事务更换包目录、清单与 receipt，
+保留原 `instanceKey`；KV、凭据、Library、历史任务等继续使用原键，不复制数据。
+Host receipt 的 `simulatorPreviousRelId` 只允许这对 ID 和 root 路径，注册表重建仍取原键；
+作者清单不能声明该字段。后续同 ID 更新继续保留此存储身份。
+事务在移走旧包前记录旧路径，receipt 提交前中断则恢复旧包，提交后清理旧包与旧 receipt。
+提交期间两端保持隔离。新 receipt 同时记录已验证的市场资源、版本资源和旧包 SHA；
+若进程在市场账本写入前中断，现有市场维护流程核对批准、现存清单和原账本后补写。
+此恢复证据不跨下一次包更新继承。组织同名插件、自定义来源、目标已占用及来源证据不符不自动迁移。
+权限确认仍使用正常更新判据，不能借改名扩大权限；`BaguetteCindy` 底层数据目录不变。
+
 `namespaceState`：
 
 - `confirmed`：身份已确认，可以按该 namespace 使用 Broker、OIDC 等新权限。
@@ -932,3 +943,18 @@ visible 复用当前账号模型选择器的用户开关与目录默认值；隐
 不向插件提供设备私钥、账号 token 或其他插件数据，不为通道增加远程 Renderer IPC。
 接口和失败语义见 `FORGE_GUIDE` §4.10.2，协议与兼容边界见
 [协议兼容](protocol-compatibility.md#插件资料设备同步)。
+
+## 社区插件贡献入口
+
+个人作者可从来源可核实且已批准的本地 root 插件详情提交审核；已有公开插件的后续版本通过“发布插件”管理页提交，并核对当前提交授权。安装或运行批准本身不授予发布权。Host 复用导出快照原语和现有包自检，
+不弹保存/选文件框，不接受任意路径或独立资料。准备绑定原物理实例、安装目录、批准版本与账号；
+登录意图也须核对这些证据，不按同 ID 替换为另一个账号安装。私域 ledger 关联不可转 public；
+合法 public Broker 声明仍由服务端既有 public 规则与精确 ACL 判断，不靠声明直接拒绝。
+
+个人工具与旧企业 Forge 发布是独立能力入口。任务权限只决定是否可以执行公开写入，不决定
+public 身份归属；共享访客及插件托管/errand 任务与其 Worker 沿既有 restricted helper surface，
+不能借用 Host 个人发布能力。普通个人用户任务和正常 Worker 不因此被封禁。
+
+详见 [客户端实现与验证边界](../plugin-community-contribution.md) 和
+[HTTP 契约](../plugin-community-contribution-contract.md)。此改动涉及打包原语和授权边界，仍须人工 review
+及本规则第 5 节的插件基座白名单确认后方可合并；本地代码检查不替代该门禁。
