@@ -62,6 +62,21 @@ export function historyOutlineContent(): SQL<string> {
     ELSE ${body} END`;
 }
 
+/** Remove non-grouping SDK metadata before outline rows cross the SQLite worker boundary.
+ * Full list/detail hydration still selects the stored value. Restrict this to valid JSON
+ * objects stored as TEXT so legacy invalid JSON, arrays/scalars and non-TEXT values retain
+ * their exact mapper fallback; nested keys are intentionally untouched.
+ */
+export function historyOutlineAgentMeta(): SQL<string | null> {
+  const meta = messages.agentMeta;
+  return sql<string | null>`CASE
+    WHEN typeof(${meta}) <> 'text' THEN ${meta}
+    WHEN NOT json_valid(${meta}) THEN ${meta}
+    WHEN json_type(${meta}) <> 'object' THEN ${meta}
+    ELSE json_remove(${meta}, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage')
+  END`;
+}
+
 
 /**
  * Command artifact inference is CPU work on the main thread, repeated for every
