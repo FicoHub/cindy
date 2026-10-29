@@ -41,6 +41,14 @@ function mappedAgentMeta(agentMeta: unknown) {
     content: '""', toolUseId: null, agentMeta, agentKind: null, createdAt: 0, rewindAt: null } as never)).agentMeta;
 }
 
+function agentMetaAtByteLength(byteLength: number): string {
+  const prefix = '{"parentUuid":"agent","usage":{"details":"';
+  const suffix = '"}}';
+  const padding = byteLength - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
+  if (padding < 0) throw new Error(`agent metadata target is too small: ${byteLength}`);
+  return `${prefix}${'x'.repeat(padding)}${suffix}`;
+}
+
 describe('SQLite history outline', () => {
   // 2026-10-25: repeated SDK bookkeeping exhausted the 8 MiB scan before
   // a long child-agent range could reach its header. This is an outline only;
@@ -72,13 +80,22 @@ describe('SQLite history outline', () => {
       if (label === 'non-TEXT JSON') expect(projected).toBeInstanceOf(Uint8Array);
     }
     const projected = projectAgentMeta(cases[0][1]);
-    expect(typeof projected).toBe('string');
-    expect(projected).not.toContain('large');
+    expect(projected).toBe(cases[0][1]);
     expect(mappedAgentMeta(projected)).toEqual({ parentUuid: 'agent', unknown: 'é',
       number: 9007199254740992, nested: { usage: 1 } });
     const duplicate = projectAgentMeta(cases[6][1]);
     expect(duplicate).not.toContain('large');
     expect(JSON.parse(duplicate as string)).toEqual({ unknown: 2 });
+  });
+  it('bypasses SQLite JSON parsing through 8KiB and projects values above the byte threshold', () => {
+    const atThreshold = agentMetaAtByteLength(8192);
+    const aboveThreshold = agentMetaAtByteLength(8193);
+    expect(Buffer.byteLength(atThreshold)).toBe(8192);
+    expect(Buffer.byteLength(aboveThreshold)).toBe(8193);
+    expect(projectAgentMeta(atThreshold)).toBe(atThreshold);
+    const projected = projectAgentMeta(aboveThreshold);
+    expect(Buffer.byteLength(projected as string)).toBeLessThan(Buffer.byteLength(aboveThreshold));
+    expect(mappedAgentMeta(projected)).toEqual(mappedAgentMeta(aboveThreshold));
   });
   it('stamps a body with a short fact that changes when it is rewritten in place', () => {
     const summary = JSON.stringify('build summary');
