@@ -62,7 +62,7 @@ describe('SQLite history outline', () => {
       ['object', '{"parentUuid":"agent","usage":{"details":"large"},"unknown":"é","number":9007199254740993,"nested":{"usage":1}}'],
       ['array', '[{"usage":1},"é",9007199254740993]'], ['scalar', '"é"'], ['null JSON', 'null'],
       ['invalid JSON', '{broken'], ['empty JSON', ''],
-      ['duplicate key', '{"usage":1,"usage":{"details":"large"},"unknown":2}'],
+      ['duplicate key', `{"usage":1,"usage":{"details":"${'x'.repeat(9000)}"},"unknown":2}`],
       ['unicode escape', '{"usage":1,"unknown":"\\u0065\\u0301"}'],
       ['non-TEXT JSON', new TextEncoder().encode('{"usage":1,"unknown":"blob"}')], ['SQL NULL', null],
     ];
