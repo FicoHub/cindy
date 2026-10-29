@@ -75,17 +75,17 @@ export function historyOutlineAgentMeta(): SQL<string | null> {
     WHEN typeof(${meta}) <> 'text' THEN ${meta}
     WHEN NOT json_valid(${meta}) THEN ${meta}
     WHEN json_type(${meta}) <> 'object' THEN ${meta}
-    ELSE (WITH RECURSIVE projected(value, depth) AS (
-      SELECT jsonb_remove(${meta}, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage'), 1
+    ELSE (WITH parsed(value) AS MATERIALIZED (SELECT jsonb(${meta})), copies(maximum) AS (
+      SELECT COALESCE(max(total), 0) FROM (SELECT count(*) AS total FROM json_each((SELECT value FROM parsed))
+        WHERE key IN ('uuid', 'sdkSessionId', 'requestId', 'replyToClientId', 'usage') GROUP BY key)
+    ) SELECT CASE WHEN maximum > 64 THEN ${meta} WHEN maximum <= 1 THEN
+      json(jsonb_remove(value, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage'))
+    ELSE (WITH RECURSIVE projected(value, remaining) AS (
+      SELECT jsonb_remove(value, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage'), maximum - 1
       UNION ALL
-      SELECT jsonb_remove(value, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage'), depth + 1
-      FROM projected WHERE depth < 64 AND (json_type(value, '$.uuid') IS NOT NULL
-        OR json_type(value, '$.sdkSessionId') IS NOT NULL OR json_type(value, '$.requestId') IS NOT NULL
-        OR json_type(value, '$.replyToClientId') IS NOT NULL OR json_type(value, '$.usage') IS NOT NULL)
-    ), final(value) AS (SELECT value FROM projected ORDER BY depth DESC LIMIT 1)
-    SELECT CASE WHEN json_type(value, '$.uuid') IS NOT NULL OR json_type(value, '$.sdkSessionId') IS NOT NULL
-      OR json_type(value, '$.requestId') IS NOT NULL OR json_type(value, '$.replyToClientId') IS NOT NULL
-      OR json_type(value, '$.usage') IS NOT NULL THEN ${meta} ELSE json(value) END FROM final)
+      SELECT jsonb_remove(value, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage'), remaining - 1
+      FROM projected WHERE remaining > 0
+    ) SELECT json(value) FROM projected WHERE remaining = 0) END FROM parsed, copies)
   END`;
 }
 
