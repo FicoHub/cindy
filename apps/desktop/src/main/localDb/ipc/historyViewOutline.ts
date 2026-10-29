@@ -65,7 +65,9 @@ export function historyOutlineContent(): SQL<string> {
 /** Remove non-grouping SDK metadata before outline rows cross the SQLite worker boundary.
  * Full list/detail hydration still selects the stored value. Restrict this to valid JSON
  * objects stored as TEXT so legacy invalid JSON, arrays/scalars and non-TEXT values retain
- * their exact mapper fallback; nested keys are intentionally untouched.
+ * their exact mapper fallback; nested keys are intentionally untouched. Duplicate top-level
+ * keys need repeated json_remove calls. The recursion cap falls back to the original value so
+ * pathological legacy input cannot fail the whole outline query or change mapper semantics.
  */
 export function historyOutlineAgentMeta(): SQL<string | null> {
   const meta = messages.agentMeta;
@@ -73,7 +75,17 @@ export function historyOutlineAgentMeta(): SQL<string | null> {
     WHEN typeof(${meta}) <> 'text' THEN ${meta}
     WHEN NOT json_valid(${meta}) THEN ${meta}
     WHEN json_type(${meta}) <> 'object' THEN ${meta}
-    ELSE json_remove(${meta}, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage')
+    ELSE (WITH RECURSIVE projected(value, depth) AS (
+      SELECT json_remove(${meta}, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage'), 1
+      UNION ALL
+      SELECT json_remove(value, '$.uuid', '$.sdkSessionId', '$.requestId', '$.replyToClientId', '$.usage'), depth + 1
+      FROM projected WHERE depth < 64 AND (json_type(value, '$.uuid') IS NOT NULL
+        OR json_type(value, '$.sdkSessionId') IS NOT NULL OR json_type(value, '$.requestId') IS NOT NULL
+        OR json_type(value, '$.replyToClientId') IS NOT NULL OR json_type(value, '$.usage') IS NOT NULL)
+    ), final(value) AS (SELECT value FROM projected ORDER BY depth DESC LIMIT 1)
+    SELECT CASE WHEN json_type(value, '$.uuid') IS NOT NULL OR json_type(value, '$.sdkSessionId') IS NOT NULL
+      OR json_type(value, '$.requestId') IS NOT NULL OR json_type(value, '$.replyToClientId') IS NOT NULL
+      OR json_type(value, '$.usage') IS NOT NULL THEN ${meta} ELSE value END FROM final)
   END`;
 }
 

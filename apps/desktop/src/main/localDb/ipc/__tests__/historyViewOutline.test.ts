@@ -76,6 +76,9 @@ describe('SQLite history outline', () => {
     expect(projected).not.toContain('large');
     expect(mappedAgentMeta(projected)).toEqual({ parentUuid: 'agent', unknown: 'é',
       number: 9007199254740992, nested: { usage: 1 } });
+    const duplicate = projectAgentMeta(cases[6][1]);
+    expect(duplicate).not.toContain('large');
+    expect(JSON.parse(duplicate as string)).toEqual({ unknown: 2 });
   });
   it('stamps a body with a short fact that changes when it is rewritten in place', () => {
     const summary = JSON.stringify('build summary');
