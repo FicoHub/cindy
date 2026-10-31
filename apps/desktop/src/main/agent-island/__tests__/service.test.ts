@@ -69,6 +69,7 @@ const mocks = vi.hoisted(() => ({
     title: string | null;
     userSendAt: number | null;
     workingDir: string | null;
+    projectDir?: string | null;
     workspaceKind: string | null;
     source?: string | null;
   } | null>>(() => Promise.resolve(null)),
@@ -1723,7 +1724,9 @@ describe('AgentIslandService native publishing', () => {
     );
   });
 
-  it('relays the last reply as the completion summary for other devices', async () => {
+  // #7566 review, unit: verify the actual producer marks converted text so a
+  // second host can retain literal code instead of applying Markdown twice.
+  it('relays the last reply as a plain-text completion summary for other devices', async () => {
     const { AgentIslandService } = await import('../service.js');
     const service = new AgentIslandService({
       getMainWindow: () => null,
@@ -1738,7 +1741,7 @@ describe('AgentIslandService native publishing', () => {
     const meta = { sessionId: 'summary', agentKind: 'codex' as const };
 
     service.handleUserPrompt(meta, 'fix the login bug');
-    service.handleAgentEvent(meta, textEvent('Login is fixed.', true));
+    service.handleAgentEvent(meta, textEvent('**Fixed**: `foo_bar **literal**`', true));
     service.handleAgentEvent(meta, doneEvent());
 
     expect(mocks.tapWindowBroadcast).toHaveBeenLastCalledWith(
@@ -1746,7 +1749,8 @@ describe('AgentIslandService native publishing', () => {
       expect.objectContaining({
         sessionId: 'summary',
         phase: 'completed',
-        compactDetail: 'Login is fixed.',
+        compactDetail: 'Fixed: foo_bar **literal**',
+        summaryFormat: 'plain-text',
       }),
     );
   });
@@ -2379,6 +2383,26 @@ describe('AgentIslandService native publishing', () => {
     expect(publish.mock.calls.length).toBe(publishedBefore);
     expect(first).toHaveLength(70);
     expect(new Set(first).size).toBe(70);
+  });
+
+  // Unit regression #7972: metadata hydration and subsequent partial patches
+  // must preserve membership; a move's explicit null must clear the cached value.
+  it('hydrates project membership and clears it on a move without reviving stale event metadata', async () => {
+    const { AgentIslandService } = await import('../service.js');
+    const publish = vi.fn((_state: AgentIslandDisplayState, _frame: AgentIslandNativeFrame | AgentIslandNativeFrame[]) => true);
+    mocks.getSessionRowSnapshot.mockResolvedValueOnce({
+      status: 'active', title: 'Task', userSendAt: null,
+      workingDir: '/tmp/checkout', projectDir: '/products/Chosen', workspaceKind: 'project',
+    });
+    const service = new AgentIslandService({ getMainWindow: () => null, nativeHost: { failed: false, publish } });
+    syncEnabledForTest(service, publish);
+    service.handleUserPrompt({ sessionId: 's1', workingDir: '/tmp/checkout', workspaceKind: 'project' }, 'Work');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('Chosen'));
+    service.handleSessionMetadataPatch('s1', { workingDir: '/tmp/another-checkout' });
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('Chosen'));
+    service.handleSessionMetadataPatch('s1', { projectDir: null, workingDir: '/products/Moved' });
+    service.handleUserPrompt({ sessionId: 's1', projectDir: '/products/Chosen', workingDir: '/tmp/checkout', workspaceKind: 'project' }, 'Again');
+    await vi.waitFor(() => expect(publish.mock.calls.at(-1)?.[0].sessions[0]?.projectName).toBe('Moved'));
   });
 
   it('refreshes placeholder titles and hides dialogue workspace folders', async () => {
