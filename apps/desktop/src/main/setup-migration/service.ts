@@ -39,6 +39,7 @@ import {
 } from './plan.js';
 import type { SetupSettingsGroup } from './settingsGroups.js';
 import { collectSetupSnapshot, type SetupSnapshotSourceDeps } from './snapshot.js';
+import type { SetupTransferApplyDeps } from './transferApply.js';
 
 const PLAN_TTL_MS = 30 * 60_000;
 const MAX_PLANS = 4;
@@ -76,8 +77,13 @@ export interface SetupMigrationServiceDeps {
   providerIds(): Promise<Set<string>>;
   builtinTools(): Promise<Map<string, { enabled: boolean; userSet: boolean }>>;
   access(): { remoteControlEnabled: boolean; keepAwake: boolean };
+  /** Built-in keys saved here (ids only). */
+  builtinKeys(): ReadonlySet<string>;
+  sshHostIds(): Promise<Set<string>>;
   settingsGroups: readonly SetupSettingsGroup[];
-  apply: Omit<SetupApplyDeps, 'windowPrompt' | 'assertCurrent' | 'settingsGroup'>;
+  apply: Omit<SetupApplyDeps, 'windowPrompt' | 'assertCurrent' | 'settingsGroup' | 'transfer'>;
+  /** Keys and SSH step bound to the computer the plan was read from. */
+  transfer(deviceId: string): SetupTransferApplyDeps;
   readState(): PersistedSetupMigrationState;
   writeState(next: PersistedSetupMigrationState): Promise<void>;
   /** Live completion of a checklist item; null when only the user can tell. */
@@ -194,14 +200,24 @@ export function createSetupMigrationService(deps: SetupMigrationServiceDeps) {
     if (!device) setupError('NOT_FOUND', 'This computer is no longer on your account');
     const snapshot = await readSnapshot(deviceId);
     const installable = snapshot.plugins.filter((plugin) => plugin.pluginId !== null);
-    const [catalog, marketNames, localSkills, mcpIds, providerIds, builtinTools] = await Promise.all([
+    const [catalog, marketNames, localSkills, mcpIds, providerIds, builtinTools, sshHostIds] = await Promise.all([
       deps.catalog(installable).catch(() => new Map<string, TargetCatalogFact>()),
       deps.marketNames().catch(() => new Set<string>()),
       deps.localSkills().catch(() => new Map<string, { enabled: boolean }>()),
       deps.mcpIds().catch(() => new Set<string>()),
       deps.providerIds().catch(() => new Set<string>()),
       deps.builtinTools().catch(() => new Map<string, { enabled: boolean; userSet: boolean }>()),
+      // Unknown here means "already present": never add a second block for an alias.
+      snapshot.sshHosts.length > 0
+        ? deps.sshHostIds().catch(() => new Set(snapshot.sshHosts.map((host) => host.id)))
+        : Promise.resolve(new Set<string>()),
     ]);
+    let builtinKeys: ReadonlySet<string>;
+    try {
+      builtinKeys = deps.builtinKeys();
+    } catch {
+      builtinKeys = new Set(snapshot.hints.builtinKeys);
+    }
     if (deps.ownerKey() !== owner) setupError('SETUP_PLAN_EXPIRED', 'The signed-in account changed');
     const settings = deps.settingsGroups.map((group) => {
       let customized: Record<string, unknown> = {};
@@ -228,6 +244,8 @@ export function createSetupMigrationService(deps: SetupMigrationServiceDeps) {
       providerIds,
       builtinTools,
       access: deps.access(),
+      builtinKeys,
+      sshHostIds,
     });
     prune();
     plans.set(planId, {
@@ -271,6 +289,7 @@ export function createSetupMigrationService(deps: SetupMigrationServiceDeps) {
         { plan: stored.plan, snapshot: stored.snapshot, keys, approvedPluginKeys, emit },
         {
           ...deps.apply,
+          transfer: deps.transfer(stored.plan.source.deviceId),
           windowPrompt,
           settingsGroup: (id) => deps.settingsGroups.find((group) => group.id === id)?.settings ?? null,
           assertCurrent: () => {
@@ -278,6 +297,8 @@ export function createSetupMigrationService(deps: SetupMigrationServiceDeps) {
           },
         },
       );
+      // Items finished by this run (keys copied, servers added) are shown done right away.
+      const checklist = result.checklist.map((item) => (isChecklistItemDone(item) ? { ...item, done: true } : item));
       if (deps.ownerKey() === owner) {
         const current = deps.readState();
         await deps.writeState({
@@ -285,14 +306,23 @@ export function createSetupMigrationService(deps: SetupMigrationServiceDeps) {
           lastRun: {
             sourceName: stored.plan.source.name,
             finishedAt: deps.now(),
-            checklist: result.checklist,
+            checklist,
           },
         });
       }
-      return result;
+      return { ...result, checklist };
     } finally {
       stored.applying = false;
       plans.delete(request.planId);
+    }
+  }
+
+  function isChecklistItemDone(item: SetupMigrationChecklistItem): boolean {
+    if (item.done) return true;
+    try {
+      return deps.checklistItemDone(item) === true;
+    } catch {
+      return false;
     }
   }
 
@@ -302,16 +332,9 @@ export function createSetupMigrationService(deps: SetupMigrationServiceDeps) {
     const lastRun = persisted.lastRun
       ? {
           ...persisted.lastRun,
-          checklist: persisted.lastRun.checklist.map((item) => {
-            if (item.done) return item;
-            let done: boolean | null = null;
-            try {
-              done = deps.checklistItemDone(item);
-            } catch {
-              done = null;
-            }
-            return done ? { ...item, done: true } : item;
-          }),
+          checklist: persisted.lastRun.checklist.map((item) =>
+            isChecklistItemDone(item) ? { ...item, done: true } : item,
+          ),
         }
       : null;
     let suggestion: SetupMigrationState['suggestion'] = null;
@@ -372,5 +395,7 @@ export function planKeys(plan: SetupMigrationPlan): string[] {
     ...plan.mcpServers.map((item) => item.key),
     ...plan.builtinTools.map((item) => item.key),
     ...plan.access.map((item) => item.key),
+    ...(plan.secrets ? [plan.secrets.key] : []),
+    ...plan.sshHosts.map((item) => item.key),
   ];
 }

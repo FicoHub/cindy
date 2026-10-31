@@ -18597,7 +18597,7 @@
       "apply": "迁移"
     },
     "source": {
-      "description": "选一台登录了同一账号的电脑。它的插件、技能、设置和连接会照原样装到这台电脑；登录状态和密钥不会离开那台电脑。",
+      "description": "选一台登录了同一账号的电脑。它的插件、技能、设置和连接会照原样装到这台电脑；密钥只在你在那台电脑上点「允许」后复制，登录状态不会离开那台电脑。",
       "loading": "正在查找你的其他电脑…",
       "empty": "没有找到这个账号的其他电脑。在另一台电脑上登录 Cindy 后再打开这里",
       "loadFailed": "未能读取电脑列表",
@@ -18652,7 +18652,9 @@
         "skills": "技能",
         "settings": "设置",
         "connections": "模型供应商与 MCP",
-        "access": "这台电脑的访问"
+        "access": "这台电脑的访问",
+        "secrets": "密钥",
+        "ssh": "SSH 服务器"
       },
       "reason": {
         "not-in-catalog": "这台电脑的插件市场里没有它",
@@ -18666,14 +18668,24 @@
         "apiKey": "API Key 需要在这台电脑上重新填写",
         "oauth": "需要在这台电脑上重新登录",
         "native": "需要在这台电脑上登录订阅账号",
-        "none": "无需密钥"
+        "none": "无需密钥",
+        "apiKeyCopy": "API Key 可随「密钥」一起复制"
       },
       "access": {
         "remote-control": "允许同账号设备控制本机",
         "remote-controlHint": "与「{{name}}」上的设置相同，可随时在「远程连接」中关闭",
         "keep-awake": "保持电脑唤醒",
         "keep-awakeHint": "与「{{name}}」上的设置相同，这台电脑不会进入休眠"
-      }
+      },
+      "secrets": {
+        "title_one": "复制 {{count}} 项的密钥",
+        "title_other": "复制 {{count}} 项的密钥",
+        "description": "需要在「{{name}}」上点「允许」后才会复制，只用这一次请求加密传给这台电脑。账号登录不会复制，迁移后可在清单里依次登录。"
+      },
+      "sshDescription": "这台电脑会生成一把新的 SSH 密钥，由「{{name}}」加到这些服务器上（同样需要在那台电脑上允许），再逐台测试连接。私钥不会离开各自的电脑。",
+      "sshHost": "{{user}}@{{host}}:{{port}}",
+      "mcpTokenCopy": "MCP · {{url}} · 访问凭证可随「密钥」一起复制",
+      "checklistDescriptionWithKeys": "登录状态和系统权限不会离开原来的电脑；密钥在「{{name}}」允许后才会复制。迁移完成后，可以按这份清单逐项补上。"
     },
     "permissions": {
       "title": "确认插件权限",
@@ -18685,7 +18697,9 @@
     },
     "running": {
       "progress": "正在迁移：已完成 {{completed}} / {{total}}",
-      "label": "正在迁移…"
+      "label": "正在迁移…",
+      "confirm": "请在「{{name}}」上点「允许」。",
+      "confirmCode": "两台电脑显示的校验码应一致："
     },
     "done": {
       "summary_one": "已从「{{name}}」迁移 {{count}} 项",
@@ -18708,7 +18722,18 @@
       "PERMISSION_DENIED": "当前账号无权安装",
       "NOT_FOUND": "在这台电脑的插件市场里找不到它",
       "ALREADY_EXISTS": "这台电脑上已有同名项目",
-      "SETUP_PLAN_EXPIRED": "迁移清单已过期"
+      "SETUP_PLAN_EXPIRED": "迁移清单已过期",
+      "SETUP_TRANSFER_DECLINED": "那台电脑上没有点「允许」，或 2 分钟内没有回应",
+      "SETUP_TRANSFER_BUSY": "那台电脑正在处理另一个迁移请求，请稍后重试",
+      "SETUP_TRANSFER_INVALID": "那台电脑的回复无法识别",
+      "SETUP_SOURCE_OUTDATED": "那台电脑的 Cindy 版本过旧，更新后才能复制",
+      "SETUP_SOURCE_UNAVAILABLE": "那台电脑现在没有回应",
+      "SSH_AUTHORIZE_FAILED": "那台电脑没能把新密钥加到这台服务器上",
+      "SSH_KEYGEN_FAILED": "这台电脑没能生成 SSH 密钥（需要系统自带的 ssh-keygen）",
+      "SSH_HOST_NOT_FOUND": "那台电脑上已经没有这台服务器",
+      "SSH_AUTH_FAILED": "新密钥已加好，但服务器拒绝了这台电脑的连接",
+      "SSH_CONNECT_FAILED": "这台电脑连不上这台服务器，它可能只在那台电脑的网络里可达",
+      "SSH_KEY_FILE_NOT_FOUND": "找不到这台电脑上的新密钥文件"
     },
     "checklist": {
       "done": "已完成",
@@ -18780,7 +18805,14 @@
         "title_other": "复制 {{count}} 台远程主机的 SSH 密钥与配置",
         "detail": "~/.ssh 中的密钥与配置不会自动迁移，需要复制到这台电脑",
         "action": "打开远程连接"
-      }
+      },
+      "ssh-host": {
+        "title": "配置 SSH 服务器「{{name}}」",
+        "detail": "没能自动配好。可以在 SSH 设置里为它选择密钥并测试连接",
+        "action": "打开远程连接"
+      },
+      "startAll_one": "依次完成（{{count}} 项）",
+      "startAll_other": "依次完成（{{count}} 项）"
     },
     "settingsGroups": {
       "appearance": "外观",
@@ -18820,6 +18852,28 @@
       "description": "可以把那台电脑上的插件、技能、设置和连接搬到这台电脑。需要在这台电脑上重新登录或授权的内容会列成清单。之后也可以在「设置 → 通用 → 迁移助理」中打开。",
       "confirm": "打开迁移助理",
       "later": "以后再说"
+    },
+    "walkthrough": {
+      "progress": "迁移清单 {{current}} / {{total}}",
+      "open": "打开",
+      "skip": "跳过",
+      "next": "完成，下一项",
+      "stop": "结束",
+      "allDone": "清单已经走完"
+    },
+    "transfer": {
+      "prompt": {
+        "title": "迁移助理",
+        "message": "「{{name}}」请求从这台电脑复制以下内容",
+        "secrets": "密钥（只复制到这一台电脑，这台电脑上的密钥保持不变）：",
+        "ssh": "把那台电脑的新 SSH 公钥加到这些服务器：",
+        "sshKey": "公钥指纹：{{fingerprint}}",
+        "code": "校验码：{{code}}。只有和那台电脑上显示的一致时才允许。",
+        "notice": "如果不是你自己在设置新电脑，请拒绝。",
+        "more": "以及另外 {{count}} 项",
+        "allow": "允许",
+        "deny": "拒绝"
+      }
     }
   },
   "forwardedRequest": {

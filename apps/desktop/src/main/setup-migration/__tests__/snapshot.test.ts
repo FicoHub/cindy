@@ -35,6 +35,7 @@ function deps(overrides: Partial<SetupSnapshotSourceDeps> = {}): SetupSnapshotSo
     readBuiltinToolOverrides: async () => [],
     readAccess: () => ({ remoteControlEnabled: true, remoteDesktopEnabled: false, keepAwake: true }),
     readHints: async () => ({ builtinKeys: ['brave'], imChannels: [], sshHostCount: 1 }),
+    readSshHosts: async () => [],
     ...overrides,
   };
 }

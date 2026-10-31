@@ -28,6 +28,7 @@ import type {
   SetupMigrationChecklistKind,
 } from '../../../shared/setupMigration';
 import { BUILTIN_KEY_NAMES } from './checklistTargets';
+import { startSetupMigrationWalkthrough } from './setupMigrationStore';
 
 const ICONS: Record<SetupMigrationChecklistKind, LucideIcon> = {
   'plugin-setup': Plug,
@@ -44,6 +45,7 @@ const ICONS: Record<SetupMigrationChecklistKind, LucideIcon> = {
   'computer-use': MonitorCog,
   'remote-desktop': Cast,
   ssh: Terminal,
+  'ssh-host': Terminal,
 };
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -59,6 +61,7 @@ const KINDS_WITH_DETAIL: ReadonlySet<SetupMigrationChecklistKind> = new Set([
   'computer-use',
   'remote-desktop',
   'ssh',
+  'ssh-host',
 ]);
 
 /** Reuse the names the IM settings pages already show. */
@@ -90,17 +93,32 @@ export function checklistItemTitle(t: Translate, item: SetupMigrationChecklistIt
   });
 }
 
+/** Opens the first pending item and walks the rest with the bottom bar. */
+export function startChecklistWalkthrough(
+  items: readonly SetupMigrationChecklistItem[],
+  open: (item: SetupMigrationChecklistItem) => void,
+): void {
+  const pending = items.filter((item) => !item.done);
+  if (pending.length === 0) return;
+  startSetupMigrationWalkthrough(pending.map((item) => item.id));
+  open(pending[0]);
+}
+
 export function SetupMigrationChecklist({
   items,
   variant,
   onOpen,
   onMarkDone,
+  onStartAll,
 }: {
   items: SetupMigrationChecklistItem[];
   variant: 'dialog' | 'settings';
   onOpen: (item: SetupMigrationChecklistItem) => void;
   onMarkDone?: (item: SetupMigrationChecklistItem) => void;
+  /** Shown when two or more items are left: walk them one by one. */
+  onStartAll?: () => void;
 }) {
+  const pendingCount = items.filter((item) => !item.done).length;
   const { t } = useTranslation();
   const titleClass =
     variant === 'dialog' ? 'text-[var(--confirm-title)]' : 'text-[var(--settings-section-sublabel)]';
@@ -109,6 +127,14 @@ export function SetupMigrationChecklist({
       ? 'text-[var(--confirm-desc)]'
       : 'text-[var(--text-tertiary)]';
   return (
+    <>
+    {onStartAll && pendingCount >= 2 ? (
+      <div className={cn('flex justify-end pb-1', variant === 'settings' && 'px-4')}>
+        <Button variant="secondary" size="sm" compact onClick={onStartAll}>
+          {t('setupMigration.checklist.startAll', { count: pendingCount })}
+        </Button>
+      </div>
+    ) : null}
     <ul className="flex flex-col">
       {items.map((item, index) => {
         const Icon = ICONS[item.kind] ?? Plug;
@@ -159,5 +185,6 @@ export function SetupMigrationChecklist({
         );
       })}
     </ul>
+    </>
   );
 }

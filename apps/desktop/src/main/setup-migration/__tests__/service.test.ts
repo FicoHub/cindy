@@ -49,6 +49,19 @@ function harness(overrides: Partial<SetupMigrationServiceDeps> = {}) {
     providerIds: async () => new Set(),
     builtinTools: async () => new Map(),
     access: () => ({ remoteControlEnabled: false, keepAwake: false }),
+    builtinKeys: () => new Set(),
+    sshHostIds: async () => new Set(),
+    transfer: () => ({
+      transfer: vi.fn(),
+      createProvider: vi.fn(),
+      createMcpServer: vi.fn(),
+      hasBuiltinKey: () => false,
+      storeBuiltinKey: vi.fn(),
+      pluginInstanceKey: () => null,
+      storePluginSecrets: vi.fn(),
+      generateSshKey: vi.fn(),
+      addSshHost: vi.fn(),
+    }),
     settingsGroups: [],
     apply: {
       marketNames: async () => new Set(),
@@ -83,6 +96,7 @@ function harness(overrides: Partial<SetupMigrationServiceDeps> = {}) {
       readBuiltinToolOverrides: async () => [],
       readAccess: () => ({ remoteControlEnabled: true, remoteDesktopEnabled: false, keepAwake: false }),
       readHints: async () => ({ builtinKeys: [], imChannels: [], sshHostCount: 0 }),
+      readSshHosts: async () => [],
     },
     ...overrides,
   };

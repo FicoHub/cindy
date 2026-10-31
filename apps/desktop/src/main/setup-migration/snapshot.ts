@@ -10,6 +10,7 @@ import {
   SETUP_SNAPSHOT_MAX_BYTES,
   SETUP_SNAPSHOT_LIMITS,
   SETUP_SNAPSHOT_VERSION,
+  SETUP_TRANSFER_VERSION,
   isPortableGitUrl,
   serializedSetupSnapshotBytes,
   type SetupSnapshot,
@@ -24,6 +25,7 @@ import {
   type SetupSnapshotSection,
   type SetupSnapshotSettingsGroup,
   type SetupSnapshotSkill,
+  type SetupSnapshotSshHost,
 } from '@cindy/device-link';
 
 import type { SetupSettingsGroup } from './settingsGroups.js';
@@ -89,6 +91,8 @@ export interface SetupSnapshotSourceDeps {
   readBuiltinToolOverrides(): Promise<SetupSnapshotBuiltinTool[]>;
   readAccess(): SetupSnapshotAccess;
   readHints(): Promise<SetupSnapshotHints>;
+  /** Servers Cindy shows here: how to reach them and the trusted host key, nothing else. */
+  readSshHosts(): Promise<SetupSnapshotSshHost[]>;
 }
 
 export async function collectSetupSnapshot(deps: SetupSnapshotSourceDeps): Promise<SetupSnapshot> {
@@ -138,6 +142,7 @@ export async function collectSetupSnapshot(deps: SetupSnapshotSourceDeps): Promi
   const hints = await guard('hints', { builtinKeys: [], imChannels: [], sshHostCount: 0 } as SetupSnapshotHints, () =>
     deps.readHints(),
   );
+  const sshHosts = await guard('sshHosts', [] as SetupSnapshotSshHost[], () => deps.readSshHosts());
 
   const snapshot: SetupSnapshot = {
     version: SETUP_SNAPSHOT_VERSION,
@@ -153,6 +158,8 @@ export async function collectSetupSnapshot(deps: SetupSnapshotSourceDeps): Promi
     builtinTools: builtinTools.slice(0, SETUP_SNAPSHOT_LIMITS.builtinTools),
     access,
     hints,
+    sshHosts: sshHosts.slice(0, SETUP_SNAPSHOT_LIMITS.sshHosts),
+    transfer: SETUP_TRANSFER_VERSION,
     unavailable: [],
   };
   return fitSetupSnapshotBudget(snapshot, unavailable);
@@ -349,6 +356,7 @@ export function fitSetupSnapshotBudget(
     ['providers', () => (next.providers = [])],
     ['settings', () => (next.settings = [])],
     ['skills', () => (next.skills = [])],
+    ['sshHosts', () => (next.sshHosts = [])],
   ];
   for (const [section, drop] of droppable) {
     if (serializedSetupSnapshotBytes(finish()) <= maxBytes) return finish();

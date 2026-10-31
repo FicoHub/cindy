@@ -14,6 +14,7 @@ import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { createLogger } from '@/lib/logger';
 import { readPortableRendererPrefs } from './rendererPrefs';
 import { SetupMigrationDialog } from './SetupMigrationDialog';
+import { SetupMigrationWalkthroughBar } from './SetupMigrationWalkthroughBar';
 import { getSetupMigrationState, openSetupMigration } from './setupMigrationStore';
 
 const log = createLogger('setup-migration');
@@ -79,5 +80,10 @@ export function SetupMigrationHost() {
     };
   }, [confirm, dataOwnerId, isAuthenticated, mode, t]);
 
-  return <SetupMigrationDialog />;
+  return (
+    <>
+      <SetupMigrationDialog />
+      <SetupMigrationWalkthroughBar />
+    </>
+  );
 }

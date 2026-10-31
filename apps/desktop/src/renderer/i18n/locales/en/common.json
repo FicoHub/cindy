@@ -18669,7 +18669,7 @@
       "apply": "Move"
     },
     "source": {
-      "description": "Pick a computer signed in to this account. Its plugins, skills, settings and connections are set up the same way here; sign-ins and keys never leave that computer.",
+      "description": "Pick a computer signed in to this account. Its plugins, skills, settings and connections are set up the same way here; keys are copied only after you allow it there, and sign-ins never leave that computer.",
       "loading": "Looking for your other computers…",
       "empty": "No other computers found for this account. Sign in to Cindy on another computer, then open this again",
       "loadFailed": "Couldn't load your computers",
@@ -18724,7 +18724,9 @@
         "skills": "Skills",
         "settings": "Settings",
         "connections": "Providers and MCP",
-        "access": "Access to This Computer"
+        "access": "Access to This Computer",
+        "secrets": "Keys",
+        "ssh": "SSH Servers"
       },
       "reason": {
         "not-in-catalog": "Not in this computer's plugin marketplace",
@@ -18738,14 +18740,24 @@
         "apiKey": "Enter the API key again on this computer",
         "oauth": "Sign in again on this computer",
         "native": "Sign in to the subscription on this computer",
-        "none": "No key needed"
+        "none": "No key needed",
+        "apiKeyCopy": "API key can be copied with Keys"
       },
       "access": {
         "remote-control": "Allow same-account devices to control this machine",
         "remote-controlHint": "Same as on “{{name}}”. You can disable it anytime in Remote Connection",
         "keep-awake": "Keep computer awake",
         "keep-awakeHint": "Same as on “{{name}}”. This computer won't go to sleep"
-      }
+      },
+      "secrets": {
+        "title_one": "Copy Keys for {{count}} Item",
+        "title_other": "Copy Keys for {{count}} Items",
+        "description": "Copied only after you select Allow on “{{name}}”, encrypted for this request only. Account sign-ins aren't copied; sign in from the list after moving."
+      },
+      "sshDescription": "This computer creates a new SSH key, “{{name}}” adds it to these servers once allowed there, and each server is then tested. Private keys never leave their computer.",
+      "sshHost": "{{user}}@{{host}}:{{port}}",
+      "mcpTokenCopy": "MCP · {{url}} · Credentials can be copied with Keys",
+      "checklistDescriptionWithKeys": "Sign-ins and system permissions stay on the original computer; keys are copied only after “{{name}}” allows it. After moving, finish the rest from this list."
     },
     "permissions": {
       "title": "Confirm Plugin Permissions",
@@ -18757,7 +18769,9 @@
     },
     "running": {
       "progress": "Moving: {{completed}} of {{total}} done",
-      "label": "Moving…"
+      "label": "Moving…",
+      "confirm": "Select Allow on “{{name}}”.",
+      "confirmCode": "Both computers should show the same code:"
     },
     "done": {
       "summary_one": "Moved {{count}} item from “{{name}}”",
@@ -18780,7 +18794,18 @@
       "PERMISSION_DENIED": "This account can't install it",
       "NOT_FOUND": "Not found in this computer's plugin marketplace",
       "ALREADY_EXISTS": "Something with the same name already exists here",
-      "SETUP_PLAN_EXPIRED": "This list has expired"
+      "SETUP_PLAN_EXPIRED": "This list has expired",
+      "SETUP_TRANSFER_DECLINED": "Not allowed on the other computer, or no answer within 2 minutes",
+      "SETUP_TRANSFER_BUSY": "The other computer is handling another setup request. Try again shortly",
+      "SETUP_TRANSFER_INVALID": "The other computer sent an unreadable reply",
+      "SETUP_SOURCE_OUTDATED": "Update Cindy on the other computer to copy this",
+      "SETUP_SOURCE_UNAVAILABLE": "The other computer is not answering",
+      "SSH_AUTHORIZE_FAILED": "The other computer could not add the new key to this server",
+      "SSH_KEYGEN_FAILED": "This computer could not create an SSH key (ssh-keygen is required)",
+      "SSH_HOST_NOT_FOUND": "This server is no longer on the other computer",
+      "SSH_AUTH_FAILED": "The key was added, but the server refused this computer",
+      "SSH_CONNECT_FAILED": "This computer can't reach the server; it may only be reachable from the other computer's network",
+      "SSH_KEY_FILE_NOT_FOUND": "The new key file wasn't found on this computer"
     },
     "checklist": {
       "done": "Done",
@@ -18852,7 +18877,14 @@
         "title_other": "Copy SSH keys and config for {{count}} remote hosts",
         "detail": "Keys and config in ~/.ssh aren't moved automatically; copy them to this computer",
         "action": "Open Remote Connection"
-      }
+      },
+      "ssh-host": {
+        "title": "Set up SSH server “{{name}}”",
+        "detail": "It couldn't be set up automatically. Choose a key for it in SSH settings and test the connection",
+        "action": "Open Remote Connection"
+      },
+      "startAll_one": "Go Through {{count}} Item",
+      "startAll_other": "Go Through {{count}} Items"
     },
     "settingsGroups": {
       "appearance": "Appearance",
@@ -18892,6 +18924,28 @@
       "description": "You can set up this computer with the plugins, skills, settings and connections from that one. Anything that needs a new sign-in or permission here is listed for you. You can also open it later in Settings → General → Migration Assistant.",
       "confirm": "Open Migration Assistant",
       "later": "Not Now"
+    },
+    "walkthrough": {
+      "progress": "Setup checklist {{current}} / {{total}}",
+      "open": "Open",
+      "skip": "Skip",
+      "next": "Done, Next",
+      "stop": "End",
+      "allDone": "Checklist finished"
+    },
+    "transfer": {
+      "prompt": {
+        "title": "Migration Assistant",
+        "message": "“{{name}}” asks to copy the following from this computer",
+        "secrets": "Keys (copied to that computer only; keys here stay as they are):",
+        "ssh": "Add that computer's new SSH public key to these servers:",
+        "sshKey": "Key fingerprint: {{fingerprint}}",
+        "code": "Code: {{code}}. Allow only if it matches the code on that computer.",
+        "notice": "If you aren't setting up a new computer yourself, deny.",
+        "more": "and {{count}} more",
+        "allow": "Allow",
+        "deny": "Deny"
+      }
     }
   },
   "forwardedRequest": {

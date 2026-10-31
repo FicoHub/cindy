@@ -27,6 +27,7 @@ import type {
 import type { GhostInstallConsentPrompt } from '../cindy-brain/ghostInstallConsent.js';
 import type { PortableOverrideSettings } from '../maker-host/override-settings-file.js';
 import { splitSettingsValues } from './plan.js';
+import { applySetupTransferStep, setupTransferKeys, type SetupTransferApplyDeps } from './transferApply.js';
 
 export interface InstalledGhostRef {
   instanceKey: string;
@@ -58,6 +59,8 @@ export interface SetupApplyDeps {
   pluginSetupMissing(instanceKey: string): string[] | null;
   /** Owner/account still the one that previewed this plan. */
   assertCurrent(): void;
+  /** Keys and SSH step; absent when this run cannot reach the other computer. */
+  transfer?: SetupTransferApplyDeps;
 }
 
 export interface SetupApplyInput {
@@ -96,12 +99,13 @@ export function errorCode(error: unknown): string {
 export async function applySetupPlan(
   input: SetupApplyInput,
   deps: SetupApplyDeps,
-): Promise<{ results: SetupMigrationResult[]; checklist: SetupMigrationChecklistItem[] }> {
+): Promise<{ results: SetupMigrationResult[]; checklist: SetupMigrationChecklistItem[]; handledKeys: string[] }> {
   const { plan, snapshot, keys } = input;
   const plugins = plan.plugins.filter((item) => keys.has(item.key) && item.state === 'ready');
   const skills = plan.skills.filter((item) => keys.has(item.key) && item.state === 'ready');
   const settings = plan.settings.filter((item) => keys.has(item.key) && item.state === 'ready');
-  const total = plugins.length + skills.length + settings.length;
+  const total =
+    plugins.length + skills.length + settings.length + (deps.transfer ? setupTransferKeys(plan, keys).length : 0);
   const results: SetupMigrationResult[] = [];
   let completed = 0;
   const run = async (key: string, task: () => Promise<'done' | 'skipped'>) => {
@@ -210,7 +214,26 @@ export async function applySetupPlan(
     });
   }
 
-  return { results, checklist: buildApplyChecklist(input, deps) };
+  // After plugins: their keys can only be written once they are installed here.
+  const transfer = deps.transfer
+    ? await applySetupTransferStep(
+        {
+          plan,
+          snapshot,
+          keys,
+          onCode: (key, confirmCode) =>
+            input.emit({ planId: plan.planId, key, phase: 'running', completed, total, confirmCode }),
+        },
+        deps.transfer,
+        (key, task) => run(key, task),
+      )
+    : { handledKeys: [], checklist: [] };
+
+  return {
+    results,
+    checklist: [...buildApplyChecklist(input, deps), ...transfer.checklist],
+    handledKeys: transfer.handledKeys,
+  };
 }
 
 /**

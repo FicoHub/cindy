@@ -56,3 +56,54 @@ export function subscribeSetupMigrationStateChanged(listener: () => void): () =>
     stateListeners.delete(listener);
   };
 }
+
+/**
+ * "Go through the list": this window walks the checklist one item at a time, opening each item's
+ * Settings page. Window-local; the persisted checklist stays the source of truth for done items.
+ */
+export interface SetupMigrationWalkthroughState {
+  /** Item ids in list order, captured when the walkthrough started. */
+  ids: readonly string[];
+  /** Index into `ids` of the item shown now; equals `ids.length` once the list is finished. */
+  index: number;
+}
+
+let walkthrough: SetupMigrationWalkthroughState | null = null;
+const walkthroughListeners = new Set<() => void>();
+
+function emitWalkthrough(next: SetupMigrationWalkthroughState | null): void {
+  walkthrough = next;
+  for (const listener of walkthroughListeners) listener();
+}
+
+export function startSetupMigrationWalkthrough(ids: readonly string[]): void {
+  emitWalkthrough(ids.length > 0 ? { ids: [...ids], index: 0 } : null);
+}
+
+/** Moves past the current item, skipping ids that `isDone` reports finished meanwhile. */
+export function advanceSetupMigrationWalkthrough(isDone: (id: string) => boolean): void {
+  if (!walkthrough) return;
+  let index = walkthrough.index + 1;
+  while (index < walkthrough.ids.length && isDone(walkthrough.ids[index])) index += 1;
+  emitWalkthrough({ ...walkthrough, index });
+}
+
+export function stopSetupMigrationWalkthrough(): void {
+  emitWalkthrough(null);
+}
+
+export function getSetupMigrationWalkthrough(): SetupMigrationWalkthroughState | null {
+  return walkthrough;
+}
+
+export function useSetupMigrationWalkthrough(): SetupMigrationWalkthroughState | null {
+  return useSyncExternalStore(
+    (listener) => {
+      walkthroughListeners.add(listener);
+      return () => {
+        walkthroughListeners.delete(listener);
+      };
+    },
+    getSetupMigrationWalkthrough,
+  );
+}

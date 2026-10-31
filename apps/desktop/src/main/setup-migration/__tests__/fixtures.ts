@@ -19,6 +19,8 @@ export function snapshot(overrides: Partial<SetupSnapshot> = {}): SetupSnapshot 
     builtinTools: [],
     access: { remoteControlEnabled: false, remoteDesktopEnabled: false, keepAwake: false },
     hints: { builtinKeys: [], imChannels: [], sshHostCount: 0 },
+    sshHosts: [],
+    transfer: 0,
     unavailable: [],
     ...overrides,
   };
@@ -64,6 +66,8 @@ export function planInputs(overrides: Partial<SetupPlanInputs> = {}): SetupPlanI
     providerIds: new Set(),
     builtinTools: new Map(),
     access: { remoteControlEnabled: false, keepAwake: false },
+    builtinKeys: new Set(),
+    sshHostIds: new Set(),
     ...overrides,
   };
 }

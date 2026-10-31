@@ -2,7 +2,7 @@
  * Where each one-time setup item is done on this computer. Routes reuse the existing
  * Settings tabs; nothing here performs the setup itself.
  */
-import type { SetupMigrationChecklistItem } from '../../../shared/setupMigration';
+import { BUILTIN_SECRET_NAMES, type SetupMigrationChecklistItem } from '../../../shared/setupMigration';
 
 const BUILTIN_KEY_TABS: Record<string, string> = {
   brave: 'builtin-tools',
@@ -34,6 +34,7 @@ export function checklistRoute(item: SetupMigrationChecklistItem): string {
       return '/settings?tab=computer-use';
     case 'remote-desktop':
     case 'ssh':
+    case 'ssh-host':
       return '/settings?tab=remote-control';
     default:
       return '/settings';
@@ -45,11 +46,4 @@ export function openChecklistRoute(item: SetupMigrationChecklistItem): void {
 }
 
 /** Display names for presence-only hints; ids come from the other computer. */
-export const BUILTIN_KEY_NAMES: Record<string, string> = {
-  brave: 'Brave Search',
-  tavily: 'Tavily',
-  mivo: 'Mivo',
-  xai: 'xAI',
-  gemini: 'Google Gemini',
-  'openai-images': 'OpenAI Images',
-};
+export const BUILTIN_KEY_NAMES: Readonly<Record<string, string>> = BUILTIN_SECRET_NAMES;

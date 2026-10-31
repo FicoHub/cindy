@@ -183,6 +183,28 @@ describe('buildSetupPlan', () => {
     );
   });
 
+  it('offers SSH servers only from computers that can authorize a new key, and never twice', () => {
+    const hosts = [
+      { id: 'web', displayName: 'Web', hostname: 'web.example.com', port: 22, user: 'deploy', hostKey: null },
+      { id: 'db', displayName: 'DB', hostname: 'db.example.com', port: 2222, user: 'root', hostKey: null },
+    ];
+    const current = buildSetupPlan(
+      planInputs({ snapshot: snapshot({ transfer: 1, sshHosts: hosts }), sshHostIds: new Set(['db']) }),
+    );
+    expect(current.sshHosts.map((item) => [item.key, item.state])).toEqual([
+      ['ssh:web', 'ready'],
+      ['ssh:db', 'present'],
+    ]);
+    expect(current.checklist.some((item) => item.kind === 'ssh')).toBe(false);
+    // An older computer only reports a count: the servers stay a checklist item.
+    const older = buildSetupPlan(
+      planInputs({ snapshot: snapshot({ sshHosts: hosts, hints: { builtinKeys: [], imChannels: [], sshHostCount: 2 } }) }),
+    );
+    expect(older.sshHosts).toEqual([]);
+    expect(older.secrets).toBeNull();
+    expect(older.checklist.map((item) => item.id)).toContain('ssh');
+  });
+
   it('drops interface preferences outside the portable whitelist', () => {
     const plan = buildSetupPlan(
       planInputs({

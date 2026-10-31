@@ -10,7 +10,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { SetupMigrationPlan } from '../../../../shared/setupMigration';
+import type { SetupMigrationApplyResponse, SetupMigrationPlan } from '../../../../shared/setupMigration';
 import { SetupMigrationDialog } from '../SetupMigrationDialog';
 import { closeSetupMigration, openSetupMigration } from '../setupMigrationStore';
 
@@ -65,6 +65,8 @@ const plan: SetupMigrationPlan = {
   mcpServers: [],
   builtinTools: [],
   access: [{ key: 'access:remote-control', id: 'remote-control', state: 'ready' }],
+  secrets: null,
+  sshHosts: [],
   checklist: [{ id: 'provider-key:or', kind: 'provider-key', label: 'OpenRouter', ref: 'or' }],
   unavailable: [],
 };
@@ -76,7 +78,7 @@ function installApi() {
       { deviceId: 'd2', name: 'Office PC', platform: 'win32', online: false, lastSeenAt: null, unavailable: 'offline' },
     ]),
     preview: vi.fn(async () => plan),
-    apply: vi.fn(async () => ({
+    apply: vi.fn(async (): Promise<SetupMigrationApplyResponse> => ({
       results: [
         { key: 'plugin:_root:gmail', outcome: 'done' },
         { key: 'settings:collaboration', outcome: 'done' },
@@ -85,6 +87,7 @@ function installApi() {
         { id: 'plugin-setup:_root__gmail', kind: 'plugin-setup', label: 'Gmail', ref: '_root__gmail', details: ['Google account'] },
         { id: 'provider-key:or', kind: 'provider-key', label: 'OpenRouter', ref: 'or' },
       ],
+      handledKeys: [],
     })),
     state: vi.fn(),
     dismiss: vi.fn(),
@@ -173,6 +176,36 @@ describe('SetupMigrationDialog', () => {
     expect(screen.getAllByText('setupMigration.failure.SETUP_PLAN_EXPIRED')).toHaveLength(3);
   });
 
+  // Keys step (§2): a connection Main created with its copied key must not be created again
+  // without it by this window. Minimal input: one provider handled by Main.
+  it('leaves connections created with copied keys to Main', async () => {
+    const { setupMigration } = installApi();
+    setupMigration.preview.mockResolvedValueOnce({
+      ...plan,
+      plugins: [],
+      settings: [],
+      access: [],
+      secrets: { key: 'secrets', state: 'ready', items: [{ kind: 'provider', ref: 'or', name: 'OpenRouter' }] },
+    });
+    setupMigration.apply.mockResolvedValueOnce({
+      results: [
+        { key: 'secrets', outcome: 'done' },
+        { key: 'provider:or', outcome: 'done' },
+      ],
+      checklist: [{ id: 'provider-key:or', kind: 'provider-key', label: 'OpenRouter', ref: 'or', done: true }],
+      handledKeys: ['provider:or'],
+    });
+    render(<SetupMigrationDialog />);
+    act(() => openSetupMigration('d1'));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'setupMigration.review.start' }));
+    await waitFor(() =>
+      expect(setupMigration.apply).toHaveBeenCalledWith({ planId: 'plan-1', keys: ['provider:or', 'secrets'], approvedPluginKeys: [] }),
+    );
+    await screen.findByText('setupMigration.done.finish');
+    expect(createCustomProvider).not.toHaveBeenCalled();
+  });
+
   it('continues with only a checklist so it is saved and shown on the done page', async () => {
     const { setupMigration } = installApi();
     setupMigration.preview.mockResolvedValueOnce({
@@ -186,6 +219,7 @@ describe('SetupMigrationDialog', () => {
     setupMigration.apply.mockResolvedValueOnce({
       results: [],
       checklist: [{ id: 'skill-manual:notes', kind: 'skill-manual', label: 'notes', ref: 'notes' }],
+      handledKeys: [],
     });
     render(<SetupMigrationDialog />);
     act(() => openSetupMigration('d1'));

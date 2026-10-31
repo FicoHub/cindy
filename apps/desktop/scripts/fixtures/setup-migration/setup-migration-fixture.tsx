@@ -3,9 +3,22 @@ import { useEffect } from 'react';
 import { ctx, forbid, mountPage } from '../../ui-page/harness';
 import { SetupMigrationSection } from '../../../src/renderer/components/settings/SetupMigrationSection';
 import { SetupMigrationDialog } from '../../../src/renderer/features/setup-migration/SetupMigrationDialog';
-import { openSetupMigration } from '../../../src/renderer/features/setup-migration/setupMigrationStore';
+import { SetupMigrationWalkthroughBar } from '../../../src/renderer/features/setup-migration/SetupMigrationWalkthroughBar';
+import {
+  openSetupMigration,
+  startSetupMigrationWalkthrough,
+} from '../../../src/renderer/features/setup-migration/setupMigrationStore';
 
 const data = ctx.data as Record<string, unknown>;
+type ProgressListener = (progress: unknown) => void;
+const progressListeners = new Set<ProgressListener>();
+
+function StartWalkthrough() {
+  useEffect(() => {
+    startSetupMigrationWalkthrough((data.walkthroughIds as string[] | undefined) ?? []);
+  }, []);
+  return <SetupMigrationWalkthroughBar />;
+}
 
 function OpenDialog() {
   useEffect(() => {
@@ -25,10 +38,20 @@ mountPage({
         }
         return data.plan;
       },
-      apply: async () => data.applyResponse,
+      apply: async () => {
+        if (data.waitForSource) {
+          // The other computer is being asked: show its code and keep waiting.
+          for (const listener of progressListeners) listener(data.waitForSource);
+          return new Promise(() => {});
+        }
+        return data.applyResponse;
+      },
       state: async () => data.state,
       dismiss: forbid('setupMigration.dismiss'),
-      onProgress: () => () => {},
+      onProgress: (listener: ProgressListener) => {
+        progressListeners.add(listener);
+        return () => progressListeners.delete(listener);
+      },
       host: { ready: () => {}, reply: () => {}, onRequest: () => () => {} },
     },
     maker: {
@@ -46,6 +69,8 @@ mountPage({
       <div className="mx-auto max-w-[720px] p-6">
         <SetupMigrationSection />
       </div>
+    ) : data.surface === 'walkthrough' ? (
+      <StartWalkthrough />
     ) : (
       <>
         <OpenDialog />

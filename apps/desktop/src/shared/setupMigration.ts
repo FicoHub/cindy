@@ -165,6 +165,40 @@ export interface SetupMigrationRendererPrefsItem extends ItemBase {
   values: Record<string, string>;
 }
 
+/** One key the other computer may copy after a person there allows it; names only, never values. */
+export interface SetupMigrationSecretRef {
+  kind: 'provider' | 'mcp' | 'builtin' | 'plugin';
+  /** Provider / MCP id, built-in key id or plugin item key. */
+  ref: string;
+  name: string;
+}
+
+/** Copy the keys of the chosen connections, plugins and built-in tools (key `secrets`). */
+export interface SetupMigrationSecretsItem extends ItemBase {
+  items: SetupMigrationSecretRef[];
+}
+
+export interface SetupMigrationSshHostItem extends ItemBase {
+  id: string;
+  displayName: string;
+  hostname: string;
+  port: number;
+  user: string;
+}
+
+/** Display names of built-in keys; ids come from the other computer. */
+export const BUILTIN_SECRET_NAMES: Readonly<Record<string, string>> = {
+  brave: 'Brave Search',
+  tavily: 'Tavily',
+  mivo: 'Mivo',
+  xai: 'xAI',
+  gemini: 'Google Gemini',
+  'openai-images': 'OpenAI Images',
+};
+
+/** Selection key of the keys step. */
+export const SETUP_MIGRATION_SECRETS_KEY = 'secrets';
+
 export type SetupMigrationChecklistKind =
   | 'plugin-setup'
   | 'plugin-manual'
@@ -179,7 +213,8 @@ export type SetupMigrationChecklistKind =
   | 'im-channel'
   | 'computer-use'
   | 'remote-desktop'
-  | 'ssh';
+  | 'ssh'
+  | 'ssh-host';
 
 /** One thing that must be done once on this computer; never contains secret material. */
 export interface SetupMigrationChecklistItem {
@@ -206,6 +241,10 @@ export interface SetupMigrationPlan {
   mcpServers: SetupMigrationMcpItem[];
   builtinTools: SetupMigrationBuiltinToolItem[];
   access: SetupMigrationAccessItem[];
+  /** Null when the other computer predates the keys step or has nothing to copy. */
+  secrets: SetupMigrationSecretsItem | null;
+  /** Servers for the SSH step; empty when the other computer predates it. */
+  sshHosts: SetupMigrationSshHostItem[];
   /** Known before applying: credentials, logins and permissions this computer will need. */
   checklist: SetupMigrationChecklistItem[];
   /** Sections the other computer could not read this time. */
@@ -232,6 +271,8 @@ export interface SetupMigrationResult {
 export interface SetupMigrationApplyResponse {
   results: SetupMigrationResult[];
   checklist: SetupMigrationChecklistItem[];
+  /** Renderer-owned keys Main already applied with copied keys; the window skips them. */
+  handledKeys: string[];
 }
 
 export interface SetupMigrationProgress {
@@ -240,6 +281,8 @@ export interface SetupMigrationProgress {
   phase: 'running' | SetupMigrationOutcome;
   completed: number;
   total: number;
+  /** While the other computer is asked: the code shown there, so the person can compare. */
+  confirmCode?: string;
 }
 
 export interface SetupMigrationState {

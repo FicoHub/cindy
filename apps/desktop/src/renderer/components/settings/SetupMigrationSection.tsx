@@ -7,7 +7,10 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { SetupMigrationChecklist } from '@/features/setup-migration/SetupMigrationChecklist';
+import {
+  SetupMigrationChecklist,
+  startChecklistWalkthrough,
+} from '@/features/setup-migration/SetupMigrationChecklist';
 import { openChecklistRoute } from '@/features/setup-migration/checklistTargets';
 import {
   openSetupMigration,
@@ -98,6 +101,7 @@ export function SetupMigrationSection() {
                 variant="settings"
                 onOpen={(item: SetupMigrationChecklistItem) => openChecklistRoute(item)}
                 onMarkDone={(item) => dismiss({ kind: 'checklist-item', id: item.id })}
+                onStartAll={() => startChecklistWalkthrough(checklist, openChecklistRoute)}
               />
             </div>
           </>

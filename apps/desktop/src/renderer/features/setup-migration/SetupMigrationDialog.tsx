@@ -3,9 +3,10 @@
  *
  * 1. Pick another computer on this account. 2. Review what will be copied; values this
  * computer already changed are kept. 3. Confirm plugin permissions once, then apply:
- * Main installs plugins/skills and writes settings files, this window applies what its
- * settings pages already own. 4. Show the result and what must still be done here once
- * (sign-ins, keys, OS permissions) — nothing secret ever crosses computers.
+ * Main installs plugins/skills, writes settings files and, when chosen, asks the other computer
+ * to copy keys and authorize this computer's new SSH key (a person there allows it); this window
+ * applies what its settings pages already own. 4. Show the result and what must still be done
+ * here once (sign-ins, OS permissions), which can be walked one by one.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -22,17 +23,22 @@ import { getDataOwnerGeneration, isDataOwnerIdCurrent } from '@/contexts/dataOwn
 import { createCustomProvider } from '@/lib/customProviders';
 import { cn } from '@/lib/utils';
 import { extractIpcError } from '@/utils/ipcError';
-import type {
-  SetupMigrationChecklistItem,
-  SetupMigrationItemState,
-  SetupMigrationPlan,
-  SetupMigrationResult,
-  SetupMigrationSource,
+import {
+  type SetupMigrationChecklistItem,
+  type SetupMigrationItemState,
+  type SetupMigrationPlan,
+  type SetupMigrationResult,
+  type SetupMigrationSecretRef,
+  type SetupMigrationSource,
 } from '../../../shared/setupMigration';
 import { applyRendererItems } from './applyRendererItems';
-import { openChecklistRoute } from './checklistTargets';
+import { BUILTIN_KEY_NAMES, openChecklistRoute } from './checklistTargets';
 import { applyPortableRendererPrefs } from './rendererPrefs';
-import { SetupMigrationChecklist, checklistItemTitle } from './SetupMigrationChecklist';
+import {
+  SetupMigrationChecklist,
+  checklistItemTitle,
+  startChecklistWalkthrough,
+} from './SetupMigrationChecklist';
 import {
   closeSetupMigration,
   notifySetupMigrationStateChanged,
@@ -52,6 +58,7 @@ interface ReviewRow {
 interface ReviewGroup {
   id: string;
   title: string;
+  description?: string;
   rows: ReviewRow[];
 }
 
@@ -125,6 +132,8 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
   const [applyError, setApplyError] = useState<string | null>(null);
   const [checklist, setChecklist] = useState<SetupMigrationChecklistItem[]>([]);
   const [prefsChanged, setPrefsChanged] = useState(false);
+  /** Code the other computer shows while it is asked to allow keys / SSH. */
+  const [confirm, setConfirm] = useState<{ key: string; code: string } | null>(null);
   const busy = phase === 'reading' || phase === 'running';
   const busyRef = useRef(false);
   busyRef.current = busy;
@@ -220,10 +229,14 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
     const mark = (key: string, next: ItemPhase) =>
       setItemPhases((previous) => new Map(previous).set(key, next));
     const stop = api.onProgress((progress) => {
-      if (progress.planId === plan.planId) mark(progress.key, progress.phase);
+      if (progress.planId !== plan.planId) return;
+      mark(progress.key, progress.phase);
+      if (progress.confirmCode) setConfirm({ key: progress.key, code: progress.confirmCode });
+      else if (progress.phase !== 'running') setConfirm((current) => (current?.key === progress.key ? null : current));
     });
     const collected: SetupMigrationResult[] = [];
     let nextChecklist = plan.checklist;
+    let handledKeys: ReadonlySet<string> = new Set();
     // The dialog lives outside the owner-scoped routes, so the account it previewed for is
     // pinned here; Main re-checks the same plan (account, window, expiry, single use).
     const owner = getDataOwnerGeneration();
@@ -234,11 +247,14 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
       const response = await api.apply({ planId: plan.planId, keys, approvedPluginKeys });
       collected.push(...response.results);
       nextChecklist = response.checklist;
+      // Connections Main already created with their copied keys.
+      handledKeys = new Set(response.handledKeys ?? []);
     } catch (error) {
       planRejected = extractIpcError(error)?.code ?? 'FAILED';
       setApplyError(planRejected);
     } finally {
       stop();
+      setConfirm(null);
     }
     if (planRejected) {
       // Nothing else is written from a plan Main refused.
@@ -253,7 +269,7 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
     }
     const renderer = await applyRendererItems(
       plan,
-      keySet,
+      new Set([...keySet].filter((key) => !handledKeys.has(key))),
       {
         isCurrent: () => isDataOwnerIdCurrent(owner),
         createProvider: (config) => createCustomProvider(config, {}),
@@ -293,6 +309,13 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
     dialog.close(() => {
       closeSetupMigration();
       openChecklistRoute(item);
+    });
+  };
+
+  const walkChecklist = () => {
+    dialog.close(() => {
+      closeSetupMigration();
+      startChecklistWalkthrough(checklist, openChecklistRoute);
     });
   };
 
@@ -417,6 +440,9 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
                   {t('setupMigration.review.groupCount', { selected: checkedCount, total: ready.length })}
                 </span>
               </div>
+              {group.description ? (
+                <p className="px-2 pb-1.5 text-12 leading-[1.5] text-[var(--confirm-desc)]">{group.description}</p>
+              ) : null}
               <ul className="border-y border-[var(--border-default)] py-1">
                 {visible.map((row) => {
                   const selectable = row.state === 'ready';
@@ -459,7 +485,9 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
               {t('setupMigration.review.checklistTitle')}
             </h3>
             <p className="px-2 pb-1 text-12 leading-[1.5] text-[var(--confirm-desc)]">
-              {t('setupMigration.review.checklistDescription')}
+              {plan.secrets
+                ? t('setupMigration.review.checklistDescriptionWithKeys', { name: plan.source.name })
+                : t('setupMigration.review.checklistDescription')}
             </p>
             <ul className="border-y border-[var(--border-default)] px-2 py-1">
               {plan.checklist.map((item) => (
@@ -496,6 +524,19 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
         <p className="text-13 text-[var(--confirm-desc)]" aria-live="polite">
           {t('setupMigration.running.progress', { completed, total })}
         </p>
+        {confirm ? (
+          <div role="status" className="rounded-xl border border-[var(--border-default)] p-3">
+            <p className="text-13 leading-[1.5] text-[var(--confirm-title)]">
+              {t('setupMigration.running.confirm', { name: sourceName })}
+            </p>
+            <p className="pt-1 text-12 text-[var(--confirm-desc)]">
+              {t('setupMigration.running.confirmCode')}{' '}
+              <span className="select-text font-mono text-16 font-medium tracking-[0.2em] text-[var(--confirm-title)]">
+                {confirm.code}
+              </span>
+            </p>
+          </div>
+        ) : null}
         <ul className="flex flex-col">
           {[...itemPhases.entries()].map(([key, value]) => (
             <li key={key} className="flex items-center gap-2.5 py-1.5 text-13 text-[var(--confirm-title)]">
@@ -548,7 +589,12 @@ function SetupMigrationDialogBody({ initialDeviceId }: { initialDeviceId: string
               <p className="pb-1 text-12 leading-[1.5] text-[var(--confirm-desc)]">
                 {t('setupMigration.done.checklistDescription')}
               </p>
-              <SetupMigrationChecklist items={checklist} variant="dialog" onOpen={openChecklistItem} />
+              <SetupMigrationChecklist
+                items={checklist}
+                variant="dialog"
+                onOpen={openChecklistItem}
+                onStartAll={walkChecklist}
+              />
             </>
           )}
         </section>
@@ -708,9 +754,15 @@ export function defaultSelection(plan: SetupMigrationPlan): string[] {
     ...plan.mcpServers,
     ...plan.builtinTools,
     ...plan.access,
+    ...(plan.secrets ? [plan.secrets] : []),
+    ...(plan.sshHosts ?? []),
   ]
     .filter((item) => item.state === 'ready')
     .map((item) => item.key);
+}
+
+function secretName(item: SetupMigrationSecretRef): string {
+  return item.kind === 'builtin' ? (BUILTIN_KEY_NAMES[item.ref] ?? item.name) : item.name;
 }
 
 export function buildReviewGroups(
@@ -777,6 +829,11 @@ export function buildReviewGroups(
       meta: item.state === 'kept' ? t('setupMigration.review.kept') : undefined,
     })),
   ];
+  const copyable = new Set(
+    (plan.secrets?.items ?? [])
+      .filter((item) => item.kind === 'provider' || item.kind === 'mcp')
+      .map((item) => `${item.kind}:${item.ref}`),
+  );
   const connections: ReviewRow[] = [
     ...plan.providers.map((item) => ({
       key: item.key,
@@ -785,17 +842,37 @@ export function buildReviewGroups(
       meta:
         item.state === 'unavailable'
           ? reasonMeta(item.reason)
-          : t(`setupMigration.review.providerAuth.${item.provider.auth}`),
+          : copyable.has(`provider:${item.provider.id}`)
+            ? t('setupMigration.review.providerAuth.apiKeyCopy')
+            : t(`setupMigration.review.providerAuth.${item.provider.auth}`),
     })),
     ...plan.mcpServers.map((item) => ({
       key: item.key,
       title: item.server.name,
       state: item.state,
-      meta: item.server.hasToken
-        ? t('setupMigration.review.mcpToken', { url: safeHost(item.server.url) })
-        : t('setupMigration.review.mcp', { url: safeHost(item.server.url) }),
+      meta: copyable.has(`mcp:${item.server.id}`)
+        ? t('setupMigration.review.mcpTokenCopy', { url: safeHost(item.server.url) })
+        : item.server.hasToken
+          ? t('setupMigration.review.mcpToken', { url: safeHost(item.server.url) })
+          : t('setupMigration.review.mcp', { url: safeHost(item.server.url) }),
     })),
   ];
+  const secrets: ReviewRow[] = plan.secrets
+    ? [
+        {
+          key: plan.secrets.key,
+          title: t('setupMigration.review.secrets.title', { count: plan.secrets.items.length }),
+          state: plan.secrets.state,
+          meta: plan.secrets.items.map(secretName).join(t('setupMigration.listSeparator')),
+        },
+      ]
+    : [];
+  const ssh: ReviewRow[] = (plan.sshHosts ?? []).map((item) => ({
+    key: item.key,
+    title: item.displayName,
+    state: item.state,
+    meta: t('setupMigration.review.sshHost', { user: item.user, host: item.hostname, port: item.port }),
+  }));
   const access: ReviewRow[] = plan.access.map((item) => ({
     key: item.key,
     title: t(`setupMigration.review.access.${item.id}`),
@@ -807,6 +884,18 @@ export function buildReviewGroups(
     { id: 'skills', title: t('setupMigration.review.groups.skills'), rows: skills },
     { id: 'settings', title: t('setupMigration.review.groups.settings'), rows: settings },
     { id: 'connections', title: t('setupMigration.review.groups.connections'), rows: connections },
+    {
+      id: 'secrets',
+      title: t('setupMigration.review.groups.secrets'),
+      description: t('setupMigration.review.secrets.description', { name: plan.source.name }),
+      rows: secrets,
+    },
+    {
+      id: 'ssh',
+      title: t('setupMigration.review.groups.ssh'),
+      description: t('setupMigration.review.sshDescription', { name: plan.source.name }),
+      rows: ssh,
+    },
     { id: 'access', title: t('setupMigration.review.groups.access'), rows: access },
   ];
 }

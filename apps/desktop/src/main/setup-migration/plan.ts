@@ -9,10 +9,12 @@
 import {
   isLoopbackProviderUrl,
 } from '@cindy/model-providers';
-import type {
-  SetupSnapshot,
-  SetupSnapshotPlugin,
-  SetupSnapshotProvider,
+import {
+  SETUP_TRANSFER_BUILTIN_KEY_IDS,
+  SETUP_TRANSFER_VERSION,
+  type SetupSnapshot,
+  type SetupSnapshotPlugin,
+  type SetupSnapshotProvider,
 } from '@cindy/device-link';
 
 import type { GhostInstallConsentFacts } from '../../shared/ghostInstallConsent.js';
@@ -25,10 +27,13 @@ import type {
   SetupMigrationPluginItem,
   SetupMigrationProviderItem,
   SetupMigrationRendererPrefsItem,
+  SetupMigrationSecretRef,
+  SetupMigrationSecretsItem,
   SetupMigrationSettingsItem,
   SetupMigrationSkillItem,
+  SetupMigrationSshHostItem,
 } from '../../shared/setupMigration.js';
-import { isPortableRendererPrefKey } from '../../shared/setupMigration.js';
+import { SETUP_MIGRATION_SECRETS_KEY, isPortableRendererPrefKey } from '../../shared/setupMigration.js';
 
 /** Built-in tools whose switch only works after local OS permissions; handled by the checklist. */
 export const SETUP_LOCAL_PERMISSION_TOOL_IDS: ReadonlySet<string> = new Set(['computer', 'android']);
@@ -76,6 +81,10 @@ export interface SetupPlanInputs {
   /** Effective built-in tool switches here, and whether the user set them. */
   builtinTools: ReadonlyMap<string, { enabled: boolean; userSet: boolean }>;
   access: { remoteControlEnabled: boolean; keepAwake: boolean };
+  /** Built-in keys already saved here; those are never replaced. */
+  builtinKeys: ReadonlySet<string>;
+  /** SSH aliases this computer already has (Cindy's file and the user's own config). */
+  sshHostIds: ReadonlySet<string>;
 }
 
 export function pluginItemKey(plugin: Pick<SetupSnapshotPlugin, 'ghostId' | 'namespace'>): string {
@@ -263,12 +272,27 @@ export function buildSetupPlan(input: SetupPlanInputs): SetupMigrationPlan {
   }
 
   for (const id of snapshot.hints.builtinKeys) {
+    if (input.builtinKeys.has(id)) continue;
     addChecklist({ id: `builtin-key:${id}`, kind: 'builtin-key', label: id, ref: id });
   }
   for (const channel of snapshot.hints.imChannels) {
     addChecklist({ id: `im-channel:${channel}`, kind: 'im-channel', label: channel, ref: channel });
   }
-  if (snapshot.hints.sshHostCount > 0) {
+
+  const transferable = snapshot.transfer >= SETUP_TRANSFER_VERSION;
+  const sshHosts: SetupMigrationSshHostItem[] = transferable
+    ? snapshot.sshHosts.map((host) => ({
+        key: `ssh:${host.id}`,
+        id: host.id,
+        displayName: host.displayName,
+        hostname: host.hostname,
+        port: host.port,
+        user: host.user,
+        state: input.sshHostIds.has(host.id) ? ('present' as const) : ('ready' as const),
+      }))
+    : [];
+  // Older computers only report how many servers they have.
+  if (!transferable && snapshot.hints.sshHostCount > 0) {
     addChecklist({ id: 'ssh', kind: 'ssh', label: String(snapshot.hints.sshHostCount) });
   }
 
@@ -284,9 +308,46 @@ export function buildSetupPlan(input: SetupPlanInputs): SetupMigrationPlan {
     mcpServers,
     builtinTools,
     access,
+    secrets: transferable ? secretsItem(input, { plugins, providers, mcpServers }) : null,
+    sshHosts,
     checklist,
     unavailable: [...snapshot.unavailable],
   };
+}
+
+/**
+ * Keys the other computer may copy: API-key connections and MCP with credentials that will be
+ * created here, built-in keys this computer lacks, and plugins that had keys set up there. OAuth
+ * sign-ins are never listed; they stay on the checklist.
+ */
+function secretsItem(
+  input: SetupPlanInputs,
+  items: {
+    plugins: SetupMigrationPluginItem[];
+    providers: SetupMigrationProviderItem[];
+    mcpServers: SetupMigrationMcpItem[];
+  },
+): SetupMigrationSecretsItem | null {
+  const refs: SetupMigrationSecretRef[] = [
+    ...items.providers
+      .filter((item) => item.state === 'ready' && (item.provider.auth === 'apiKey' || item.provider.urlSecretsRemoved))
+      .map((item) => ({ kind: 'provider' as const, ref: item.provider.id, name: item.provider.name })),
+    ...items.mcpServers
+      .filter((item) => item.state === 'ready' && item.server.hasToken)
+      .map((item) => ({ kind: 'mcp' as const, ref: item.server.id, name: item.server.name })),
+    ...input.snapshot.hints.builtinKeys
+      .filter((id) => SETUP_TRANSFER_BUILTIN_KEY_IDS.includes(id) && !input.builtinKeys.has(id))
+      .map((id) => ({ kind: 'builtin' as const, ref: id, name: id })),
+    ...items.plugins
+      .filter((item) => item.state !== 'unavailable')
+      .filter((item) =>
+        input.snapshot.plugins.some(
+          (plugin) => plugin.ghostId === item.ghostId && plugin.namespace === item.namespace && plugin.setupReady === true,
+        ),
+      )
+      .map((item) => ({ kind: 'plugin' as const, ref: item.key, name: item.name })),
+  ];
+  return refs.length > 0 ? { key: SETUP_MIGRATION_SECRETS_KEY, state: 'ready', items: refs } : null;
 }
 
 /**

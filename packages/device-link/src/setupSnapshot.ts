@@ -32,6 +32,7 @@ export const SETUP_SNAPSHOT_LIMITS = {
   providerBytes: 128 * 1024,
   builtinTools: 64,
   hints: 64,
+  sshHosts: 200,
 } as const;
 
 export type SetupSnapshotRequest = { action: 'caps' } | { action: 'snapshot' };
@@ -126,6 +127,20 @@ export interface SetupSnapshotAccess {
   keepAwake: boolean;
 }
 
+/**
+ * One SSH server the source computer shows in Cindy. Only how to reach it: no key paths, no
+ * proxy commands. `hostKey` is the fingerprint that computer already trusts, so the new one can
+ * check the server on its first connection instead of trusting whatever answers.
+ */
+export interface SetupSnapshotSshHost {
+  id: string;
+  displayName: string;
+  hostname: string;
+  port: number;
+  user: string;
+  hostKey: string | null;
+}
+
 /** Presence-only facts used to build the one-time checklist. Never key material. */
 export interface SetupSnapshotHints {
   /** Built-in provider secret ids configured on the source (e.g. `brave`, `tavily`). */
@@ -145,7 +160,8 @@ export type SetupSnapshotSection =
   | 'providers'
   | 'builtinTools'
   | 'access'
-  | 'hints';
+  | 'hints'
+  | 'sshHosts';
 
 export interface SetupSnapshot {
   version: typeof SETUP_SNAPSHOT_VERSION;
@@ -163,6 +179,10 @@ export interface SetupSnapshot {
   builtinTools: SetupSnapshotBuiltinTool[];
   access: SetupSnapshotAccess;
   hints: SetupSnapshotHints;
+  /** Servers for the SSH step; empty from sources that predate it. */
+  sshHosts: SetupSnapshotSshHost[];
+  /** `setupTransfer` version the source answers (keys and SSH, see setupTransfer.ts); 0 = none. */
+  transfer: number;
   /** Sections the source could not read this time. */
   unavailable: SetupSnapshotSection[];
 }
@@ -179,6 +199,7 @@ const SECTIONS: readonly SetupSnapshotSection[] = [
   'builtinTools',
   'access',
   'hints',
+  'sshHosts',
 ];
 
 export function parseSetupSnapshotRequest(value: unknown): SetupSnapshotRequest {
@@ -230,6 +251,11 @@ export function parseSetupSnapshot(value: unknown): SetupSnapshot {
       imChannels: stringList(hintsRaw.imChannels, SETUP_SNAPSHOT_LIMITS.hints, 64),
       sshHostCount: Math.max(0, Math.min(10_000, Math.floor(finiteNumber(hintsRaw.sshHostCount) ?? 0))),
     },
+    sshHosts: list(value.sshHosts, SETUP_SNAPSHOT_LIMITS.sshHosts, parseSshHost),
+    transfer:
+      typeof value.transfer === 'number' && Number.isInteger(value.transfer) && value.transfer > 0
+        ? Math.min(value.transfer, 1_000)
+        : 0,
     unavailable: Array.isArray(value.unavailable)
       ? [...new Set(value.unavailable.filter((s): s is SetupSnapshotSection =>
           SECTIONS.includes(s as SetupSnapshotSection)))]
@@ -355,6 +381,22 @@ function parseProvider(value: unknown): SetupSnapshotProvider | null {
     auth,
     ...(value.urlSecretsRemoved === true ? { urlSecretsRemoved: true as const } : {}),
   };
+}
+
+const SSH_ALIAS_RE = /^[A-Za-z0-9._@:+-]{1,255}$/;
+const SSH_HOSTNAME_RE = /^[A-Za-z0-9._:%[\]-]{1,255}$/;
+const SSH_USER_RE = /^[A-Za-z0-9._@+-]{1,128}$/;
+
+function parseSshHost(value: unknown): SetupSnapshotSshHost | null {
+  if (!isRecord(value)) return null;
+  const { id, hostname, user, port } = value;
+  if (typeof id !== 'string' || !SSH_ALIAS_RE.test(id)) return null;
+  if (typeof hostname !== 'string' || !SSH_HOSTNAME_RE.test(hostname)) return null;
+  if (typeof user !== 'string' || !SSH_USER_RE.test(user)) return null;
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65_535) return null;
+  const hostKey =
+    typeof value.hostKey === 'string' && /^SHA256:[A-Za-z0-9+/]{43}$/.test(value.hostKey) ? value.hostKey : null;
+  return { id, displayName: boundedString(value.displayName, 200) ?? id, hostname, port, user, hostKey };
 }
 
 function parseBuiltinTool(value: unknown): SetupSnapshotBuiltinTool | null {

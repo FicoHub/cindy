@@ -40,6 +40,8 @@ function plan(overrides: Partial<SetupMigrationPlan> = {}): SetupMigrationPlan {
     mcpServers: [],
     builtinTools: [],
     access: [],
+    secrets: null,
+    sshHosts: [],
     checklist: [],
     unavailable: [],
     ...overrides,

@@ -66,20 +66,36 @@ const plan = {
     { key: 'access:remote-control', id: 'remote-control', state: 'ready' },
     { key: 'access:keep-awake', id: 'keep-awake', state: 'ready' },
   ],
+  secrets: {
+    key: 'secrets',
+    state: 'ready',
+    items: [
+      { kind: 'provider', ref: 'openrouter', name: 'OpenRouter' },
+      { kind: 'mcp', ref: 'docs', name: 'Team Docs' },
+      { kind: 'builtin', ref: 'brave', name: 'brave' },
+      { kind: 'plugin', ref: 'plugin:_root:gmail', name: 'Gmail' },
+    ],
+  },
+  sshHosts: [
+    { key: 'ssh:web', id: 'web', displayName: 'web', hostname: 'web.example.com', port: 22, user: 'deploy', state: 'ready' },
+    { key: 'ssh:build', id: 'build', displayName: 'Build server', hostname: '10.0.0.12', port: 2222, user: 'ci', state: 'ready' },
+    { key: 'ssh:gpu', id: 'gpu', displayName: 'gpu', hostname: 'gpu.example.com', port: 22, user: 'me', state: 'present' },
+  ],
   checklist: [
     { id: 'provider-key:openrouter', kind: 'provider-key', label: 'OpenRouter', ref: 'openrouter' },
     { id: 'provider-connection:openrouter', kind: 'provider-connection', label: 'OpenRouter', ref: 'openrouter' },
     { id: 'mcp-token:docs', kind: 'mcp-token', label: 'Team Docs', ref: 'docs' },
     { id: 'im-channel:telegram', kind: 'im-channel', label: 'telegram', ref: 'telegram' },
     { id: 'computer-use', kind: 'computer-use', label: 'computer', ref: 'computer' },
-    { id: 'ssh', kind: 'ssh', label: '3' },
   ],
   unavailable: [],
 };
 
 const checklistAfter = [
   { id: 'plugin-setup:_root__gmail', kind: 'plugin-setup', label: 'Gmail', ref: '_root__gmail', details: ['Google account'] },
-  ...plan.checklist,
+  // Keys copied from the other computer: done right away.
+  ...plan.checklist.map((item) => (item.kind === 'provider-key' || item.kind === 'mcp-token' || item.kind === 'provider-connection' ? { ...item, done: true } : item)),
+  { id: 'ssh-host:build', kind: 'ssh-host', label: 'Build server', ref: 'build' },
 ];
 
 const applyResponse = {
@@ -91,9 +107,17 @@ const applyResponse = {
     { key: 'skill:team-review', outcome: 'done' },
     { key: 'settings:appearance', outcome: 'done' },
     { key: 'settings:collaboration', outcome: 'done' },
+    { key: 'secrets', outcome: 'done' },
+    { key: 'provider:openrouter', outcome: 'done' },
+    { key: 'mcp:docs', outcome: 'done' },
+    { key: 'ssh:web', outcome: 'done' },
+    { key: 'ssh:build', outcome: 'failed', code: 'SSH_CONNECT_FAILED' },
   ],
   checklist: checklistAfter,
+  handledKeys: ['provider:openrouter', 'mcp:docs'],
 };
+
+const waitForSource = { planId: 'fixture-plan', key: 'secrets', phase: 'running', completed: 7, total: 10, confirmCode: '482913' };
 
 const tools = [{ id: 'browser', name: 'Browser' }];
 
@@ -111,6 +135,8 @@ const readyCount = [
   ...plan.mcpServers,
   ...plan.builtinTools,
   ...plan.access,
+  plan.secrets,
+  ...plan.sshHosts,
 ].filter((item) => item.state === 'ready').length;
 
 async function start(page, ui) {
@@ -124,12 +150,22 @@ export default {
   entry: './setup-migration-fixture.tsx',
   viewport: { width: 1040, height: 760 },
   real: 'SetupMigrationDialog (computer picker, review groups, batch plugin permissions with GhostInstallConsentContent, result and one-time checklist), SetupMigrationSection, translations and themes',
-  notCovered: 'Main-side snapshot, plan, plugin/skill installers and settings writes (unit-tested in src/main/setup-migration), device-link transport, the first-run suggestion timer, and two real computers',
+  notCovered: 'Main-side snapshot, plan, plugin/skill installers, settings writes, key copy and SSH authorization (unit-tested in src/main/setup-migration and src/main/remote-ssh), the confirmation dialog on the other computer (native), device-link transport, the first-run suggestion timer, and two real computers',
   cases: {
     source: { about: 'Pick a computer; offline and remote-control-off computers explain why they cannot be read', data: { surface: 'dialog', sources, plan, applyResponse, tools } },
     default: { about: 'Review what moves: plugins, skills, settings, providers/MCP, access switches and the one-time checklist', data: { surface: 'dialog', sources, plan, applyResponse, tools } },
     permissions: { about: 'One confirmation for the permissions of all selected market plugins', data: { surface: 'dialog', sources, plan, applyResponse, tools } },
     done: { about: 'Result with a failed item and what is left to do on this computer', data: { surface: 'dialog', sources, plan, applyResponse, tools } },
+    confirm: { about: 'Waiting for the other computer to allow keys and SSH, with the code both computers show', data: { surface: 'dialog', sources, plan, applyResponse, tools, waitForSource } },
+    walkthrough: {
+      about: 'Going through the remaining checklist one item at a time',
+      data: {
+        surface: 'walkthrough',
+        walkthroughIds: checklistAfter.filter((item) => !item.done).map((item) => item.id),
+        state: { lastRun: { sourceName: 'MacBook Pro', finishedAt: 0, checklist: checklistAfter }, suggestion: null },
+      },
+      viewport: { width: 900, height: 400 },
+    },
     'read-error': { about: 'The other computer runs an older Cindy', data: { surface: 'dialog', deviceId: 'mbp', sources, plan, previewError: 'SETUP_SOURCE_OUTDATED', applyResponse, tools } },
     settings: {
       about: 'Settings → General entry with the remaining checklist',
@@ -145,6 +181,10 @@ export default {
       await page.getByText(await ui.t('setupMigration.settings.description'), { exact: true }).waitFor();
       return;
     }
+    if (ui.case === 'walkthrough') {
+      await page.getByText(await ui.t('setupMigration.walkthrough.next'), { exact: true }).waitFor();
+      return;
+    }
     if (ui.case === 'read-error') {
       await page.getByText(await ui.t('setupMigration.errors.SETUP_SOURCE_OUTDATED', { name: 'MacBook Pro' }), { exact: true }).waitFor();
       return;
@@ -156,12 +196,19 @@ export default {
       // Already-identical items are summarized instead of listed.
       assert.equal(await page.getByText('GitHub', { exact: true }).count(), 0);
       await ui.capture('scrolled', {});
+      // Keys and SSH servers sit at the end of the list.
+      await page.getByText(await ui.t('setupMigration.review.groups.ssh'), { exact: true }).scrollIntoViewIfNeeded();
+      await ui.capture('keys-and-ssh', {});
       return;
     }
     await start(page, ui);
     if (ui.case === 'permissions') return;
     const confirm = await ui.t('setupMigration.permissions.confirm', { count: 2 });
     await page.getByRole('button', { name: confirm, exact: true }).click();
+    if (ui.case === 'confirm') {
+      await page.getByText('482913', { exact: true }).waitFor();
+      return;
+    }
     await page.getByText(await ui.t('setupMigration.done.checklistTitle'), { exact: true }).waitFor();
   },
 };

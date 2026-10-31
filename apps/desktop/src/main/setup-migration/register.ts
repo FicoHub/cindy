@@ -3,13 +3,20 @@
  * (docs/product-rules/new-device-setup-migration.md). Business rules live in
  * service/plan/apply/snapshot; this file only adapts existing host modules.
  */
+import { createHash, randomUUID } from 'node:crypto';
+import { hostname as osHostname } from 'node:os';
+
 import { BrowserWindow, ipcMain } from 'electron';
 import type { Maker } from '@cindy/maker-core';
 import {
   SETUP_SNAPSHOT_CHANNEL,
+  SETUP_TRANSFER_BUILTIN_KEY_IDS,
+  SETUP_TRANSFER_CHANNEL,
+  type SetupSecretBundle,
   type SetupSnapshotPlugin,
   type SetupSnapshotRequest,
   type SetupSnapshotSkill,
+  type SetupTransferSecretsRequest,
 } from '@cindy/device-link';
 import { isByokProviderId, isOrganizationManagedProvider } from '@cindy/model-providers';
 
@@ -34,23 +41,35 @@ import {
   createWindowGhostInstallConsentPrompt,
   getGhostManager,
   getGhostSetupAssessment,
+  readGhostUserSecretsForSetup,
   setGhostEnabledForUser,
+  storeGhostUserSecretsForSetup,
 } from '../cindy-brain/index.js';
 import { remoteBackgroundInvoke } from '../device-link/index.js';
-import { setSetupSnapshotRemoteHandler } from '../device-link/dispatch.js';
+import { setSetupSnapshotRemoteHandler, setSetupTransferRemoteHandler } from '../device-link/dispatch.js';
 import { defaultDeps as deviceDirectoryDeps, handleListDevices } from '../device-link/ipc.js';
 import { readDeviceLinkSettings } from '../device-link/settings-store.js';
 import { ownerScopedImSecrets } from '../im/ownerScopedStorage.js';
 import { createLogger } from '../logger.js';
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
 import { listCustomMcpServers } from '../maker-host/custom-mcp-store.js';
+import { hydrateCustomProviderHeaders } from '../maker-host/custom-provider-header-secrets.js';
 import { listCustomProviders } from '../maker-host/custom-provider-store.js';
+import { createCustomMcpServerFromMain } from '../maker-ipc/mcpHandlers.js';
+import { createCustomProviderFromMain } from '../maker-ipc/providerHandlers.js';
 import { getPluginRegistry } from '../maker-host/index.js';
 import { desktopMakerLogger } from '../maker-host/logger-adapter.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
 import type { BuiltInSkillDescriptor } from '../maker-host/built-in-skills.js';
 import { getPluginMarketService } from '../plugin-market/service.js';
-import { getRemoteSshPoolHydrated } from '../remote-ssh/index.js';
+import { getRemoteSshPool, getRemoteSshPoolHydrated } from '../remote-ssh/index.js';
+import { generateNewKey } from '../remote-ssh/ssh-keys.js';
+import {
+  addAndCheckSetupSshHost,
+  authorizeSetupSshKey,
+  listSetupSshHosts,
+  localSshHostIds,
+} from '../remote-ssh/setupMigrationSsh.js';
 import {
   getProviderSecretStore,
   readCustomMcpToken,
@@ -71,6 +90,9 @@ import {
 import { SETUP_SETTINGS_GROUPS } from './settingsGroups.js';
 import type { TargetCatalogFact, TargetGhostFact } from './plan.js';
 import type { SourceProviderFact } from './snapshot.js';
+import { createSetupTransferSource, requestSetupTransfer } from './transfer.js';
+import { confirmSetupTransfer } from './transferPrompt.js';
+import { BUILTIN_SECRET_NAMES } from '../../shared/setupMigration.js';
 
 const log = createLogger('setup-migration');
 
@@ -78,6 +100,8 @@ export interface RegisterSetupMigrationOptions {
   getMaker(): Maker;
   getManagedSkillRoots(): readonly string[];
   getBuiltInSkills(): readonly BuiltInSkillDescriptor[];
+  /** Window the keys/SSH question is shown over on this computer. */
+  getMainWindow(): BrowserWindow | null;
 }
 
 const IM_CHANNEL_SECRETS: ReadonlyArray<[string, string]> = [
@@ -213,6 +237,98 @@ function broadcastSkillsChanged(): void {
   }
 }
 
+/** `SHA256:…` of an OpenSSH public key line, as `ssh-keygen -lf` prints it. */
+function sshPublicKeyFingerprint(line: string): string | null {
+  const blob = line.split(' ')[1];
+  if (!blob) return null;
+  return `SHA256:${createHash('sha256').update(Buffer.from(blob, 'base64')).digest('base64').replace(/=+$/, '')}`;
+}
+
+/** Key comment the other computer and the servers show for this computer's new key. */
+function setupSshKeyComment(): string {
+  const host = osHostname().replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 100) || 'computer';
+  return `cindy-setup@${host}`;
+}
+
+/** Other computer: copies only keys of the requested items that it actually has. */
+async function collectSetupSecrets(request: SetupTransferSecretsRequest): Promise<SetupSecretBundle> {
+  const bundle: SetupSecretBundle = { providers: [], mcpServers: [], builtinKeys: [], plugins: [] };
+  if (request.providers.length > 0) {
+    const wanted = new Set(request.providers);
+    for (const config of await listCustomProviders()) {
+      if (!wanted.has(config.id) || !isUserProvider(config.id)) continue;
+      // OAuth and subscription connections are signed in again; nothing of theirs is copied.
+      if (config.auth && config.auth.method !== 'apiKey') continue;
+      const keys: Record<string, string> = {};
+      for (const agent of CUSTOM_PROVIDER_AGENTS) {
+        const key = readCustomProviderKey(config.id, agent);
+        if (key) keys[agent] = key;
+      }
+      const full = JSON.parse(JSON.stringify(hydrateCustomProviderHeaders(config))) as Record<string, unknown>;
+      for (const runtime of Object.values((full.runtimes as Record<string, Record<string, unknown>> | undefined) ?? {})) {
+        if (runtime?.headersState === 'unknown') delete runtime.headers;
+        delete runtime?.headersState;
+      }
+      bundle.providers.push({ id: config.id, config: full, keys });
+    }
+  }
+  if (request.mcpServers.length > 0) {
+    const wanted = new Set(request.mcpServers);
+    for (const server of await listCustomMcpServers()) {
+      if (!wanted.has(server.id)) continue;
+      bundle.mcpServers.push({
+        id: server.id,
+        url: server.url,
+        headers: { ...server.headers },
+        token: readCustomMcpToken(server.id),
+      });
+    }
+  }
+  const secretStore = getProviderSecretStore();
+  for (const id of request.builtinKeys) {
+    if (!SETUP_TRANSFER_BUILTIN_KEY_IDS.includes(id)) continue;
+    const value = secretStore.get(id as ProviderSecretId);
+    if (value) bundle.builtinKeys.push({ id, value });
+  }
+  for (const ref of request.plugins) {
+    const ghost = findGhost(ref.ghostId, ref.namespace);
+    if (!ghost) continue;
+    const secrets = readGhostUserSecretsForSetup(installedGhostStoragePart(ghost));
+    if (Object.keys(secrets).length > 0) bundle.plugins.push({ ...ref, secrets });
+  }
+  return bundle;
+}
+
+/** Other computer: the names its person is asked about, from its own data only. */
+async function describeSetupSecrets(request: SetupTransferSecretsRequest): Promise<string[]> {
+  const names: string[] = [];
+  if (request.providers.length > 0) {
+    const wanted = new Set(request.providers);
+    for (const config of await listCustomProviders()) {
+      if (!wanted.has(config.id) || !isUserProvider(config.id)) continue;
+      if (config.auth && config.auth.method !== 'apiKey') continue;
+      names.push(config.name);
+    }
+  }
+  if (request.mcpServers.length > 0) {
+    const wanted = new Set(request.mcpServers);
+    for (const server of await listCustomMcpServers()) if (wanted.has(server.id)) names.push(server.name);
+  }
+  const secretStore = getProviderSecretStore();
+  for (const id of request.builtinKeys) {
+    if (SETUP_TRANSFER_BUILTIN_KEY_IDS.includes(id) && secretStore.has(id as ProviderSecretId)) {
+      names.push(BUILTIN_SECRET_NAMES[id] ?? id);
+    }
+  }
+  for (const ref of request.plugins) {
+    const ghost = findGhost(ref.ghostId, ref.namespace);
+    if (ghost && Object.keys(readGhostUserSecretsForSetup(installedGhostStoragePart(ghost))).length > 0) {
+      names.push(ghost.manifest.name);
+    }
+  }
+  return names;
+}
+
 export function registerSetupMigration(options: RegisterSetupMigrationOptions): void {
   const rendererHost = registerSetupMigrationRendererHost();
   const market = () => getPluginMarketService();
@@ -311,6 +427,39 @@ export function registerSetupMigration(options: RegisterSetupMigrationOptions): 
       const settings = readDeviceLinkSettings();
       return { remoteControlEnabled: settings.remoteControlEnabled, keepAwake: settings.keepAwake };
     },
+    builtinKeys: () => {
+      const secretStore = getProviderSecretStore();
+      return new Set(PROVIDER_SECRET_IDS.filter((id) => secretStore.has(id)));
+    },
+    sshHostIds: localSshHostIds,
+    transfer: (deviceId) => ({
+      transfer: (input) =>
+        requestSetupTransfer(
+          {
+            invoke: async (target, request) => {
+              const reply = await remoteBackgroundInvoke(target, SETUP_TRANSFER_CHANNEL, [request]);
+              if (reply.ok) return reply.result;
+              throw Object.assign(new Error(reply.error.message), { code: reply.error.code });
+            },
+            randomId: () => randomUUID(),
+          },
+          { deviceId, ...input },
+        ),
+      createProvider: async (config, keys) => ((await createCustomProviderFromMain(config, keys)).ok ? 'done' : 'skipped'),
+      createMcpServer: (config, token) => createCustomMcpServerFromMain(config, token),
+      hasBuiltinKey: (id) => getProviderSecretStore().has(id as ProviderSecretId),
+      storeBuiltinKey: (id, value) => getProviderSecretStore().set(id as ProviderSecretId, value),
+      pluginInstanceKey: (ghostId, namespace) => {
+        const ghost = findGhost(ghostId, namespace);
+        return ghost ? installedGhostStoragePart(ghost) : null;
+      },
+      storePluginSecrets: storeGhostUserSecretsForSetup,
+      generateSshKey: async () => {
+        const key = await generateNewKey({ name: 'cindy', comment: setupSshKeyComment() });
+        return { privateKeyPath: key.privateKeyPath, publicKey: key.pubkeyContent };
+      },
+      addSshHost: addAndCheckSetupSshHost,
+    }),
     settingsGroups: SETUP_SETTINGS_GROUPS,
     apply: {
       marketNames: async () => new Set((await market().listSources()).map((source) => source.name)),
@@ -390,6 +539,9 @@ export function registerSetupMigration(options: RegisterSetupMigrationOptions): 
           return item.ref && (PROVIDER_SECRET_IDS as readonly string[]).includes(item.ref)
             ? getProviderSecretStore().has(item.ref as ProviderSecretId)
             : null;
+        case 'ssh-host':
+          // Configured here since (by the user, or a later setup run).
+          return item.ref && getRemoteSshPool().get(item.ref) ? true : null;
         default:
           return null;
       }
@@ -479,10 +631,32 @@ export function registerSetupMigration(options: RegisterSetupMigrationOptions): 
         }
         return { builtinKeys, imChannels, sshHostCount };
       },
+      readSshHosts: listSetupSshHosts,
     },
   });
 
   setSetupSnapshotRemoteHandler({ handle: (raw) => service.handleRemote(raw) });
+  const handleTransfer = createSetupTransferSource({
+    ownerKey,
+    requesterName: async (controllerDeviceId) => {
+      const { devices } = await handleListDevices(deviceDirectoryDeps());
+      const device = devices.find((candidate) => candidate.deviceId === controllerDeviceId && !candidate.isSelf);
+      return device ? device.name : null;
+    },
+    describeSecrets: describeSetupSecrets,
+    describeSshHosts: async (hosts) => {
+      const pool = await getRemoteSshPoolHydrated();
+      return hosts.flatMap((id) => {
+        const host = pool.get(id);
+        return host ? [`${id} (${host.config.user}@${host.config.hostname}:${host.config.port})`] : [];
+      });
+    },
+    sshKeyFingerprint: sshPublicKeyFingerprint,
+    confirm: (prompt, timeoutMs) => confirmSetupTransfer(prompt, timeoutMs, options.getMainWindow()),
+    collectSecrets: collectSetupSecrets,
+    authorizeSsh: (request) => authorizeSetupSshKey(request.hosts, request.publicKey),
+  });
+  setSetupTransferRemoteHandler({ handle: (raw, controllerDeviceId) => handleTransfer(raw, controllerDeviceId) });
 
   ipcMain.handle(SETUP_MIGRATION_IPC.SOURCES, (event) => {
     assertTrustedAppRendererEvent(event);
